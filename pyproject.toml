@@ -1,0 +1,17 @@
+[project]
+name = "fpl-ingest"
+version = "1.0.0"
+description = "Reusable FPL API ingestion library: HTTP client, typed models, and generic transforms."
+readme = "README.md"
+authors = [
+    { name = "gisaf22", email = "safari.gisa@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+    "pydantic>=2.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"

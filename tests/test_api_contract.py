@@ -8,6 +8,8 @@ these tests will fail BEFORE bad data reaches the modelling stage.
 import responses
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from fpl_ingest import (
     FPLClient,
     PlayerModel,

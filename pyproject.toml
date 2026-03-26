@@ -18,9 +18,17 @@ dev = [
     "responses",
 ]
 
+[project.scripts]
+fpl-ingest = "fpl_ingest.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.10.9,<0.11.0"]
 build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "unit: pure unit tests — in-memory fixtures, no DB, no network",
+    "integration: tests against real master.db — skip if DB not found",
+    "smoke: end-to-end tests with real API — requires TEAM_ID env var",
+]

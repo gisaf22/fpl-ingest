@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .client import FPLClient
@@ -252,39 +253,44 @@ def main(argv: list[str] | None = None) -> None:
             fetched = 0
             errors = 0
 
-            for i, pid in enumerate(player_ids, 1):
-                try:
-                    data = client.get_player_history(pid)
-                    if not data:
+            def _fetch_player(pid: int) -> tuple[int, dict | None]:
+                return pid, client.get_player_history(pid)
+
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                futures = {pool.submit(_fetch_player, pid): pid for pid in player_ids}
+                for i, future in enumerate(as_completed(futures), 1):
+                    pid = futures[future]
+                    try:
+                        _, data = future.result()
+                        if not data:
+                            errors += 1
+                            continue
+
+                        # Save raw JSON
+                        (history_dir / f"{pid}.json").write_text(
+                            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                        )
+
+                        # Upsert GW-level history rows
+                        history = data.get("history", [])
+                        if history:
+                            ins, skip = store.upsert_models("gameweeks", GameweekModel, history)
+                            logger.debug("  Player %d history: %d upserted, %d skipped", pid, ins, skip)
+
+                        # Upsert past-season history
+                        history_past = data.get("history_past", [])
+                        if history_past:
+                            past_dicts = flatten_player_history_past(history_past, pid)
+                            ins, skip = store.upsert_models("player_history", PlayerHistoryModel, past_dicts)
+                            logger.debug("  Player %d past seasons: %d upserted, %d skipped", pid, ins, skip)
+
+                        fetched += 1
+                        if i % 50 == 0:
+                            logger.info("[%d/%d] Player histories fetched...", i, len(player_ids))
+
+                    except Exception as e:
                         errors += 1
-                        continue
-
-                    # Save raw JSON
-                    (history_dir / f"{pid}.json").write_text(
-                        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-                    )
-
-                    # Upsert GW-level history rows
-                    history = data.get("history", [])
-                    if history:
-                        # These have 'element' key already
-                        ins, skip = store.upsert_models("gameweeks", GameweekModel, history)
-                        logger.debug("  Player %d history: %d upserted, %d skipped", pid, ins, skip)
-
-                    # Upsert past-season history
-                    history_past = data.get("history_past", [])
-                    if history_past:
-                        past_dicts = flatten_player_history_past(history_past, pid)
-                        ins, skip = store.upsert_models("player_history", PlayerHistoryModel, past_dicts)
-                        logger.debug("  Player %d past seasons: %d upserted, %d skipped", pid, ins, skip)
-
-                    fetched += 1
-                    if i % 50 == 0:
-                        logger.info("[%d/%d] Player histories fetched...", i, len(player_ids))
-
-                except Exception as e:
-                    errors += 1
-                    logger.error("Failed player %d: %s", pid, e)
+                        logger.error("Failed player %d: %s", pid, e)
 
             logger.info("Player histories: %d fetched, %d errors", fetched, errors)
         else:

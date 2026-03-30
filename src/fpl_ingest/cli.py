@@ -175,27 +175,31 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── Fetch gameweek live data ──────────────────────────────────
     finished_gws = [e["id"] for e in events if e.get("finished")]
-    logger.info("Found %d finished gameweeks", len(finished_gws))
+    current_gw = next((e["id"] for e in events if e.get("is_current")), None)
+    logger.info("Found %d finished gameweeks, current GW: %s", len(finished_gws), current_gw)
 
-    # Filter already-cached gameweeks
+    # Filter already-cached finished gameweeks (finished GWs never change)
     if not args.force:
         finished_gws = [
             gw for gw in finished_gws
             if not (raw_dir / f"gw_{gw}.json").exists()
         ]
 
-    if finished_gws:
-        logger.info("Collecting %d gameweeks...", len(finished_gws))
+    # Always fetch the current GW — scores update throughout the week
+    gws_to_fetch = finished_gws + ([current_gw] if current_gw and current_gw not in finished_gws else [])
+
+    if gws_to_fetch:
+        logger.info("Collecting %d gameweeks...", len(gws_to_fetch))
 
         downloaded = 0
         errors = 0
 
-        for i, gw in enumerate(finished_gws, 1):
+        for i, gw in enumerate(gws_to_fetch, 1):
             try:
                 gw_data = client.get_gw(gw)
 
                 if not gw_data:
-                    logger.warning("[%d/%d] No data for GW%d", i, len(finished_gws), gw)
+                    logger.warning("[%d/%d] No data for GW%d", i, len(gws_to_fetch), gw)
                     errors += 1
                     continue
 
@@ -224,12 +228,12 @@ def main(argv: list[str] | None = None) -> None:
                 downloaded += 1
                 logger.info(
                     "[%d/%d] GW%d — %d player entries, %d explain rows",
-                    i, len(finished_gws), gw, len(flat), len(all_explain),
+                    i, len(gws_to_fetch), gw, len(flat), len(all_explain),
                 )
 
             except Exception as e:
                 errors += 1
-                logger.error("[%d/%d] Failed GW%d: %s", i, len(finished_gws), gw, e)
+                logger.error("[%d/%d] Failed GW%d: %s", i, len(gws_to_fetch), gw, e)
 
         logger.info("Gameweeks: %d collected, %d errors", downloaded, errors)
     else:
@@ -241,13 +245,8 @@ def main(argv: list[str] | None = None) -> None:
         history_dir = raw_dir / "players"
         history_dir.mkdir(parents=True, exist_ok=True)
 
-        # Filter already-cached players
-        if not args.force:
-            player_ids = [
-                pid for pid in player_ids
-                if not (history_dir / f"{pid}.json").exists()
-            ]
-
+        # Always fetch all player files — the API returns full history
+        # each time, so a cached file from a prior run is always stale.
         if player_ids:
             logger.info("Fetching element-summary for %d players...", len(player_ids))
             fetched = 0

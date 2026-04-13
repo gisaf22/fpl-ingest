@@ -1,3 +1,8 @@
+# Data — never commit
+data/
+*.db
+*.sqlite
+
 # Python-generated files
 __pycache__/
 .pytest_cache/

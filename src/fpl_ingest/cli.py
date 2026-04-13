@@ -8,11 +8,29 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from .client import FPLClient
-from .models import (
+from fpl_ingest.client import FPLClient
+
+
+def _load_fpl_env() -> None:
+    """Load ~/Documents/FPL/.env into os.environ without overriding existing vars."""
+    env_file = Path.home() / "Documents" / "FPL" / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_fpl_env()
+
+from fpl_ingest.models import (
     PlayerModel,
     TeamModel,
     FixtureModel,
@@ -24,8 +42,8 @@ from .models import (
     ExplainStatModel,
     PlayerHistoryModel,
 )
-from .store import SQLiteStore
-from .transforms import (
+from fpl_ingest.store import SQLiteStore
+from fpl_ingest.transforms import (
     flatten_live_elements,
     flatten_fixture_stats,
     flatten_explain,
@@ -33,7 +51,7 @@ from .transforms import (
     flatten_player_history_past,
 )
 
-DEFAULT_DB = Path.home() / "Documents" / "FPL" / "data" / "fpl" / "fpl.db"
+DEFAULT_DB = Path(os.environ.get("FPL_DB_PATH", Path.home() / "Documents" / "FPL" / "data" / "fpl" / "fpl.db"))
 DEFAULT_RAW_DIR = Path.home() / "Documents" / "FPL" / "data" / "fpl" / "raw"
 
 

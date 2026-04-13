@@ -8,17 +8,11 @@ these tests will fail BEFORE bad data reaches the modelling stage.
 import responses
 import pytest
 
-pytestmark = pytest.mark.unit
+from fpl_ingest.client import FPLClient, ENDPOINTS
+from fpl_ingest.models import PlayerModel, TeamModel, FixtureModel, GameweekModel
+from fpl_ingest.transforms import flatten_live_elements
 
-from fpl_ingest import (
-    FPLClient,
-    PlayerModel,
-    TeamModel,
-    FixtureModel,
-    GameweekModel,
-    flatten_live_elements,
-)
-from fpl_ingest.client import ENDPOINTS
+pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
 # Realistic fixtures — minimal but complete payloads that mirror the real API

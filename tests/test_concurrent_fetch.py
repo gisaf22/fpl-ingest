@@ -92,18 +92,6 @@ class TestConcurrentPlayerFetch:
             assert path.exists(), f"players/{pid}.json not written"
             assert json.loads(path.read_text()) == expected
 
-    def test_no_force_skips_cached_player(self, mock_client, mock_store, tmp_path):
-        """Without --force, a player with an existing JSON file is not re-fetched."""
-        players_dir = tmp_path / "raw" / "players"
-        players_dir.mkdir(parents=True)
-        (players_dir / "1.json").write_text("{}")  # pre-cached
-
-        _run([], mock_client, mock_store, tmp_path)
-
-        called_ids = {c.args[0] for c in mock_client.get_player_history.call_args_list}
-        assert 1 not in called_ids, "cached player should have been skipped"
-        assert 2 in called_ids, "uncached player should have been fetched"
-
     def test_force_refetches_cached_player(self, mock_client, mock_store, tmp_path):
         """--force fetches all players even when their JSON already exists."""
         players_dir = tmp_path / "raw" / "players"

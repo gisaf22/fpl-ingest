@@ -8,13 +8,15 @@ Usage:
 
     store = SQLiteStore("fpl.db")
     store.register_table("players", PlayerModel)
-    store.upsert_from_api("players", PlayerModel, raw_dicts)
+    store.upsert_models("players", PlayerModel, raw_dicts)
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Type
 
@@ -23,6 +25,12 @@ from pydantic import BaseModel, ValidationError
 from fpl_ingest.models import schema_to_create_table
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_conflict_columns(unique_constraint: str) -> str:
+    """Extract column list from 'UNIQUE(col1, col2)' → 'col1, col2'."""
+    m = re.search(r"UNIQUE\s*\(([^)]+)\)", unique_constraint, re.IGNORECASE)
+    return m.group(1).strip() if m else unique_constraint
 
 
 class SQLiteStore:
@@ -63,9 +71,10 @@ class SQLiteStore:
             unique_constraint: Optional UNIQUE constraint clause.
             conn: Reuse an existing connection. If None, opens and closes one.
         """
+        all_extra = list(extra_columns or []) + ["ingested_at TEXT"]
         sql = schema_to_create_table(
             table_name, schema,
-            extra_columns=extra_columns,
+            extra_columns=all_extra,
             unique_constraint=unique_constraint,
         )
         self._exec(sql, conn=conn)
@@ -102,14 +111,21 @@ class SQLiteStore:
         columns: Sequence[str],
         rows: Sequence[tuple],
         *,
+        conflict_target: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
-        """INSERT OR REPLACE rows in bulk.
+        """Upsert rows in bulk.
+
+        Uses ON CONFLICT DO UPDATE when a conflict_target is provided,
+        which updates in-place without deleting the row. Falls back to
+        INSERT OR REPLACE when no conflict target is known.
 
         Args:
             table_name: Target table.
             columns: Column names matching the tuple positions.
             rows: Data tuples.
+            conflict_target: Comma-separated conflict columns, e.g. 'id' or
+                'fixture_id, identifier, element'. Auto-detected by upsert_models.
             conn: Reuse an existing connection. Caller is responsible for commit.
 
         Returns:
@@ -118,8 +134,21 @@ class SQLiteStore:
         if not rows:
             return 0
         placeholders = ", ".join("?" * len(columns))
-        cols = ", ".join(columns)
-        sql = f"INSERT OR REPLACE INTO {table_name} ({cols}) VALUES ({placeholders})"
+        cols_str = ", ".join(columns)
+
+        if conflict_target:
+            conflict_cols = {c.strip() for c in conflict_target.split(",")}
+            update_cols = [c for c in columns if c not in conflict_cols]
+            if update_cols:
+                update_clause = ", ".join(f"{c}=excluded.{c}" for c in update_cols)
+                sql = (
+                    f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders})\n"
+                    f"ON CONFLICT({conflict_target}) DO UPDATE SET {update_clause}"
+                )
+            else:
+                sql = f"INSERT OR IGNORE INTO {table_name} ({cols_str}) VALUES ({placeholders})"
+        else:
+            sql = f"INSERT OR REPLACE INTO {table_name} ({cols_str}) VALUES ({placeholders})"
 
         own_conn = conn is None
         if own_conn:
@@ -145,8 +174,8 @@ class SQLiteStore:
     ) -> Tuple[int, int]:
         """Validate raw dicts against a Pydantic schema and upsert.
 
-        If *columns* and *row_builder* are omitted, every schema field is
-        persisted using ``model.model_dump()``.
+        In the default path (no row_builder), every schema field is persisted
+        plus an auto-injected ingested_at timestamp.
 
         Args:
             table_name: Target table.
@@ -163,8 +192,10 @@ class SQLiteStore:
         """
         rows: List[tuple] = []
         errors: List[Tuple[Any, str]] = []
-
+        ts = datetime.now(timezone.utc).isoformat()
         use_custom = columns is not None and row_builder is not None
+        _cols: Optional[List[str]] = list(columns) if columns else None
+        _data_cols: Optional[List[str]] = None  # _cols minus ingested_at, cached after first row
 
         for raw in raw_dicts:
             try:
@@ -173,22 +204,30 @@ class SQLiteStore:
                     rows.append(row_builder(model))
                 else:
                     d = model.model_dump()
-                    if columns is None:
-                        columns = list(d.keys())
-                    rows.append(tuple(d[c] for c in columns))
+                    if _cols is None:
+                        _cols = list(d.keys()) + ["ingested_at"]
+                        _data_cols = _cols[:-1]
+                    rows.append(tuple(d[c] for c in _data_cols) + (ts,))
             except ValidationError as e:
                 errors.append((raw.get("id", "unknown"), str(e)))
 
         if errors:
             logger.warning(
-                f"Skipped {len(errors)} {table_name} rows with invalid schema: "
-                f"{errors[:3]}..."
+                "Skipped %d %s rows with invalid schema: %s...",
+                len(errors), table_name, errors[:3],
             )
 
-        if columns is None:
+        if _cols is None:
             return (0, len(errors))
 
-        self.bulk_upsert(table_name, columns, rows, conn=conn)
+        conflict_target: Optional[str] = None
+        if not use_custom:
+            if hasattr(schema, "DEFAULT_UNIQUE"):
+                conflict_target = _parse_conflict_columns(schema.DEFAULT_UNIQUE)
+            elif "id" in _cols:
+                conflict_target = "id"
+
+        self.bulk_upsert(table_name, _cols, rows, conflict_target=conflict_target, conn=conn)
         return (len(rows), len(errors))
 
     # ------------------------------------------------------------------

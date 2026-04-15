@@ -13,12 +13,22 @@ Usage:
 from __future__ import annotations
 
 import logging
-import random
-import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+
+from fpl_ingest.transport import (
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_PLAYER_HISTORY_REQUEST_DELAY,
+    DEFAULT_REQUEST_DELAY,
+    DEFAULT_TIMEOUT,
+    FPLClientError,
+    RequestGate,
+    execute_json_request,
+)
+from fpl_ingest.types import JSON
 
 logger = logging.getLogger(__name__)
 
@@ -31,67 +41,63 @@ ENDPOINTS = {
     "player": f"{FPL_BASE_URL}/element-summary/{{player_id}}/",
 }
 
-# Rate limiting defaults
-DEFAULT_REQUEST_DELAY = 1.0
-DEFAULT_MAX_RETRIES = 5
-MAX_DELAY = 60
-RATE_LIMIT_STATUS = 429
-
 
 class FPLClient:
-    """HTTP client for the FPL API with rate limiting and caching."""
+    """HTTP client for the FPL API with rate limiting and bootstrap caching.
+
+    Only the bootstrap-static response is cached in memory for the lifetime of
+    the client instance. All other endpoints fetch fresh on every call.
+    """
 
     def __init__(
         self,
         request_delay: float = DEFAULT_REQUEST_DELAY,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        timeout: float = DEFAULT_TIMEOUT,
+        request_gate: RequestGate | None = None,
+        pool_size: int = 50,
     ):
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/537.36"
+            "User-Agent": "fpl-ingest/1.0.0 (github.com/gisaf22/fpl-ingest)"
         })
-        self._bootstrap_cache: Optional[Dict] = None
+        adapter = HTTPAdapter(pool_connections=1, pool_maxsize=pool_size)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        self._pool_size = pool_size
+        self._bootstrap_cache: Optional[JSON] = None
         self._request_delay = request_delay
+        self._player_history_request_delay = DEFAULT_PLAYER_HISTORY_REQUEST_DELAY
         self._max_retries = max_retries
-        self._current_delay = request_delay
+        self._timeout = timeout
+        self._request_gate = request_gate or RequestGate()
 
-    def _get(self, url: str) -> Optional[Dict]:
-        """Make GET request with retry logic and adaptive rate limiting."""
-        for attempt in range(self._max_retries):
-            try:
-                jitter = random.uniform(0, 0.3 * self._current_delay)
-                time.sleep(self._current_delay + jitter)
+    def close(self) -> None:
+        """Close the underlying HTTP session."""
+        self.session.close()
 
-                resp = self.session.get(url, timeout=30)
+    def clone(self) -> FPLClient:
+        """Create a new client with the same transport settings."""
+        return FPLClient(
+            request_delay=self._request_delay,
+            max_retries=self._max_retries,
+            timeout=self._timeout,
+            request_gate=self._request_gate,
+            pool_size=self._pool_size,
+        )
 
-                if resp.status_code == RATE_LIMIT_STATUS:
-                    retry_after = int(resp.headers.get("Retry-After", 30))
-                    self._current_delay = min(self._current_delay * 2, MAX_DELAY)
-                    logger.warning(
-                        f"Rate limited (429). Waiting {retry_after}s. "
-                        f"Delay now: {self._current_delay}s"
-                    )
-                    time.sleep(retry_after)
-                    continue
+    def _get(self, url: str, *, request_delay: float | None = None) -> JSON | None:
+        """Make a GET request with retry logic for transient failures."""
+        return execute_json_request(
+            self.session,
+            url,
+            timeout=self._timeout,
+            request_delay=request_delay if request_delay is not None else self._request_delay,
+            max_retries=self._max_retries,
+            request_gate=self._request_gate,
+        )
 
-                resp.raise_for_status()
-
-                self._current_delay = max(self._request_delay, self._current_delay * 0.9)
-                return resp.json()
-
-            except requests.RequestException as e:
-                wait_time = min(2 ** attempt + random.uniform(0, 1), MAX_DELAY)
-                logger.warning(
-                    f"Request failed (attempt {attempt + 1}/{self._max_retries}): {e}. "
-                    f"Retrying in {wait_time:.1f}s"
-                )
-                if attempt < self._max_retries - 1:
-                    time.sleep(wait_time)
-
-        logger.error(f"All {self._max_retries} attempts failed for {url}")
-        return None
-
-    def get_bootstrap(self, force: bool = False) -> Dict:
+    def get_bootstrap(self, force: bool = False) -> JSON:
         """Get bootstrap-static data (cached).
 
         Args:
@@ -108,12 +114,12 @@ class FPLClient:
             self._bootstrap_cache = self._get(ENDPOINTS["bootstrap"])
 
         if self._bootstrap_cache is None:
-            raise RuntimeError("Failed to fetch bootstrap data from FPL API")
+            raise FPLClientError("Failed to fetch bootstrap data from FPL API")
 
         return self._bootstrap_cache
 
     def get_current_gw(self) -> int:
-        """Get the current/latest finished gameweek number.
+        """Get the current gameweek, or the latest finished one if none is current.
 
         Raises:
             RuntimeError: If no gameweek data found.
@@ -147,22 +153,22 @@ class FPLClient:
                     return datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
         return None
 
-    def get_gw(self, gw: int) -> Optional[Dict]:
+    def get_gw(self, gw: int) -> Optional[JSON]:
         """Get player stats for a gameweek (live endpoint)."""
         url = ENDPOINTS["live"].format(gw=gw)
         logger.info(f"Fetching GW{gw} data...")
         return self._get(url)
 
-    def get_fixtures(self) -> Optional[List[Dict]]:
+    def get_fixtures(self) -> Optional[JSON]:
         """Get all fixtures for the season."""
         logger.info("Fetching fixtures...")
         return self._get(ENDPOINTS["fixtures"])
 
-    def get_player_history(self, player_id: int) -> Optional[Dict]:
+    def get_player_history(self, player_id: int) -> Optional[JSON]:
         """Get a player's detailed history (element-summary)."""
         logger.info(f"Fetching player {player_id} history...")
         url = ENDPOINTS["player"].format(player_id=player_id)
-        return self._get(url)
+        return self._get(url, request_delay=self._player_history_request_delay)
 
     def is_gw_finished(self, gw: int) -> bool:
         """Check if a gameweek has finished (all matches complete, bonus confirmed)."""

@@ -1,9 +1,14 @@
 """Pydantic models for FPL API data.
 
-Typed representations of FPL entities (players, teams, fixtures, gameweeks,
-events, fixture stats, player history, and element types).
-Each model validates raw API JSON and exposes computed properties for
-common transformations (position names, cost in millions).
+Typed representations of FPL entities (players, teams, fixtures, events,
+element types) and fact records (gameweek performance, fixture stats). Each
+model validates raw API JSON against a strict schema and rejects unknown fields.
+
+A small number of models expose convenience properties (e.g. position name,
+cost in millions). These are non-persisted, read-only helpers for display and
+testing only. They do not derive analytics fields and are not stored in SQLite.
+Adding new derived or aggregated properties to these models is out of scope per
+docs/governance.md.
 
 Usage:
     from fpl_ingest import PlayerModel
@@ -16,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Dict, List, Optional, Type, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from fpl_ingest.transforms import ELEMENT_TYPE_TO_POS, cost_to_millions
 
@@ -30,6 +35,9 @@ PYTHON_TO_SQLITE: Dict[Type, str] = {
     str: "TEXT",
     bool: "INTEGER",
 }
+
+STRICT_MODEL_CONFIG = ConfigDict(extra="forbid")
+ALIASED_STRICT_MODEL_CONFIG = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 def pydantic_to_sqlite_column(field_name: str, field_info: Any) -> str:
@@ -87,6 +95,8 @@ def schema_to_create_table(
 class PlayerModel(BaseModel):
     """FPL player data — all fields from bootstrap-static elements."""
 
+    model_config = STRICT_MODEL_CONFIG
+
     id: int
     first_name: Optional[str] = None
     second_name: Optional[str] = None
@@ -96,6 +106,7 @@ class PlayerModel(BaseModel):
     team_code: Optional[int] = None
     element_type: Optional[int] = None
     now_cost: Optional[int] = None
+    price_change_percent: Optional[int] = None
     status: Optional[str] = None
     code: Optional[int] = None
     opta_code: Optional[str] = None
@@ -165,7 +176,6 @@ class PlayerModel(BaseModel):
     value_season: Optional[float] = None
     ep_next: Optional[float] = None
     ep_this: Optional[float] = None
-    price_change_percent: Optional[float] = None
 
     # Ranks
     form_rank: Optional[int] = None
@@ -209,6 +219,23 @@ class PlayerModel(BaseModel):
     news: Optional[str] = None
     news_added: Optional[str] = None
 
+    @classmethod
+    def prepare(cls, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Strip scout_* fields the API sends that are not part of this schema."""
+        return {k: v for k, v in raw.items() if not k.startswith("scout_")}
+
+    @model_validator(mode="after")
+    def validate_critical_fields(self) -> "PlayerModel":
+        """Require identity fields that downstream logic depends on."""
+        missing = [
+            field_name for field_name in ("team", "element_type", "now_cost")
+            if getattr(self, field_name) is None
+        ]
+        if missing:
+            missing_str = ", ".join(missing)
+            raise ValueError(f"PlayerModel missing critical fields: {missing_str}")
+        return self
+
     @property
     def position(self) -> str:
         """Position string (GKP, DEF, MID, FWD)."""
@@ -227,6 +254,8 @@ class PlayerModel(BaseModel):
 
 class TeamModel(BaseModel):
     """FPL team data — all fields from bootstrap-static teams."""
+
+    model_config = STRICT_MODEL_CONFIG
 
     id: int
     name: Optional[str] = None
@@ -250,15 +279,27 @@ class TeamModel(BaseModel):
     team_division: Optional[str] = None
     unavailable: Optional[bool] = None
 
+    @model_validator(mode="after")
+    def validate_critical_fields(self) -> "TeamModel":
+        """Require display fields needed to identify teams downstream."""
+        missing = [
+            field_name for field_name in ("name", "short_name")
+            if not getattr(self, field_name)
+        ]
+        if missing:
+            missing_str = ", ".join(missing)
+            raise ValueError(f"TeamModel missing critical fields: {missing_str}")
+        return self
+
 
 class FixtureModel(BaseModel):
     """FPL fixture data — all fields from fixtures endpoint."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = STRICT_MODEL_CONFIG
 
     id: int
     code: Optional[int] = None
-    event: Optional[int] = Field(None, alias="gameweek")
+    event: Optional[int] = None
     team_h: Optional[int] = None
     team_a: Optional[int] = None
     team_h_score: Optional[int] = None
@@ -273,11 +314,28 @@ class FixtureModel(BaseModel):
     provisional_start_time: Optional[bool] = None
     pulse_id: Optional[int] = None
 
+    @classmethod
+    def prepare(cls, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Strip stats field — processed separately as FixtureStatModel rows."""
+        return {k: v for k, v in raw.items() if k != "stats"}
+
+    @model_validator(mode="after")
+    def validate_critical_fields(self) -> "FixtureModel":
+        """Require team identity fields for fixture-level joins."""
+        missing = [
+            field_name for field_name in ("team_h", "team_a")
+            if getattr(self, field_name) is None
+        ]
+        if missing:
+            missing_str = ", ".join(missing)
+            raise ValueError(f"FixtureModel missing critical fields: {missing_str}")
+        return self
+
 
 class FixtureStatModel(BaseModel):
     """Individual player stat within a fixture (goals, assists, etc.)."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = STRICT_MODEL_CONFIG
 
     fixture_id: int
     identifier: str
@@ -290,6 +348,8 @@ class FixtureStatModel(BaseModel):
 
 class EventModel(BaseModel):
     """Gameweek (event) metadata from bootstrap-static."""
+
+    model_config = STRICT_MODEL_CONFIG
 
     id: int
     name: Optional[str] = None
@@ -320,9 +380,23 @@ class EventModel(BaseModel):
     transfers_made: Optional[int] = None
     chip_plays_json: Optional[str] = None
 
+    @model_validator(mode="after")
+    def validate_critical_fields(self) -> "EventModel":
+        """Require event state flags used to decide what to ingest."""
+        missing = [
+            field_name for field_name in ("name", "finished", "is_current", "is_next")
+            if getattr(self, field_name) is None
+        ]
+        if missing:
+            missing_str = ", ".join(missing)
+            raise ValueError(f"EventModel missing critical fields: {missing_str}")
+        return self
+
 
 class ElementTypeModel(BaseModel):
     """Position type definition from bootstrap-static."""
+
+    model_config = STRICT_MODEL_CONFIG
 
     id: int
     singular_name: Optional[str] = None
@@ -337,28 +411,16 @@ class ElementTypeModel(BaseModel):
     ui_shirt_specific: Optional[bool] = None
     element_count: Optional[int] = None
 
-
-class PhaseModel(BaseModel):
-    """Season phase from bootstrap-static."""
-
-    id: int
-    name: Optional[str] = None
-    start_event: Optional[int] = None
-    stop_event: Optional[int] = None
-    highest_score: Optional[int] = None
+    @classmethod
+    def prepare(cls, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Strip sub_positions_locked — list type with no SQLite column equivalent."""
+        return {k: v for k, v in raw.items() if k != "sub_positions_locked"}
 
 
 class GameweekModel(BaseModel):
-    """Player performance for a single gameweek.
+    """Player performance for a single gameweek from the live endpoint."""
 
-    Covers both the live endpoint (``/event/{gw}/live/``) and the
-    element-summary endpoint (``/element-summary/{id}/`` → ``history[]``).
-
-    The element-summary endpoint uses ``element`` instead of ``element_id``
-    and returns some numeric fields as strings — Pydantic coerces both.
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ALIASED_STRICT_MODEL_CONFIG
 
     element_id: int = Field(alias="element")
     round: int
@@ -391,7 +453,6 @@ class GameweekModel(BaseModel):
     recoveries: Optional[int] = None
     defensive_contribution: Optional[int] = None
 
-    # --- Fields from element-summary (not in live endpoint) ---
     fixture: Optional[int] = None
     opponent_team: Optional[int] = None
     was_home: Optional[bool] = None
@@ -408,30 +469,19 @@ class GameweekModel(BaseModel):
     DEFAULT_UNIQUE: ClassVar[str] = "UNIQUE(element_id, round)"
 
 
-class ExplainStatModel(BaseModel):
-    """Points breakdown for a player in a specific fixture."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    element_id: int
-    round: int
-    fixture_id: int
-    identifier: str
-    points: int = 0
-    value: int = 0
-    points_modification: int = 0
-
-    DEFAULT_UNIQUE: ClassVar[str] = "UNIQUE(element_id, fixture_id, identifier)"
-
-
 class PlayerHistoryModel(BaseModel):
-    """Past-season summary from element-summary endpoint."""
+    """Per-fixture player history row from ``element-summary/{id}/history[]``.
 
-    model_config = ConfigDict(populate_by_name=True)
+    Source is different from GameweekModel (element-summary vs live endpoint),
+    different grain, and different uniqueness key. Fields overlap by coincidence
+    of the upstream API shape, not by IS-A relationship.
+    """
 
-    element_id: int
-    season_name: str
-    total_points: int = 0
+    model_config = ALIASED_STRICT_MODEL_CONFIG
+
+    element_id: int = Field(alias="element")
+    round: int
+    fixture: int
     minutes: int = 0
     goals_scored: int = 0
     assists: int = 0
@@ -445,17 +495,36 @@ class PlayerHistoryModel(BaseModel):
     saves: int = 0
     bonus: int = 0
     bps: int = 0
-    influence: Optional[float] = None
-    creativity: Optional[float] = None
-    threat: Optional[float] = None
-    ict_index: Optional[float] = None
+    total_points: int = 0
+    influence: float = 0.0
+    creativity: float = 0.0
+    threat: float = 0.0
+    ict_index: float = 0.0
+    expected_goals: float = 0.0
+    expected_assists: float = 0.0
+    expected_goal_involvements: float = 0.0
+    expected_goals_conceded: float = 0.0
     starts: int = 0
-    expected_goals: Optional[float] = None
-    expected_assists: Optional[float] = None
-    expected_goal_involvements: Optional[float] = None
-    expected_goals_conceded: Optional[float] = None
-    start_cost: Optional[int] = None
-    end_cost: Optional[int] = None
-    element_code: Optional[int] = None
+    in_dreamteam: Optional[bool] = None
+    tackles: Optional[int] = None
+    clearances_blocks_interceptions: Optional[int] = None
+    recoveries: Optional[int] = None
+    defensive_contribution: Optional[int] = None
+    opponent_team: Optional[int] = None
+    was_home: Optional[bool] = None
+    kickoff_time: Optional[str] = None
+    team_h_score: Optional[int] = None
+    team_a_score: Optional[int] = None
+    value: Optional[int] = None
+    selected: Optional[int] = None
+    transfers_in: Optional[int] = None
+    transfers_out: Optional[int] = None
+    transfers_balance: Optional[int] = None
 
-    DEFAULT_UNIQUE: ClassVar[str] = "UNIQUE(element_id, season_name)"
+    @classmethod
+    def prepare(cls, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Strip modified field the API sends that is not part of this schema."""
+        return {k: v for k, v in raw.items() if k != "modified"}
+
+    # Default uniqueness: one row per player, gameweek, and fixture.
+    DEFAULT_UNIQUE: ClassVar[str] = "UNIQUE(element_id, round, fixture)"

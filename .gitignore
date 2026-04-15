@@ -12,7 +12,14 @@ dist/
 wheels/
 *.egg-info
 
+# Ensure Python bytecode ignored everywhere
+**/__pycache__/
+**/*.pyc
+
 # Virtual environments
 .venv
 .coverage
 *.code-workspace
+
+# Claude Code internal state
+.claude/

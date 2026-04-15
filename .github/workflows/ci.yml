@@ -21,3 +21,6 @@ jobs:
 
       - name: Run unit tests
         run: uv run pytest -m unit
+
+      - name: Type check
+        run: uv run mypy src/fpl_ingest

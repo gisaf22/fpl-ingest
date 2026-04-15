@@ -6,79 +6,86 @@ Fetches FPL API data, transforms it, and stores in SQLite.
 from __future__ import annotations
 
 import argparse
-import json
+import asyncio
 import logging
-import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import sys
+from collections.abc import Iterable
 from pathlib import Path
 
-from fpl_ingest.client import FPLClient
-
-
-from fpl_ingest.models import (
-    PlayerModel,
-    TeamModel,
-    FixtureModel,
-    FixtureStatModel,
-    GameweekModel,
-    EventModel,
-    ElementTypeModel,
-    PhaseModel,
-    ExplainStatModel,
-    PlayerHistoryModel,
+from fpl_ingest.async_client import AsyncFPLClient
+from fpl_ingest.config import IngestConfig, default_config, resolve_config
+from fpl_ingest.pipeline import (
+    StageResult,
+    ingest_core_data,
+    ingest_fixtures,
+    ingest_gameweeks,
+    ingest_player_histories,
+    setup_store,
 )
+from fpl_ingest.rate_limiter import TokenBucketLimiter
 from fpl_ingest.store import SQLiteStore
-from fpl_ingest.transforms import (
-    flatten_live_elements,
-    flatten_fixture_stats,
-    flatten_explain,
-    flatten_event,
-    flatten_player_history_past,
-)
-
-DEFAULT_DB = Path(os.environ.get("FPL_DB_PATH", Path.home() / ".fpl" / "fpl.db"))
-DEFAULT_RAW_DIR = Path(os.environ.get("FPL_RAW_DIR", Path.home() / ".fpl" / "raw"))
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser for the fpl-ingest CLI."""
+def _argparse_positive_float(value: str) -> float:
+    """Argparse type for strictly positive float CLI options."""
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a positive number, got {value!r}")
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"must be positive, got {parsed}")
+    return parsed
+
+
+def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
+    """Build the command-line parser for the ingest entry point."""
+    config = config or default_config()
     parser = argparse.ArgumentParser(
         prog="fpl-ingest",
         description="Collect and store FPL API data.",
     )
+    parser.add_argument("--db", type=Path, default=None,
+                        help=f"SQLite database path (default: {config.db_path}).")
+    parser.add_argument("--raw-dir", type=Path, default=None,
+                        help=f"Directory for raw JSON cache (default: {config.raw_dir}).")
+    parser.add_argument("--force", "-f", action="store_true",
+                        help="Re-fetch gameweek data even if already cached.")
     parser.add_argument(
-        "--db",
-        type=Path,
-        default=None,
-        help=f"SQLite database path (default: {DEFAULT_DB}).",
+        "--rate",
+        type=_argparse_positive_float,
+        default=10.0,
+        help="Max API requests per second (default: 10.0).",
     )
-    parser.add_argument(
-        "--raw-dir",
-        type=Path,
-        default=None,
-        help=f"Directory for raw JSON cache (default: {DEFAULT_RAW_DIR}).",
-    )
-    parser.add_argument(
-        "--force", "-f",
-        action="store_true",
-        help="Re-fetch gameweek data even if already cached.",
-    )
-    parser.add_argument(
-        "--skip-history",
-        action="store_true",
-        help="Skip fetching per-player element-summary history.",
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable debug logging.",
-    )
+    parser.add_argument("--strict", action="store_true",
+                        help="Abort the run if any stage reports skipped rows or fetch errors.")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Enable debug logging.")
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Entry point for the fpl-ingest CLI. Fetches FPL API data and stores to SQLite."""
+def _raise_if_unclean(result: StageResult, *, strict: bool = False) -> None:
+    """Warn (or raise in strict mode) when a stage reports skipped rows or errors."""
+    if result.skipped or result.errors:
+        msg = f"Ingest stage did not complete cleanly: {result.summary_line()}"
+        if strict:
+            raise RuntimeError(msg)
+        logging.getLogger("fpl_ingest").warning(msg)
+
+
+def _log_run_summary(logger: logging.Logger, results: Iterable[StageResult]) -> None:
+    """Log a compact end-of-run stage summary."""
+    logger.info("Stage summary:")
+    for result in results:
+        logger.info("  %s", result.summary_line())
+
+
+async def _async_main(argv: list[str] | None = None) -> int:
+    """Async pipeline body — called by main() via asyncio.run().
+
+    Returns 0 on a clean run, 1 if any stage recorded errors.
+    """
     args = build_parser().parse_args(argv)
+    config = resolve_config(db_path=args.db, raw_dir=args.raw_dir)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -87,221 +94,86 @@ def main(argv: list[str] | None = None) -> None:
     )
     logger = logging.getLogger("fpl_ingest")
 
-    db_path = args.db or DEFAULT_DB
-    raw_dir = args.raw_dir or DEFAULT_RAW_DIR
-    raw_dir.mkdir(parents=True, exist_ok=True)
+    config.raw_dir.mkdir(parents=True, exist_ok=True)
 
-    client = FPLClient()
-    store = SQLiteStore(db_path)
+    from datetime import datetime, timezone
 
-    with store.get_connection() as conn:
-        # Register all tables
-        store.register_table("players", PlayerModel, conn=conn)
-        store.register_table("teams", TeamModel, conn=conn)
-        store.register_table("fixtures", FixtureModel, conn=conn)
-        store.register_table("fixture_stats", FixtureStatModel,
-                             unique_constraint=FixtureStatModel.DEFAULT_UNIQUE, conn=conn)
-        store.register_table("gameweeks", GameweekModel,
-                             unique_constraint=GameweekModel.DEFAULT_UNIQUE, conn=conn)
-        store.register_table("events", EventModel, conn=conn)
-        store.register_table("element_types", ElementTypeModel, conn=conn)
-        store.register_table("phases", PhaseModel, conn=conn)
-        store.register_table("explain_stats", ExplainStatModel,
-                             unique_constraint=ExplainStatModel.DEFAULT_UNIQUE, conn=conn)
-        store.register_table("player_history", PlayerHistoryModel,
-                             unique_constraint=PlayerHistoryModel.DEFAULT_UNIQUE, conn=conn)
+    store = SQLiteStore(config.db_path)
+    run_started_at = datetime.now(timezone.utc).isoformat()
+    stage_results: list[StageResult] = []
 
-        # Create useful indexes
-        store.create_index("gameweeks", ["element_id"], conn=conn)
-        store.create_index("gameweeks", ["round"], conn=conn)
-        store.create_index("fixtures", ["event"], conn=conn)
-        store.create_index("fixture_stats", ["fixture_id"], conn=conn)
-        store.create_index("fixture_stats", ["element"], conn=conn)
-        store.create_index("explain_stats", ["element_id", "round"], conn=conn)
-        store.create_index("player_history", ["element_id"], conn=conn)
-
-        # ── Fetch bootstrap-static ────────────────────────────────────
-        logger.info("Fetching bootstrap-static data...")
-        bootstrap = client.get_bootstrap()
-
-        # Save raw bootstrap
-        bootstrap_path = raw_dir / "bootstrap.json"
-        bootstrap_path.write_text(
-            json.dumps(bootstrap, ensure_ascii=False, indent=2), encoding="utf-8"
+    def _finish_stage(result: StageResult) -> StageResult:
+        stage_results.append(result)
+        store.record_run(
+            run_started_at,
+            result.stage,
+            result.fetched,
+            result.upserted,
+            result.skipped,
+            result.errors,
         )
-
-        # Upsert players
-        players = bootstrap.get("elements", [])
-        ins, skip = store.upsert_models("players", PlayerModel, players, conn=conn)
-        logger.info("Players: %d upserted, %d skipped", ins, skip)
-
-        # Upsert teams
-        teams = bootstrap.get("teams", [])
-        ins, skip = store.upsert_models("teams", TeamModel, teams, conn=conn)
-        logger.info("Teams: %d upserted, %d skipped", ins, skip)
-
-        # Upsert events (gameweek metadata)
-        events = bootstrap.get("events", [])
-        event_dicts = [flatten_event(e) for e in events]
-        ins, skip = store.upsert_models("events", EventModel, event_dicts, conn=conn)
-        logger.info("Events: %d upserted, %d skipped", ins, skip)
-
-        # Upsert element types
-        element_types = bootstrap.get("element_types", [])
-        ins, skip = store.upsert_models("element_types", ElementTypeModel, element_types, conn=conn)
-        logger.info("Element types: %d upserted, %d skipped", ins, skip)
-
-        # Upsert phases
-        phases = bootstrap.get("phases", [])
-        ins, skip = store.upsert_models("phases", PhaseModel, phases, conn=conn)
-        logger.info("Phases: %d upserted, %d skipped", ins, skip)
-
-        # ── Fetch fixtures ────────────────────────────────────────────
-        logger.info("Fetching fixtures...")
-        fixtures = client.get_fixtures()
-        if fixtures:
-            fixtures_path = raw_dir / "fixtures.json"
-            fixtures_path.write_text(
-                json.dumps(fixtures, ensure_ascii=False, indent=2), encoding="utf-8"
+        _raise_if_unclean(result, strict=args.strict)
+        total_rows = result.upserted + result.skipped
+        if total_rows > 0 and result.skipped / total_rows > 0.01:
+            logger.warning(
+                "High skip rate: stage=%s skipped=%d/%d (%.1f%%)",
+                result.stage, result.skipped, total_rows,
+                100 * result.skipped / total_rows,
             )
-            ins, skip = store.upsert_models("fixtures", FixtureModel, fixtures, conn=conn)
-            logger.info("Fixtures: %d upserted, %d skipped", ins, skip)
+        return result
 
-            # Upsert fixture stats (goals, assists, cards, etc. per player)
-            all_fstats: list[dict] = []
-            for fix in fixtures:
-                all_fstats.extend(flatten_fixture_stats(fix))
-            if all_fstats:
-                ins, skip = store.upsert_models("fixture_stats", FixtureStatModel, all_fstats, conn=conn)
-                logger.info("Fixture stats: %d upserted, %d skipped", ins, skip)
-        else:
-            logger.warning("No fixture data returned")
+    _max_concurrent = 10
+    rate_limiter = TokenBucketLimiter(rate=args.rate, max_concurrent=_max_concurrent)
 
-        # ── Fetch gameweek live data ──────────────────────────────────
-        finished_gws = [e["id"] for e in events if e.get("finished")]
-        current_gw = next((e["id"] for e in events if e.get("is_current")), None)
-        logger.info("Found %d finished gameweeks, current GW: %s", len(finished_gws), current_gw)
+    async with AsyncFPLClient(
+        rate_limiter=rate_limiter,
+        connector_limit=_max_concurrent,
+    ) as client:
+        with store.transaction():
+            setup_store(store)
+            core, core_stage = await ingest_core_data(client, store, config.raw_dir)
+        _finish_stage(core_stage)
 
-        # Filter already-cached finished gameweeks (finished GWs never change)
-        if not args.force:
-            finished_gws = [
-                gw for gw in finished_gws
-                if not (raw_dir / f"gw_{gw}.json").exists()
-            ]
+        with store.transaction():
+            _finish_stage(await ingest_fixtures(client, store, config.raw_dir))
 
-        # Always fetch the current GW — scores update throughout the week
-        gws_to_fetch = finished_gws + ([current_gw] if current_gw and current_gw not in finished_gws else [])
+        with store.transaction():
+            _finish_stage(await ingest_gameweeks(
+                client, store, config.raw_dir, core.events, force=args.force,
+            ))
 
-        if gws_to_fetch:
-            logger.info("Collecting %d gameweeks...", len(gws_to_fetch))
+        with store.transaction():
+            _finish_stage(await ingest_player_histories(
+                client,
+                store,
+                config.raw_dir,
+                [p.id for p in core.players],
+                force=args.force,
+            ))
 
-            downloaded = 0
-            errors = 0
+    _log_run_summary(logger, stage_results)
 
-            for i, gw in enumerate(gws_to_fetch, 1):
-                try:
-                    gw_data = client.get_gw(gw)
+    total_errors = sum(r.errors for r in stage_results)
+    if total_errors == 0:
+        current_gw = next((e.id for e in core.events if e.is_current), None)
+        with store.transaction():
+            store.set_metadata("last_successful_run_at", run_started_at)
+            if current_gw is not None:
+                store.set_metadata("current_gameweek", str(current_gw))
+            store.set_metadata("total_players", str(len(core.players)))
+        logger.info("Done.")
+        return 0
 
-                    if not gw_data:
-                        logger.warning("[%d/%d] No data for GW%d", i, len(gws_to_fetch), gw)
-                        errors += 1
-                        continue
+    logger.error(
+        "Run finished with errors in %d stage(s) — check _runs table for details.",
+        sum(1 for r in stage_results if r.errors),
+    )
+    return 1
 
-                    # Save raw JSON
-                    gw_path = raw_dir / f"gw_{gw}.json"
-                    gw_path.write_text(
-                        json.dumps(gw_data, ensure_ascii=False, indent=2), encoding="utf-8"
-                    )
 
-                    # Flatten live elements and upsert
-                    elements = gw_data.get("elements", [])
-                    flat = flatten_live_elements(elements, gw)
-
-                    if flat:
-                        ins, skip = store.upsert_models("gameweeks", GameweekModel, flat, conn=conn)
-                        logger.debug("  GW%d: %d upserted, %d skipped", gw, ins, skip)
-
-                    # Flatten explain data and upsert
-                    all_explain: list[dict] = []
-                    for elem in elements:
-                        all_explain.extend(flatten_explain(elem, gw))
-                    if all_explain:
-                        ins, skip = store.upsert_models("explain_stats", ExplainStatModel, all_explain, conn=conn)
-                        logger.debug("  GW%d explain: %d upserted, %d skipped", gw, ins, skip)
-
-                    downloaded += 1
-                    logger.info(
-                        "[%d/%d] GW%d — %d player entries, %d explain rows",
-                        i, len(gws_to_fetch), gw, len(flat), len(all_explain),
-                    )
-
-                except Exception as e:
-                    errors += 1
-                    logger.error("[%d/%d] Failed GW%d: %s", i, len(gws_to_fetch), gw, e)
-
-            logger.info("Gameweeks: %d collected, %d errors", downloaded, errors)
-        else:
-            logger.info("All finished gameweeks already collected.")
-
-        # ── Fetch per-player element-summary (history) ────────────────
-        if not args.skip_history:
-            player_ids = [p["id"] for p in players]
-            history_dir = raw_dir / "players"
-            history_dir.mkdir(parents=True, exist_ok=True)
-
-            # Always fetch all player files — the API returns full history
-            # each time, so a cached file from a prior run is always stale.
-            if player_ids:
-                logger.info("Fetching element-summary for %d players...", len(player_ids))
-                fetched = 0
-                errors = 0
-
-                def _fetch_player(pid: int) -> tuple[int, dict | None]:
-                    return pid, client.get_player_history(pid)
-
-                with ThreadPoolExecutor(max_workers=20) as pool:
-                    futures = {pool.submit(_fetch_player, pid): pid for pid in player_ids}
-                    for i, future in enumerate(as_completed(futures), 1):
-                        pid = futures[future]
-                        try:
-                            _, data = future.result()
-                            if not data:
-                                errors += 1
-                                continue
-
-                            # Save raw JSON
-                            (history_dir / f"{pid}.json").write_text(
-                                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-                            )
-
-                            # Upsert GW-level history rows
-                            history = data.get("history", [])
-                            if history:
-                                ins, skip = store.upsert_models("gameweeks", GameweekModel, history, conn=conn)
-                                logger.debug("  Player %d history: %d upserted, %d skipped", pid, ins, skip)
-
-                            # Upsert past-season history
-                            history_past = data.get("history_past", [])
-                            if history_past:
-                                past_dicts = flatten_player_history_past(history_past, pid)
-                                ins, skip = store.upsert_models("player_history", PlayerHistoryModel, past_dicts, conn=conn)
-                                logger.debug("  Player %d past seasons: %d upserted, %d skipped", pid, ins, skip)
-
-                            fetched += 1
-                            if i % 50 == 0:
-                                logger.info("[%d/%d] Player histories fetched...", i, len(player_ids))
-
-                        except Exception as e:
-                            errors += 1
-                            logger.error("Failed player %d: %s", pid, e)
-
-                logger.info("Player histories: %d fetched, %d errors", fetched, errors)
-            else:
-                logger.info("All player histories already cached.")
-        else:
-            logger.info("Skipping player history (--skip-history).")
-
-    logger.info("Done.")
+def main(argv: list[str] | None = None) -> None:
+    """Run the ingest pipeline."""
+    sys.exit(asyncio.run(_async_main(argv)))
 
 
 if __name__ == "__main__":

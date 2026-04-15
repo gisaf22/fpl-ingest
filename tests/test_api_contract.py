@@ -7,9 +7,10 @@ these tests will fail BEFORE bad data reaches the modelling stage.
 
 import responses
 import pytest
+from unittest.mock import patch
 
 from fpl_ingest.client import FPLClient, ENDPOINTS
-from fpl_ingest.models import PlayerModel, TeamModel, FixtureModel, GameweekModel
+from fpl_ingest.models import EventModel, FixtureModel, GameweekModel, PlayerHistoryModel, PlayerModel, TeamModel
 from fpl_ingest.transforms import flatten_live_elements
 
 pytestmark = pytest.mark.unit
@@ -177,6 +178,29 @@ LIVE_GW_PAYLOAD = {
     ]
 }
 
+PLAYER_HISTORY_PAYLOAD = {
+    "history": [
+        {
+            "element": 1,
+            "round": 2,
+            "fixture": 101,
+            "minutes": 90,
+            "total_points": 8,
+            "opponent_team": 7,
+            "was_home": True,
+        },
+        {
+            "element": 1,
+            "round": 2,
+            "fixture": 102,
+            "minutes": 25,
+            "total_points": 3,
+            "opponent_team": 13,
+            "was_home": False,
+        },
+    ]
+}
+
 
 # ---------------------------------------------------------------------------
 # Contract: PlayerModel
@@ -214,6 +238,17 @@ class TestPlayerContract:
         with pytest.raises(Exception):
             PlayerModel.model_validate(bad)
 
+    def test_rejects_missing_critical_fields(self):
+        bad = dict(BOOTSTRAP_PAYLOAD["elements"][0])
+        del bad["team"]
+        with pytest.raises(Exception, match="critical fields: team"):
+            PlayerModel.model_validate(bad)
+
+    def test_rejects_unknown_fields(self):
+        bad = dict(BOOTSTRAP_PAYLOAD["elements"][0], invented_metric=123)
+        with pytest.raises(Exception):
+            PlayerModel.model_validate(bad)
+
 
 # ---------------------------------------------------------------------------
 # Contract: TeamModel
@@ -230,6 +265,12 @@ class TestTeamContract:
         team = TeamModel.model_validate(BOOTSTRAP_PAYLOAD["teams"][0])
         assert team.strength_attack_home is not None
         assert team.strength_defence_away is not None
+
+    def test_rejects_missing_short_name(self):
+        bad = dict(BOOTSTRAP_PAYLOAD["teams"][0])
+        del bad["short_name"]
+        with pytest.raises(Exception, match="critical fields: short_name"):
+            TeamModel.model_validate(bad)
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +293,25 @@ class TestFixtureContract:
         fixture = FixtureModel.model_validate(FIXTURES_PAYLOAD[0])
         assert fixture.team_h_score == 2
         assert fixture.team_a_score == 0
+
+    def test_rejects_missing_team_identity_fields(self):
+        bad = dict(FIXTURES_PAYLOAD[0])
+        del bad["team_h"]
+        with pytest.raises(Exception, match="critical fields: team_h"):
+            FixtureModel.model_validate(bad)
+
+
+class TestEventContract:
+    def test_validates_from_bootstrap(self):
+        for raw in BOOTSTRAP_PAYLOAD["events"]:
+            event = EventModel.model_validate(raw)
+            assert event.id > 0
+
+    def test_rejects_missing_state_flags(self):
+        bad = dict(BOOTSTRAP_PAYLOAD["events"][0])
+        del bad["finished"]
+        with pytest.raises(Exception, match="critical fields: finished"):
+            EventModel.model_validate(bad)
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +347,32 @@ class TestGameweekContract:
     def test_rejects_missing_element_id(self):
         with pytest.raises(Exception):
             GameweekModel.model_validate({"round": 1, "minutes": 90})
+
+    def test_rejects_unknown_fields(self):
+        row = dict(flatten_live_elements(LIVE_GW_PAYLOAD["elements"], gw=2)[0], invented_metric=5)
+        with pytest.raises(Exception):
+            GameweekModel.model_validate(row)
+
+
+class TestPlayerHistoryContract:
+    """PlayerHistoryModel must preserve per-fixture element-summary rows."""
+
+    def test_validates_element_summary_history_rows(self):
+        for raw in PLAYER_HISTORY_PAYLOAD["history"]:
+            history = PlayerHistoryModel.model_validate(raw)
+            assert history.element_id == 1
+            assert history.fixture > 0
+
+    def test_allows_multiple_fixtures_in_same_round(self):
+        rows = [
+            PlayerHistoryModel.model_validate(raw)
+            for raw in PLAYER_HISTORY_PAYLOAD["history"]
+        ]
+        assert {(row.round, row.fixture) for row in rows} == {(2, 101), (2, 102)}
+
+    def test_rejects_missing_fixture(self):
+        with pytest.raises(Exception):
+            PlayerHistoryModel.model_validate({"element": 1, "round": 2, "minutes": 90})
 
 
 # ---------------------------------------------------------------------------
@@ -367,3 +453,46 @@ class TestClientContract:
         client = FPLClient(request_delay=0, max_retries=1)
         with pytest.raises(RuntimeError):
             client.get_bootstrap(force=True)
+
+    @responses.activate
+    def test_retry_after_fallback_handles_malformed_header(self):
+        responses.add(
+            responses.GET,
+            ENDPOINTS["bootstrap"],
+            status=429,
+            headers={"Retry-After": "not-a-number"},
+        )
+        responses.add(
+            responses.GET,
+            ENDPOINTS["bootstrap"],
+            json=BOOTSTRAP_PAYLOAD,
+            status=200,
+        )
+
+        client = FPLClient(request_delay=0, max_retries=2)
+        with (
+            patch("fpl_ingest.transport.time.sleep"),
+            patch("fpl_ingest.transport.random.uniform", return_value=0),
+        ):
+            data = client.get_bootstrap(force=True)
+
+        assert data["events"][0]["id"] == 1
+        assert len(responses.calls) == 2
+
+    @responses.activate
+    def test_does_not_retry_non_retryable_404(self):
+        responses.add(
+            responses.GET,
+            ENDPOINTS["fixtures"],
+            status=404,
+        )
+
+        client = FPLClient(request_delay=0, max_retries=3)
+        with (
+            patch("fpl_ingest.transport.time.sleep"),
+            patch("fpl_ingest.transport.random.uniform", return_value=0),
+        ):
+            data = client.get_fixtures()
+
+        assert data is None
+        assert len(responses.calls) == 1

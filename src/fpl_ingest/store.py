@@ -7,8 +7,9 @@ Usage:
     from fpl_ingest import SQLiteStore, PlayerModel
 
     store = SQLiteStore("fpl.db")
-    store.register_table("players", PlayerModel)
-    store.upsert_models("players", PlayerModel, raw_dicts)
+    with store.transaction():
+        store.register_table("players", PlayerModel)
+        store.upsert_models("players", PlayerModel, raw_dicts)
 """
 
 from __future__ import annotations
@@ -16,15 +17,26 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Type
+from typing import Any, Dict, Generator, List, Optional, Sequence, Tuple, Type
 
 from pydantic import BaseModel, ValidationError
 
-from fpl_ingest.models import schema_to_create_table
+from fpl_ingest.models import pydantic_to_sqlite_column, schema_to_create_table
 
 logger = logging.getLogger(__name__)
+
+
+_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _require_safe_identifier(value: str) -> None:
+    # All SQL identifiers must come from internal schema introspection, never
+    # external input. This guard makes that invariant explicit and loud.
+    if not _SAFE_IDENTIFIER.fullmatch(value):
+        raise ValueError(f"Unsafe SQL identifier: {value!r}")
 
 
 def _parse_conflict_columns(unique_constraint: str) -> str:
@@ -40,14 +52,44 @@ class SQLiteStore:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._registered_tables: Dict[str, Type[BaseModel]] = {}
+        self._active_conn: Optional[sqlite3.Connection] = None
 
     # ------------------------------------------------------------------
     # Connection helpers
     # ------------------------------------------------------------------
 
-    def get_connection(self) -> sqlite3.Connection:
-        """Get a new database connection."""
-        return sqlite3.connect(self.db_path)
+    def _get_connection(self) -> sqlite3.Connection:
+        """Open a database connection with production-safe PRAGMA settings.
+
+        WAL mode: readers never block writers and writers never block readers.
+        synchronous=NORMAL: safe with WAL; skips redundant full-sync calls.
+        busy_timeout: retry on lock instead of raising immediately — relevant
+            when two processes (e.g. a scheduled run and a manual run) overlap.
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    @contextmanager
+    def transaction(self) -> Generator[None, None, None]:
+        """Open a single connection for the duration of the block.
+
+        All store operations within the block share this connection.
+        Commits on success, rolls back on exception.
+        """
+        conn = self._get_connection()
+        self._active_conn = conn
+        try:
+            yield
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._active_conn = None
+            conn.close()
 
     # ------------------------------------------------------------------
     # Schema management
@@ -60,7 +102,6 @@ class SQLiteStore:
         *,
         extra_columns: Optional[List[str]] = None,
         unique_constraint: Optional[str] = None,
-        conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         """Create a table from a Pydantic schema (if it doesn't exist).
 
@@ -69,7 +110,6 @@ class SQLiteStore:
             schema: Pydantic model whose fields become columns.
             extra_columns: Additional column definitions not on the model.
             unique_constraint: Optional UNIQUE constraint clause.
-            conn: Reuse an existing connection. If None, opens and closes one.
         """
         all_extra = list(extra_columns or []) + ["ingested_at TEXT"]
         sql = schema_to_create_table(
@@ -77,7 +117,8 @@ class SQLiteStore:
             extra_columns=all_extra,
             unique_constraint=unique_constraint,
         )
-        self._exec(sql, conn=conn)
+        self._exec(sql)
+        self._migrate_columns(table_name, schema, all_extra)
         self._registered_tables[table_name] = schema
 
     def create_index(
@@ -86,7 +127,6 @@ class SQLiteStore:
         columns: Sequence[str],
         *,
         name: Optional[str] = None,
-        conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         """Create an index if it doesn't exist.
 
@@ -94,12 +134,15 @@ class SQLiteStore:
             table_name: Target table.
             columns: Column names to index.
             name: Index name. Auto-generated if omitted.
-            conn: Reuse an existing connection.
         """
         idx_name = name or f"idx_{table_name}_{'_'.join(columns)}"
+        _require_safe_identifier(table_name)
+        for col in columns:
+            _require_safe_identifier(col)
+        _require_safe_identifier(idx_name)
         cols = ", ".join(columns)
         sql = f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table_name}({cols})"
-        self._exec(sql, conn=conn)
+        self._exec(sql)
 
     # ------------------------------------------------------------------
     # Data operations
@@ -112,7 +155,6 @@ class SQLiteStore:
         rows: Sequence[tuple],
         *,
         conflict_target: Optional[str] = None,
-        conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """Upsert rows in bulk.
 
@@ -126,13 +168,15 @@ class SQLiteStore:
             rows: Data tuples.
             conflict_target: Comma-separated conflict columns, e.g. 'id' or
                 'fixture_id, identifier, element'. Auto-detected by upsert_models.
-            conn: Reuse an existing connection. Caller is responsible for commit.
 
         Returns:
             Number of rows upserted.
         """
         if not rows:
             return 0
+        _require_safe_identifier(table_name)
+        for col in columns:
+            _require_safe_identifier(col)
         placeholders = ", ".join("?" * len(columns))
         cols_str = ", ".join(columns)
 
@@ -150,16 +194,15 @@ class SQLiteStore:
         else:
             sql = f"INSERT OR REPLACE INTO {table_name} ({cols_str}) VALUES ({placeholders})"
 
-        own_conn = conn is None
-        if own_conn:
-            conn = self.get_connection()
+        own_conn = self._active_conn is None
+        effective = self._active_conn or self._get_connection()
         try:
-            conn.executemany(sql, rows)
+            effective.executemany(sql, rows)
             if own_conn:
-                conn.commit()
+                effective.commit()
         finally:
             if own_conn:
-                conn.close()
+                effective.close()
         return len(rows)
 
     def upsert_models(
@@ -170,7 +213,6 @@ class SQLiteStore:
         *,
         columns: Optional[Sequence[str]] = None,
         row_builder: Optional[Any] = None,
-        conn: Optional[sqlite3.Connection] = None,
     ) -> Tuple[int, int]:
         """Validate raw dicts against a Pydantic schema and upsert.
 
@@ -185,7 +227,6 @@ class SQLiteStore:
             row_builder: ``callable(validated_model) -> tuple`` that builds
                 the row tuple matching *columns*. Required when *columns*
                 is provided.
-            conn: Reuse an existing connection. Caller commits.
 
         Returns:
             ``(inserted, skipped)`` counts.
@@ -211,10 +252,10 @@ class SQLiteStore:
             except ValidationError as e:
                 errors.append((raw.get("id", "unknown"), str(e)))
 
-        if errors:
+        for entity_id, err_msg in errors:
             logger.warning(
-                "Skipped %d %s rows with invalid schema: %s...",
-                len(errors), table_name, errors[:3],
+                "Skipped invalid %s row (id=%s): %s",
+                table_name, entity_id, err_msg,
             )
 
         if _cols is None:
@@ -227,7 +268,7 @@ class SQLiteStore:
             elif "id" in _cols:
                 conflict_target = "id"
 
-        self.bulk_upsert(table_name, _cols, rows, conflict_target=conflict_target, conn=conn)
+        self.bulk_upsert(table_name, _cols, rows, conflict_target=conflict_target)
         return (len(rows), len(errors))
 
     # ------------------------------------------------------------------
@@ -240,7 +281,7 @@ class SQLiteStore:
         params: tuple = (),
     ) -> List[Dict[str, Any]]:
         """Execute a read query and return list of dicts."""
-        conn = self.get_connection()
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(sql, params).fetchall()
@@ -252,19 +293,119 @@ class SQLiteStore:
     # Internals
     # ------------------------------------------------------------------
 
-    def _exec(
+    def _migrate_columns(
         self,
-        sql: str,
-        *,
-        conn: Optional[sqlite3.Connection] = None,
+        table_name: str,
+        schema: Type[BaseModel],
+        extra_columns: List[str],
     ) -> None:
-        own_conn = conn is None
-        if own_conn:
-            conn = self.get_connection()
+        # Add columns present in the schema but absent from the live table.
+        # ALTER TABLE ADD COLUMN cannot set NOT NULL without a default, so new
+        # fields should be nullable in the Pydantic model. Type changes and
+        # column removals are not handled; those require a manual migration.
+        #
+        # Use _active_conn when inside a transaction so the PRAGMA read sees
+        # the same schema state as the preceding CREATE TABLE, without opening
+        # a second connection that could observe stale table_info.
+        own_conn = self._active_conn is None
+        conn = self._active_conn or self._get_connection()
         try:
-            conn.execute(sql)
-            if own_conn:
-                conn.commit()
+            existing = {
+                row[1]
+                for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            }
         finally:
             if own_conn:
                 conn.close()
+
+        expected: dict[str, str] = {
+            field_name: pydantic_to_sqlite_column(field_name, field_info)
+            for field_name, field_info in schema.model_fields.items()
+        }
+        # extra_columns are raw definitions like "ingested_at TEXT"; extract names
+        for col_def in extra_columns:
+            col_name = col_def.split()[0]
+            expected[col_name] = col_def
+
+        for col_name, col_def in expected.items():
+            if col_name not in existing:
+                logger.info("Migrating %s: adding column %s", table_name, col_name)
+                self._exec(f"ALTER TABLE {table_name} ADD COLUMN {col_def}")
+
+    def _exec(self, sql: str) -> None:
+        own_conn = self._active_conn is None
+        effective = self._active_conn or self._get_connection()
+        try:
+            effective.execute(sql)
+            if own_conn:
+                effective.commit()
+        finally:
+            if own_conn:
+                effective.close()
+
+    # ------------------------------------------------------------------
+    # Run audit
+    # ------------------------------------------------------------------
+
+    _RUNS_TABLE = "_runs"
+    _RUNS_DDL = (
+        "CREATE TABLE IF NOT EXISTS _runs ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  started_at TEXT NOT NULL,"
+        "  stage TEXT NOT NULL,"
+        "  fetched INTEGER NOT NULL DEFAULT 0,"
+        "  upserted INTEGER NOT NULL DEFAULT 0,"
+        "  skipped INTEGER NOT NULL DEFAULT 0,"
+        "  errors INTEGER NOT NULL DEFAULT 0"
+        ")"
+    )
+
+    def setup_runs_table(self) -> None:
+        """Create the _runs audit table if it does not exist."""
+        self._exec(self._RUNS_DDL)
+
+    def record_run(self, started_at: str, stage: str, fetched: int, upserted: int, skipped: int, errors: int) -> None:
+        """Insert one audit row for a completed pipeline stage."""
+        sql = (
+            "INSERT INTO _runs (started_at, stage, fetched, upserted, skipped, errors) "
+            "VALUES (?, ?, ?, ?, ?, ?)"
+        )
+        own_conn = self._active_conn is None
+        effective = self._active_conn or self._get_connection()
+        try:
+            effective.execute(sql, (started_at, stage, fetched, upserted, skipped, errors))
+            if own_conn:
+                effective.commit()
+        finally:
+            if own_conn:
+                effective.close()
+
+    # ------------------------------------------------------------------
+    # Freshness metadata
+    # ------------------------------------------------------------------
+
+    _METADATA_DDL = (
+        "CREATE TABLE IF NOT EXISTS _metadata ("
+        "  key TEXT PRIMARY KEY,"
+        "  value TEXT,"
+        "  updated_at TEXT NOT NULL"
+        ")"
+    )
+
+    def setup_metadata_table(self) -> None:
+        """Create the _metadata key-value table if it does not exist."""
+        self._exec(self._METADATA_DDL)
+
+    def set_metadata(self, key: str, value: str) -> None:
+        """Upsert a metadata key-value pair with the current UTC timestamp."""
+        ts = datetime.now(timezone.utc).isoformat()
+        sql = "INSERT OR REPLACE INTO _metadata (key, value, updated_at) VALUES (?, ?, ?)"
+        own_conn = self._active_conn is None
+        effective = self._active_conn or self._get_connection()
+        try:
+            effective.execute(sql, (key, value, ts))
+            if own_conn:
+                effective.commit()
+        finally:
+            if own_conn:
+                effective.close()

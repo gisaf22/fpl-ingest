@@ -42,18 +42,13 @@ cd fpl-ingest
 uv sync
 ```
 
-**3. Set where data should be stored:**
+**3. (Optional) Set where data should be stored:**
 
-Set the paths in your shell profile:
-
-```bash
-export FPL_DB_PATH=~/data/fpl.db
-export FPL_RAW_DIR=~/data/raw
-```
-
-Then reload your shell:
+By default, data is written to `~/.fpl/fpl.db` and `~/.fpl/raw`. To use a different location, set these in your shell profile and reload it:
 
 ```bash
+export FPL_DB_PATH=~/your/custom/path/fpl.db
+export FPL_RAW_DIR=~/your/custom/path/raw
 source ~/.zshrc
 ```
 

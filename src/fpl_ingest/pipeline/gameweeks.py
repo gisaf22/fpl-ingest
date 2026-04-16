@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from fpl_ingest.async_client import AsyncFPLClient
 from fpl_ingest.models import EventModel, GameweekModel
@@ -108,7 +109,7 @@ async def _fetch_gameweeks_concurrently(
     error_count = 0
 
     for gameweek_id, result in zip(gameweek_ids, raw_results):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             error_count += 1
             logger.error("Failed gameweek %d: %s", gameweek_id, result)
             continue
@@ -125,7 +126,7 @@ async def _fetch_one_gameweek(
     client: AsyncFPLClient,
     raw_dir: Path,
     gameweek_id: int,
-) -> tuple[int, list[dict] | None]:
+) -> tuple[int, list[dict[str, Any]] | None]:
     data = await client.get_gw(gameweek_id)
     if not data:
         logger.warning("No data for gameweek %d", gameweek_id)

@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,7 +28,7 @@ pytestmark = pytest.mark.unit
 # Helpers
 # ---------------------------------------------------------------------------
 
-BOOTSTRAP_DATA = {"events": [], "elements": [], "teams": []}
+BOOTSTRAP_DATA: dict[str, list[Any]] = {"events": [], "elements": [], "teams": []}
 HISTORY_DATA = {"history": [{"element": 1, "round": 1, "fixture": 10}], "history_past": []}
 
 

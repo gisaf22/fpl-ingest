@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, List, Optional, cast
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -71,7 +71,7 @@ class FPLClient:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         self._pool_size = pool_size
-        self._bootstrap_cache: Optional[JSON] = None
+        self._bootstrap_cache: Optional[Dict[str, Any]] = None
         self._request_delay = request_delay
         self._player_history_request_delay = DEFAULT_PLAYER_HISTORY_REQUEST_DELAY
         self._max_retries = max_retries
@@ -92,7 +92,7 @@ class FPLClient:
             request_gate=self._request_gate,
         )
 
-    def get_bootstrap(self, force: bool = False) -> JSON:
+    def get_bootstrap(self, force: bool = False) -> Dict[str, Any]:
         """Fetch bootstrap-static data, caching the result for the client lifetime.
 
         Args:
@@ -106,7 +106,7 @@ class FPLClient:
         """
         if self._bootstrap_cache is None or force:
             logger.info("Fetching bootstrap-static data...")
-            self._bootstrap_cache = self._get(ENDPOINTS["bootstrap"])
+            self._bootstrap_cache = cast(Optional[Dict[str, Any]], self._get(ENDPOINTS["bootstrap"]))
 
         if self._bootstrap_cache is None:
             raise FPLClientError("Failed to fetch bootstrap data from FPL API")
@@ -158,7 +158,7 @@ class FPLClient:
                     return datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
         return None
 
-    def get_gw(self, gameweek: int) -> Optional[JSON]:
+    def get_gw(self, gameweek: int) -> Optional[Dict[str, Any]]:
         """Fetch live player stats for a gameweek.
 
         Args:
@@ -169,18 +169,18 @@ class FPLClient:
         """
         url = ENDPOINTS["live"].format(gw=gameweek)
         logger.info("Fetching gameweek %d data...", gameweek)
-        return self._get(url)
+        return cast(Optional[Dict[str, Any]], self._get(url))
 
-    def get_fixtures(self) -> Optional[JSON]:
+    def get_fixtures(self) -> Optional[List[Any]]:
         """Fetch all fixtures for the current season.
 
         Returns:
             List of fixture dicts, or None on failure.
         """
         logger.info("Fetching fixtures...")
-        return self._get(ENDPOINTS["fixtures"])
+        return cast(Optional[List[Any]], self._get(ENDPOINTS["fixtures"]))
 
-    def get_player_history(self, player_id: int) -> Optional[JSON]:
+    def get_player_history(self, player_id: int) -> Optional[Dict[str, Any]]:
         """Fetch element-summary history for a player.
 
         Args:
@@ -191,4 +191,4 @@ class FPLClient:
         """
         logger.info("Fetching player %d history...", player_id)
         url = ENDPOINTS["player"].format(player_id=player_id)
-        return self._get(url, request_delay=self._player_history_request_delay)
+        return cast(Optional[Dict[str, Any]], self._get(url, request_delay=self._player_history_request_delay))

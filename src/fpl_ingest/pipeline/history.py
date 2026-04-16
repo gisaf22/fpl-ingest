@@ -14,12 +14,12 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from fpl_ingest.async_client import AsyncFPLClient
 from fpl_ingest.models import PlayerHistoryModel
 from fpl_ingest.pipeline.stage_result import StageResult
 from fpl_ingest.store import SQLiteStore
-from fpl_ingest.types import JSON
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def _partition_by_cache(
     return cached, uncached
 
 
-def _upsert_history_rows(store: SQLiteStore, data: JSON | None) -> tuple[int, int]:
+def _upsert_history_rows(store: SQLiteStore, data: Optional[Dict[str, Any]]) -> tuple[int, int]:
     """Validate and upsert history rows for one player."""
     if not data:
         return 0, 0
@@ -167,7 +167,7 @@ async def _fetch_and_upsert_uncached(
 
     for index, result in enumerate(raw_results, 1):
         player_id = uncached_ids[index - 1]
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             error_count += 1
             logger.error("Failed player fetch: %s", result)
             continue
@@ -190,7 +190,7 @@ async def _fetch_and_upsert_uncached(
     return fetched_count, error_count, total_upserted, total_skipped
 
 
-def _write_player_cache(history_dir: Path, player_id: int, data: JSON) -> None:
+def _write_player_cache(history_dir: Path, player_id: int, data: Dict[str, Any]) -> None:
     path = history_dir / f"{player_id}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

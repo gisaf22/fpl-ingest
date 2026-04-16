@@ -46,7 +46,7 @@ def cost_to_millions(now_cost: int) -> float:
     return now_cost / 10.0
 
 
-def flatten_live_element(element: JSON, gameweek: int) -> JSON:
+def flatten_live_element(element: Dict[str, Any], gameweek: int) -> Dict[str, Any]:
     """Flatten a live-endpoint element dict into a GameweekModel-compatible dict.
 
     The FPL live endpoint nests stats inside each element:
@@ -74,7 +74,7 @@ def flatten_live_element(element: JSON, gameweek: int) -> JSON:
     return {"element_id": player_id, "round": gameweek, **stats}
 
 
-def flatten_live_elements(elements: List[JSON], gameweek: int) -> List[JSON]:
+def flatten_live_elements(elements: List[Any], gameweek: int) -> List[Dict[str, Any]]:
     """Flatten a list of live-endpoint elements, skipping those without an id.
 
     Args:
@@ -86,6 +86,8 @@ def flatten_live_elements(elements: List[JSON], gameweek: int) -> List[JSON]:
     """
     results = []
     for element in elements:
+        if not isinstance(element, dict):
+            continue
         if element.get("id") is None:
             continue
         results.append(flatten_live_element(element, gameweek))

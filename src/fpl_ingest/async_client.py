@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional, cast
 
 import aiohttp
 
@@ -92,7 +92,7 @@ class AsyncFPLClient:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._connector_limit = connector_limit
         self._session: Optional[aiohttp.ClientSession] = None
-        self._bootstrap_cache: Optional[JSON] = None
+        self._bootstrap_cache: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -232,7 +232,7 @@ class AsyncFPLClient:
     # Public API
     # ------------------------------------------------------------------
 
-    async def get_bootstrap(self, force: bool = False) -> JSON:
+    async def get_bootstrap(self, force: bool = False) -> Dict[str, Any]:
         """Fetch bootstrap-static data, caching the result for the client lifetime.
 
         Args:
@@ -246,12 +246,12 @@ class AsyncFPLClient:
         """
         if self._bootstrap_cache is None or force:
             logger.info("Fetching bootstrap-static data...")
-            self._bootstrap_cache = await self._fetch_with_retries(_ENDPOINTS["bootstrap"])
+            self._bootstrap_cache = cast(Optional[Dict[str, Any]], await self._fetch_with_retries(_ENDPOINTS["bootstrap"]))
         if self._bootstrap_cache is None:
             raise FPLClientError("Failed to fetch bootstrap data from FPL API")
         return self._bootstrap_cache
 
-    async def get_fixtures(self) -> JSON:
+    async def get_fixtures(self) -> List[Any]:
         """Fetch all fixtures for the current season.
 
         Returns:
@@ -264,9 +264,9 @@ class AsyncFPLClient:
         result = await self._fetch_with_retries(_ENDPOINTS["fixtures"])
         if result is None:
             raise FPLClientError("Failed to fetch fixtures data from FPL API")
-        return result
+        return cast(List[Any], result)
 
-    async def get_gw(self, gameweek: int) -> JSON:
+    async def get_gw(self, gameweek: int) -> Dict[str, Any]:
         """Fetch live player stats for one gameweek.
 
         Args:
@@ -282,9 +282,9 @@ class AsyncFPLClient:
         result = await self._fetch_with_retries(_ENDPOINTS["live"].format(gw=gameweek))
         if result is None:
             raise FPLClientError(f"Failed to fetch gameweek {gameweek} data from FPL API")
-        return result
+        return cast(Dict[str, Any], result)
 
-    async def get_player_history(self, player_id: int) -> JSON:
+    async def get_player_history(self, player_id: int) -> Dict[str, Any]:
         """Fetch element-summary history for one player.
 
         Args:
@@ -300,4 +300,4 @@ class AsyncFPLClient:
         result = await self._fetch_with_retries(_ENDPOINTS["player"].format(player_id=player_id))
         if result is None:
             raise FPLClientError(f"Failed to fetch history for player {player_id} from FPL API")
-        return result
+        return cast(Dict[str, Any], result)

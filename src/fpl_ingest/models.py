@@ -252,7 +252,7 @@ class PlayerModel(BaseModel):
     @property
     def position(self) -> str:
         """Position code string: GKP, DEF, MID, or FWD."""
-        return ELEMENT_TYPE_TO_POS.get(self.element_type, "UNK")
+        return ELEMENT_TYPE_TO_POS.get(self.element_type or 0, "UNK")
 
     @property
     def cost_millions(self) -> float:

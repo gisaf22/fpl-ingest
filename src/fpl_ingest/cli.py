@@ -25,6 +25,7 @@ from fpl_ingest.pipeline import (
     ingest_player_histories,
     setup_store,
 )
+from fpl_ingest.pipeline.core import CoreData
 from fpl_ingest.rate_limiter import TokenBucketLimiter
 from fpl_ingest.store import SQLiteStore
 
@@ -173,7 +174,7 @@ def _exit_code(
     stage_results: list[StageResult],
     store: SQLiteStore,
     run_started_at: str,
-    core: object,
+    core: CoreData,
 ) -> int:
     total_errors = sum(r.errors for r in stage_results)
     if total_errors == 0:
@@ -188,7 +189,7 @@ def _exit_code(
     return 1
 
 
-def _write_success_metadata(store: SQLiteStore, run_started_at: str, core: object) -> None:
+def _write_success_metadata(store: SQLiteStore, run_started_at: str, core: CoreData) -> None:
     current_gameweek = next((e.id for e in core.events if e.is_current), None)
     with store.transaction():
         store.set_metadata("last_successful_run_at", run_started_at)

@@ -263,13 +263,14 @@ class SQLiteStore:
         for raw in raw_dicts:
             try:
                 model = schema.model_validate(raw)
-                if is_custom:
+                if row_builder is not None:
                     rows.append(row_builder(model))
                 else:
                     dumped = model.model_dump()
                     if column_names is None:
                         column_names = list(dumped.keys()) + ["ingested_at"]
                         data_column_names = column_names[:-1]
+                    assert data_column_names is not None
                     rows.append(tuple(dumped[c] for c in data_column_names) + (timestamp,))
             except ValidationError as exc:
                 errors.append((raw.get("id", "unknown"), str(exc)))

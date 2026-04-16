@@ -100,7 +100,11 @@ def _run(argv: list[str], mock_client, mock_store, tmp_path) -> Path:
         patch("fpl_ingest.cli.AsyncFPLClient", return_value=mock_client),
         patch("fpl_ingest.cli.SQLiteStore", return_value=mock_store),
     ):
-        main(["--db", str(db), "--raw-dir", str(raw)] + argv)
+        try:
+            main(["--db", str(db), "--raw-dir", str(raw)] + argv)
+        except SystemExit as exc:
+            if exc.code != 0:
+                raise
     return raw
 
 
@@ -147,7 +151,10 @@ class TestConcurrentPlayerFetch:
             patch("fpl_ingest.cli.AsyncFPLClient", return_value=client),
             patch("fpl_ingest.cli.SQLiteStore", return_value=store),
         ):
-            main(["--db", str(db), "--raw-dir", str(raw)])
+            try:
+                main(["--db", str(db), "--raw-dir", str(raw)])
+            except SystemExit:
+                pass
 
         assert not (raw / "players" / "1.json").exists()
         assert (raw / "players" / "2.json").exists()
@@ -190,6 +197,9 @@ class RecordingStore:
     def record_run(self, *args, **kwargs) -> None:
         pass
 
+    def set_metadata(self, key: str, value: str) -> None:
+        pass
+
 
 class IntegrationStore(RecordingStore):
     """Store double for running real pipeline stages from the CLI."""
@@ -200,6 +210,7 @@ class IntegrationStore(RecordingStore):
         self.create_index = MagicMock()
         self.upsert_models = MagicMock(return_value=(0, 0))
         self.setup_runs_table = MagicMock()
+        self.setup_metadata_table = MagicMock()
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +239,14 @@ class TestCliLifecycle:
             patch("fpl_ingest.cli.ingest_gameweeks", new=AsyncMock(return_value=StageResult(stage="gameweeks"))),
             patch("fpl_ingest.cli.ingest_player_histories", new=AsyncMock(return_value=StageResult(stage="player_histories"))),
         ):
-            main(["--db", str(db), "--raw-dir", str(raw)])
+            try:
+                main(["--db", str(db), "--raw-dir", str(raw)])
+            except SystemExit as exc:
+                if exc.code != 0:
+                    raise
 
-        assert store.transaction_entries == 4
+        # 4 pipeline stages + 1 for _write_success_metadata
+        assert store.transaction_entries == 5
 
     def test_closes_client_on_success(self, tmp_path):
         raw = tmp_path / "raw"
@@ -248,7 +264,11 @@ class TestCliLifecycle:
             patch("fpl_ingest.cli.ingest_gameweeks", new=AsyncMock(return_value=StageResult(stage="gameweeks"))),
             patch("fpl_ingest.cli.ingest_player_histories", new=AsyncMock(return_value=StageResult(stage="player_histories"))),
         ):
-            main(["--db", str(db), "--raw-dir", str(raw)])
+            try:
+                main(["--db", str(db), "--raw-dir", str(raw)])
+            except SystemExit as exc:
+                if exc.code != 0:
+                    raise
 
         client.__aexit__.assert_called_once()
 
@@ -296,7 +316,11 @@ class TestCliLifecycle:
             patch("fpl_ingest.cli.AsyncFPLClient", return_value=client),
             patch("fpl_ingest.cli.SQLiteStore", return_value=store),
         ):
-            main(["--db", str(db), "--raw-dir", str(raw)])
+            try:
+                main(["--db", str(db), "--raw-dir", str(raw)])
+            except SystemExit as exc:
+                if exc.code != 0:
+                    raise
 
         assert (raw / "bootstrap.json").exists()
         assert json.loads((raw / "bootstrap.json").read_text()) == VALID_BOOTSTRAP

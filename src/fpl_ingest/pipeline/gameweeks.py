@@ -1,4 +1,12 @@
-"""Gameweek ingest stage."""
+"""Gameweek ingest pipeline stage.
+
+Concurrently fetches live player stats for all finished gameweeks (and the
+current one if active), then upserts them into SQLite. Skips gameweeks that
+already have a cached JSON file unless --force is passed.
+
+This module orchestrates: fetch → transform → store. It does not contain
+HTTP or SQL logic directly.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +16,8 @@ import logging
 from pathlib import Path
 
 from fpl_ingest.async_client import AsyncFPLClient
-from fpl_ingest.models import GameweekModel
-from fpl_ingest.models import EventModel
-from fpl_ingest.pipeline.results import StageResult
+from fpl_ingest.models import EventModel, GameweekModel
+from fpl_ingest.pipeline.stage_result import StageResult
 from fpl_ingest.store import SQLiteStore
 from fpl_ingest.transforms import flatten_live_elements
 
@@ -25,69 +32,125 @@ async def ingest_gameweeks(
     *,
     force: bool,
 ) -> StageResult:
-    """Fetch live gameweek data concurrently and upsert player entries."""
-    finished_gws = [e.id for e in events if e.finished]
-    current_gw = next((e.id for e in events if e.is_current), None)
-    logger.info("Found %d finished gameweeks, current GW: %s", len(finished_gws), current_gw)
+    """Fetch live gameweek data concurrently and upsert player entries.
 
-    if not force:
-        finished_gws = [gw for gw in finished_gws if not (raw_dir / f"gw_{gw}.json").exists()]
+    Args:
+        client: Async FPL client for the HTTP fetches.
+        store: Active SQLiteStore for upsert operations.
+        raw_dir: Directory for raw gw_{n}.json cache files.
+        events: Validated EventModel list from the core stage.
+        force: If True, re-fetch all gameweeks even if cached.
 
-    gws_to_fetch = finished_gws + ([current_gw] if current_gw and current_gw not in finished_gws else [])
+    Returns:
+        StageResult with fetched/upserted/skipped/error counts.
+    """
+    gameweek_ids_to_fetch = _select_gameweeks_to_fetch(raw_dir, events, force=force)
 
-    if not gws_to_fetch:
+    if not gameweek_ids_to_fetch:
         logger.info("All finished gameweeks already collected.")
         return StageResult(stage="gameweeks")
 
-    logger.info("Collecting %d gameweeks...", len(gws_to_fetch))
+    logger.info("Collecting %d gameweeks...", len(gameweek_ids_to_fetch))
 
-    async def _fetch(gw: int) -> tuple[int, list[dict] | None]:
-        data = await client.get_gw(gw)
-        if not data:
-            logger.warning("No data for GW%d", gw)
-            return gw, None
-        dest = raw_dir / f"gw_{gw}.json"
-        tmp = dest.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.rename(dest)
-        flat = flatten_live_elements(data.get("elements", []), gw)
-        logger.info("GW%d — %d player entries fetched", gw, len(flat))
-        return gw, flat
+    fetched_rows, error_count = await _fetch_gameweeks_concurrently(
+        client, raw_dir, gameweek_ids_to_fetch
+    )
+    upserted, skipped = _upsert_gameweek_rows(store, fetched_rows)
 
+    logger.info(
+        "Gameweeks: %d collected, %d errors",
+        len(fetched_rows), error_count,
+    )
+    return StageResult(
+        stage="gameweeks",
+        fetched=len(fetched_rows),
+        upserted=upserted,
+        skipped=skipped,
+        errors=error_count,
+    )
+
+
+def _select_gameweeks_to_fetch(
+    raw_dir: Path,
+    events: list[EventModel],
+    *,
+    force: bool,
+) -> list[int]:
+    """Determine which gameweek IDs need to be fetched."""
+    finished_ids = [e.id for e in events if e.finished]
+    current_id = next((e.id for e in events if e.is_current), None)
+    logger.info(
+        "Found %d finished gameweeks, current gameweek: %s",
+        len(finished_ids), current_id,
+    )
+
+    if not force:
+        finished_ids = [gw for gw in finished_ids if not (raw_dir / f"gw_{gw}.json").exists()]
+
+    # Always include the current gameweek if it isn't already in the finished list.
+    if current_id and current_id not in finished_ids:
+        return finished_ids + [current_id]
+    return finished_ids
+
+
+async def _fetch_gameweeks_concurrently(
+    client: AsyncFPLClient,
+    raw_dir: Path,
+    gameweek_ids: list[int],
+) -> tuple[dict[int, list[dict]], int]:
+    """Fetch all gameweeks in parallel and return (results_by_id, error_count)."""
     raw_results = await asyncio.gather(
-        *[_fetch(gw) for gw in gws_to_fetch],
+        *[_fetch_one_gameweek(client, raw_dir, gw) for gw in gameweek_ids],
         return_exceptions=True,
     )
 
-    # Collect results; upsert in GW order for readable logs.
     fetched_rows: dict[int, list[dict]] = {}
-    downloaded = errors = 0
+    error_count = 0
 
-    for gw, result in zip(gws_to_fetch, raw_results):
+    for gameweek_id, result in zip(gameweek_ids, raw_results):
         if isinstance(result, Exception):
-            errors += 1
-            logger.error("Failed GW%d: %s", gw, result)
+            error_count += 1
+            logger.error("Failed gameweek %d: %s", gameweek_id, result)
             continue
-        gw_id, flat = result
-        if flat is None:
-            errors += 1
+        gw_id, flat_rows = result
+        if flat_rows is None:
+            error_count += 1
         else:
-            fetched_rows[gw_id] = flat
-            downloaded += 1
+            fetched_rows[gw_id] = flat_rows
 
+    return fetched_rows, error_count
+
+
+async def _fetch_one_gameweek(
+    client: AsyncFPLClient,
+    raw_dir: Path,
+    gameweek_id: int,
+) -> tuple[int, list[dict] | None]:
+    data = await client.get_gw(gameweek_id)
+    if not data:
+        logger.warning("No data for gameweek %d", gameweek_id)
+        return gameweek_id, None
+
+    dest = raw_dir / f"gw_{gameweek_id}.json"
+    tmp = dest.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.rename(dest)
+
+    flat_rows = flatten_live_elements(data.get("elements", []), gameweek_id)
+    logger.info("Gameweek %d — %d player entries fetched", gameweek_id, len(flat_rows))
+    return gameweek_id, flat_rows
+
+
+def _upsert_gameweek_rows(
+    store: SQLiteStore,
+    fetched_rows: dict[int, list[dict]],
+) -> tuple[int, int]:
+    """Upsert all gameweek rows in ascending gameweek order."""
     total_upserted = total_skipped = 0
-    for gw_id in sorted(fetched_rows):
-        flat = fetched_rows[gw_id]
-        if flat:
-            ins, skip = store.upsert_models("gameweeks", GameweekModel, flat)
-            total_upserted += ins
-            total_skipped += skip
-
-    logger.info("Gameweeks: %d collected, %d errors", downloaded, errors)
-    return StageResult(
-        stage="gameweeks",
-        fetched=downloaded,
-        upserted=total_upserted,
-        skipped=total_skipped,
-        errors=errors,
-    )
+    for gameweek_id in sorted(fetched_rows):
+        rows = fetched_rows[gameweek_id]
+        if rows:
+            upserted, skipped = store.upsert_models("gameweeks", GameweekModel, rows)
+            total_upserted += upserted
+            total_skipped += skipped
+    return total_upserted, total_skipped

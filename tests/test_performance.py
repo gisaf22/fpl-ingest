@@ -19,10 +19,10 @@ import pytest
 
 from fpl_ingest.models import PlayerHistoryModel
 from fpl_ingest.pipeline.history import ingest_player_histories
-from fpl_ingest.pipeline.schema import setup_store
+from fpl_ingest.pipeline.db_setup import setup_store
 from fpl_ingest.store import SQLiteStore
 
-pytestmark = pytest.mark.perf
+pytestmark = [pytest.mark.unit, pytest.mark.perf]
 
 
 # ---------------------------------------------------------------------------

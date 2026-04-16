@@ -1,10 +1,12 @@
-"""Tests for async pipeline stages and CLI lifecycle.
+"""Tests for the CLI entry point and async pipeline stage integration.
 
 Covers:
-  - All player IDs are fetched (completeness)
-  - An error on one player does not abort others
-  - Successful fetches write players/{pid}.json to disk
-  - CLI transaction scoping, client cleanup, strict mode
+  - Argument parsing and config defaults
+  - Per-stage transaction scoping (one transaction per stage)
+  - Client lifecycle: session opened on entry, closed on exit and on failure
+  - Concurrent player fetch: all IDs fetched, errors isolated, files written
+  - Strict mode: aborts run when any stage reports skipped rows or errors
+  - Real pipeline stages executed with mocked client and store
 """
 
 from __future__ import annotations

@@ -11,6 +11,17 @@ A lightweight Python library for pulling data from the [Fantasy Premier League A
 
 For the table grain and source-to-table contract, see [docs/data-contract.md](docs/data-contract.md). Persisted tables store API-provided values, with only minimal structural flattening for storage.
 
+## Documentation
+
+| Document | Description |
+|---|---|
+| [Architecture](docs/architecture.md) | Layer stack, data flow, and how to extend the pipeline |
+| [Data contract](docs/data-contract.md) | Table grain and source-to-table mapping |
+| [Guarantees](docs/guarantees.md) | Operational guarantees and error handling |
+| [Performance](docs/performance-review.md) | Throughput analysis and rate limiter design |
+| [Production readiness](docs/production-readiness.md) | Stability assessment |
+| [Governance](docs/governance.md) | Versioning and compatibility policy |
+
 ## Requirements
 
 - Python 3.10+
@@ -38,7 +49,6 @@ Set the paths in your shell profile:
 ```bash
 export FPL_DB_PATH=~/data/fpl.db
 export FPL_RAW_DIR=~/data/raw
-export FPL_HISTORY_WORKERS=20
 ```
 
 Then reload your shell:
@@ -71,7 +81,7 @@ Raw JSON responses are also saved to `FPL_RAW_DIR` for inspection or reprocessin
 ## CLI reference
 
 ```bash
-fpl-ingest [--db PATH] [--raw-dir PATH] [--force] [--history-workers N] [--verbose]
+fpl-ingest [--db PATH] [--raw-dir PATH] [--force] [--rate RATE] [--strict] [--verbose]
 ```
 
 | Option | Description |
@@ -79,7 +89,8 @@ fpl-ingest [--db PATH] [--raw-dir PATH] [--force] [--history-workers N] [--verbo
 | `--db` | SQLite database path. Overrides `FPL_DB_PATH`, defaults to `~/.fpl/fpl.db` if neither is set. |
 | `--raw-dir` | Directory for raw JSON cache. Overrides `FPL_RAW_DIR`, defaults to `~/.fpl/raw` if neither is set. |
 | `--force` | Re-fetch finished gameweeks even if already cached. |
-| `--history-workers` | Worker count for concurrent player history fetches. Overrides `FPL_HISTORY_WORKERS`. |
+| `--rate RATE` | Max API requests per second (default: 10.0). |
+| `--strict` | Abort the run if any stage reports skipped rows or fetch errors. |
 | `--verbose` | Enable debug logging. |
 
 ## What gets re-fetched each run
@@ -88,30 +99,13 @@ fpl-ingest [--db PATH] [--raw-dir PATH] [--force] [--history-workers N] [--verbo
 |---|---|---|
 | Players, teams, fixtures, events | Always re-fetched | Always re-fetched |
 | Current gameweek | Always re-fetched | Always re-fetched |
-| Player history (current season) | Always re-fetched | Always re-fetched |
+| Player history | Fetched on first run; served from cache on re-runs | Re-fetched |
 | Finished gameweeks | Skipped if JSON file exists in `FPL_RAW_DIR` | Re-fetched |
 
-Finished gameweeks are skipped on re-runs because their data never changes. Use `--force` if you suspect a result was corrected after the fact.
+Finished gameweeks are skipped on re-runs because the data is stable once FPL has settled bonus points and score corrections, typically within 24-48 hours of the final whistle. Use `--force` if running the pipeline shortly after a gameweek closes or if a late correction is suspected.
+
+Use `--strict` when running the pipeline in a scheduled or automated context. Without it, stages that encounter fetch errors or validation failures exit with code 0 and log warnings. With `--strict`, the first stage that reports any skipped rows or errors raises an error immediately and halts the run, making failures visible to the scheduler.
 
 ## Performance
 
-| Scenario | Approx. time |
-|---|---|
-| First run (32 GWs + 826 players, no cache) | ~2 minutes |
-| Re-run (GWs and player histories cached) | ~5 seconds |
-
-The pipeline uses `aiohttp` with a token bucket rate limiter (default: 10 req/s, 10
-concurrent). All gameweek and player history fetches run concurrently under that cap,
-giving roughly 826 / 10 = ~83 seconds for player histories.
-
-On re-runs, finished gameweeks and player histories are served from the local JSON
-cache in `FPL_RAW_DIR`. Only the current gameweek is re-fetched from the API.
-
-The `--rate` flag adjusts the request rate if needed:
-
-```bash
-fpl-ingest --rate 4   # more conservative: ~4 req/s
-fpl-ingest --rate 10  # default
-```
-
-See [docs/performance-review.md](docs/performance-review.md) for the full analysis.
+For throughput numbers, rate limiter design, and cache behavior, see [docs/performance-review.md](docs/performance-review.md).

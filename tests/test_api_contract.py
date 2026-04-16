@@ -9,7 +9,7 @@ import responses
 import pytest
 from unittest.mock import patch
 
-from fpl_ingest.client import FPLClient, ENDPOINTS
+from fpl_ingest.sync_client import FPLClient, ENDPOINTS
 from fpl_ingest.models import EventModel, FixtureModel, GameweekModel, PlayerHistoryModel, PlayerModel, TeamModel
 from fpl_ingest.transforms import flatten_live_elements
 
@@ -323,7 +323,7 @@ class TestGameweekContract:
     """GameweekModel must accept flattened live-endpoint data."""
 
     def test_validates_from_live(self):
-        flat = flatten_live_elements(LIVE_GW_PAYLOAD["elements"], gw=2)
+        flat = flatten_live_elements(LIVE_GW_PAYLOAD["elements"], gameweek=2)
         for row in flat:
             gw = GameweekModel.model_validate(row)
             assert gw.element_id > 0
@@ -331,7 +331,7 @@ class TestGameweekContract:
 
     def test_critical_stat_fields(self):
         """Fields used by downstream Δ-calculations must be present."""
-        flat = flatten_live_elements(LIVE_GW_PAYLOAD["elements"], gw=2)
+        flat = flatten_live_elements(LIVE_GW_PAYLOAD["elements"], gameweek=2)
         gw = GameweekModel.model_validate(flat[0])
         # These are the fields that feed assists-delta, xG, xA, etc.
         assert gw.minutes == 90
@@ -349,7 +349,7 @@ class TestGameweekContract:
             GameweekModel.model_validate({"round": 1, "minutes": 90})
 
     def test_rejects_unknown_fields(self):
-        row = dict(flatten_live_elements(LIVE_GW_PAYLOAD["elements"], gw=2)[0], invented_metric=5)
+        row = dict(flatten_live_elements(LIVE_GW_PAYLOAD["elements"], gameweek=2)[0], invented_metric=5)
         with pytest.raises(Exception):
             GameweekModel.model_validate(row)
 
@@ -471,8 +471,8 @@ class TestClientContract:
 
         client = FPLClient(request_delay=0, max_retries=2)
         with (
-            patch("fpl_ingest.transport.time.sleep"),
-            patch("fpl_ingest.transport.random.uniform", return_value=0),
+            patch("fpl_ingest.sync_http.time.sleep"),
+            patch("fpl_ingest.sync_http.random.uniform", return_value=0),
         ):
             data = client.get_bootstrap(force=True)
 
@@ -489,8 +489,8 @@ class TestClientContract:
 
         client = FPLClient(request_delay=0, max_retries=3)
         with (
-            patch("fpl_ingest.transport.time.sleep"),
-            patch("fpl_ingest.transport.random.uniform", return_value=0),
+            patch("fpl_ingest.sync_http.time.sleep"),
+            patch("fpl_ingest.sync_http.random.uniform", return_value=0),
         ):
             data = client.get_fixtures()
 

@@ -1,10 +1,8 @@
-"""Rate limiting strategies for the FPL async client.
+"""Rate limiting strategies for the async FPL client.
 
-`RateLimiter` is a Protocol — the single extension point for controlling
-how fast and how concurrently requests are dispatched. Swap implementations
-by injecting a different limiter into AsyncFPLClient:
-
-    from fpl_ingest.rate_limiter import TokenBucketLimiter, NoopRateLimiter
+`RateLimiter` is the single extension point controlling how fast and how
+concurrently requests are dispatched. Inject a different implementation
+into AsyncFPLClient to change pacing behaviour:
 
     # Production: 10 req/s, burst up to 10, max 10 in-flight
     client = AsyncFPLClient(rate_limiter=TokenBucketLimiter(rate=10.0, max_concurrent=10))
@@ -15,13 +13,10 @@ by injecting a different limiter into AsyncFPLClient:
     # Tests: no sleeping, instant dispatch
     client = AsyncFPLClient(rate_limiter=NoopRateLimiter())
 
-Design invariant
-----------------
-`request()` is entered and exited once per HTTP dispatch attempt, not once
-per logical request group. The caller (AsyncFPLClient._get) sleeps between
+Design invariant: `request()` is entered and exited once per HTTP dispatch
+attempt. The caller (AsyncFPLClient._dispatch_with_retry) sleeps between
 retries *outside* this context so the concurrency slot is never held during
-backoff. This keeps the semaphore available for other concurrent requests
-while one is waiting to retry.
+backoff.
 """
 
 from __future__ import annotations
@@ -49,7 +44,7 @@ class RateLimiter(Protocol):
 
 
 class NoopRateLimiter:
-    """No-op limiter. Never sleeps and imposes no concurrency limit.
+    """No-op limiter that never sleeps and imposes no concurrency limit.
 
     Intended for unit tests and local scripts where rate limiting
     would add noise without value.
@@ -75,8 +70,9 @@ class TokenBucketLimiter:
 
     Args:
         rate: Maximum sustained requests per second (e.g. 10.0).
-        capacity: Burst capacity in tokens. Defaults to 1 (no burst beyond
-            the sustained rate).
+        capacity: Burst capacity in tokens. Defaults to max_concurrent so the
+            first batch of concurrent requests dispatches immediately without
+            queuing. Pass an explicit value to restrict burst size.
         max_concurrent: Hard cap on simultaneous in-flight requests.
     """
 
@@ -86,14 +82,6 @@ class TokenBucketLimiter:
         capacity: int | None = None,
         max_concurrent: int = 10,
     ) -> None:
-        """
-        Args:
-            rate: Sustained request rate in requests per second.
-            capacity: Burst capacity in tokens. Defaults to ``max_concurrent``
-                so the first batch of concurrent requests dispatches immediately
-                without queuing. Pass an explicit value to restrict burst size.
-            max_concurrent: Hard cap on simultaneous in-flight requests.
-        """
         if rate <= 0:
             raise ValueError(f"rate must be positive, got {rate!r}")
         if max_concurrent < 1:

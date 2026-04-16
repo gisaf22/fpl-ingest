@@ -270,18 +270,18 @@ Downstream systems query this table before using data.
 
 | Pillar | Status | Rationale |
 |--------|--------|-----------|
-| Reliability | YELLOW | Strong retry logic; soft exit on errors by default risks silent failures in scheduled runs |
-| Data Correctness | YELLOW | No row-count reconciliation; `extra="forbid"` silently skips rows when new API fields appear |
-| Idempotency | GREEN | `ON CONFLICT DO UPDATE` on all grain-aware tables; raw cache enables replay |
+| Reliability | YELLOW | Strong retry logic; soft exit on errors by default risks silent failures in scheduled runs. Resolved by Fix 1 — `_exit_code()` now returns 1 when any stage has `errors > 0`; no circuit breaker gap remains. |
+| Data Correctness | YELLOW | No row-count reconciliation; `extra="forbid"` silently skips rows when new API fields appear. Resolved by Fix 4 — `_warn_if_high_skip_rate()` emits an aggregate WARNING when skipped / (upserted + skipped) exceeds 1%; no row-count reconciliation gap remains. |
+| Idempotency | GREEN | `ON CONFLICT DO UPDATE` on all grain-aware tables; raw cache enables replay. Resolved by Fix 3 — all four pipeline modules (core, fixtures, gameweeks, history) now write cache files atomically via write-to-tmp-then-rename; the partial-write gap is closed. |
 | Observability | YELLOW | `_runs` table exists but no structured output, no freshness contract, no alerting path |
-| Data Freshness | RED | No SLA defined, no `last_successful_run_at` metadata, downstream cannot query freshness |
+| Data Freshness | YELLOW | No SLA defined; downstream data staleness is not self-evident from the database. Resolved by Fix 2 — `_metadata` table now records `last_successful_run_at`, `current_gameweek`, and `total_players` after every clean run; downstream can query freshness without reading logs. |
 | Schema Stability | YELLOW | `extra="forbid"` detects drift but no schema versioning; breaking API changes produce 0 rows silently |
 | Backfill/Replay | YELLOW | Raw cache exists but no `--replay-from-cache` path; `--force` hits network redundantly |
 | Failure Recovery | GREEN | Per-stage transactions, isolated failures, WAL mode |
 | Storage/Partitioning | YELLOW | No `season` column; no combined `(element_id, round)` index on `player_histories` |
 | Documentation | YELLOW | Good developer docs; no operator runbook, no freshness query reference |
 
-**Overall: YELLOW. Safe for personal analytics. Not safe for shared or production downstream systems without addressing the RED item and at least 3 of the YELLOWs.**
+**Overall: YELLOW. Safe for personal analytics. Not safe for shared or production downstream systems without addressing at least 3 of the remaining YELLOWs.**
 
 ---
 
@@ -289,10 +289,10 @@ Downstream systems query this table before using data.
 
 The smallest set of guarantees required before building an insights layer:
 
-- [ ] **Freshness contract.** `_metadata` table with `last_successful_run_at` and `current_gameweek`, updated at the end of each clean run.
-- [ ] **Non-zero exit on errors.** Pipeline exits non-zero (or sets `_metadata.last_run_status = 'FAILED'`) when any stage has `errors > 0`.
-- [ ] **Row-count sanity check.** WARNING log and `_runs` flag when `skipped / fetched > 1%` for any stage.
-- [ ] **Atomic cache writes.** Replace `open(path, 'w')` with write-to-temp-then-`os.rename()` in all raw JSON writers.
+- [x] **Freshness contract.** `_metadata` table with `last_successful_run_at` and `current_gameweek`, updated at the end of each clean run.
+- [x] **Non-zero exit on errors.** Pipeline exits non-zero (or sets `_metadata.last_run_status = 'FAILED'`) when any stage has `errors > 0`.
+- [x] **Row-count sanity check.** WARNING log when `skipped / (upserted + skipped) > 1%` for any stage. The warning is emitted to the log only; no flag column is written to `_runs`.
+- [x] **Atomic cache writes.** All four pipeline modules (core, fixtures, gameweeks, history) write raw JSON cache files atomically via write-to-tmp-then-rename. A partial write leaves a `.tmp` file that is ignored on the next run and overwritten on next fetch.
 - [ ] **Documented run cadence.** README states how often to run and what staleness to expect.
 - [ ] **Season column.** `season TEXT` on `players`, `gameweeks`, `player_histories` so multi-season data is queryable.
 
@@ -305,7 +305,7 @@ The smallest set of guarantees required before building an insights layer:
 | Ingestion behavior | Which tables are full-refresh vs incremental; which GWs are skipped by default |
 | Refresh cadence | Recommended: once daily off-season, once per hour on matchdays |
 | Data mutability | FPL updates bonus points post-match; re-running overwrites historical rows silently |
-| Known limitations | No intra-GW live tracking; player history is end-of-GW state only; `chip_plays_json` is a serialized string not structured data |
+| Known limitations | No intra-GW live tracking; player history captures settled post-fixture values rather than live in-match scores (rows are at fixture grain, one per player per fixture); `chip_plays_json` is a serialized string not structured data |
 | Freshness query | `SELECT value FROM _metadata WHERE key = 'last_successful_run_at'` |
 | Grain per table | Already in `docs/data-contract.md`; add a "what grain means for analytics" section |
 
@@ -315,15 +315,19 @@ The smallest set of guarantees required before building an insights layer:
 
 All additive. No new dependencies.
 
-1. **`~/.fpl/last_run.json`** — Written at end of each run with `status`, `started_at`, `ended_at`, `stages`. Monitorable by any external tool. ~20 lines in `src/fpl_ingest/cli.py`.
+**Implemented**
 
-2. **`_metadata` table** — Three rows: `last_successful_run_at`, `current_gameweek`, `total_players`. Updated only on clean runs. Queryable by downstream.
+2. **`_metadata` table** — Three rows: `last_successful_run_at`, `current_gameweek`, `total_players`. Updated only on clean runs. Implemented in `_write_success_metadata()` in `src/fpl_ingest/cli.py` via `store.set_metadata()`.
 
-3. **Skipped-row rate log line** — After each stage: `WARNING: stage=gameweeks skipped_rate=2.3% (19/826)`. Already have the numbers; just emit them.
+3. **Skipped-row rate log line** — After each stage: `WARNING: stage=gameweeks skipped_rate=2.3% (19/826)`. Implemented in `_warn_if_high_skip_rate()` in `src/fpl_ingest/cli.py`; fires when `skipped / (upserted + skipped) > 1%`.
+
+5. **Exit code contract** — `sys.exit(1)` when any stage has `errors > 0`. Implemented unconditionally in `_exit_code()` in `src/fpl_ingest/cli.py`; does not require `--strict` or non-interactive detection.
+
+**Not yet implemented**
+
+1. **`~/.fpl/last_run.json`** — Write at end of each run with `status`, `started_at`, `ended_at`, `stages`. Monitorable by any external tool. ~20 lines in `src/fpl_ingest/cli.py`.
 
 4. **Structured run summary to stderr** — At end of run, emit one JSON line: `{"status": "ok", "stages": {...}, "elapsed_s": 127}`. Easily captured by cron loggers or CI.
-
-5. **Exit code contract** — `sys.exit(1)` if any stage has `errors > 0` when running non-interactively. Currently only happens with `--strict`.
 
 ---
 
@@ -375,14 +379,14 @@ All additive. No new dependencies.
 
 ### Fix 2: `_metadata` freshness table
 
-**Files changed:** `src/fpl_ingest/store.py`, `src/fpl_ingest/pipeline/schema.py`, `src/fpl_ingest/cli.py`
+**Files changed:** `src/fpl_ingest/store.py`, `src/fpl_ingest/pipeline/db_setup.py`, `src/fpl_ingest/cli.py`
 
 **What was wrong:** No queryable record of when the last successful run completed. Downstream had no contract for data freshness.
 
 **Fix applied:**
 - `store.setup_metadata_table()` creates `_metadata (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)`.
 - `store.set_metadata(key, value)` upserts with a UTC timestamp.
-- `setup_store()` in `pipeline/schema.py` now calls `setup_metadata_table()` so the table is created on first run.
+- `setup_store()` in `pipeline/db_setup.py` now calls `setup_metadata_table()` so the table is created on first run.
 - At the end of `_async_main`, if `total_errors == 0`, three keys are written: `last_successful_run_at`, `current_gameweek`, `total_players`.
 - Metadata is only written on a clean run. A failed run leaves the previous successful values intact.
 
@@ -397,9 +401,11 @@ SELECT key, value, updated_at FROM _metadata;
 
 ### Fix 3: Atomic cache writes
 
-**Files changed:** `src/fpl_ingest/pipeline/gameweeks.py`, `src/fpl_ingest/pipeline/history.py`
+**Files changed:** `src/fpl_ingest/pipeline/gameweeks.py`, `src/fpl_ingest/pipeline/history.py`, `src/fpl_ingest/pipeline/core.py`, `src/fpl_ingest/pipeline/fixtures.py`
 
-**What was wrong:** Both stages used `path.write_text(...)` directly. A process kill or disk-full mid-write left a partial file. The next run treated the partial file as a valid cache hit (file exists = skip re-fetch), then failed on `json.loads()`, silently dropping the player or GW.
+**What was wrong:** All four pipeline modules wrote raw JSON directly with `path.write_text(...)`. A process kill or disk-full mid-write left a partial file. The next run treated the partial file as a valid cache hit (file exists = skip re-fetch), then failed on `json.loads()`, silently dropping the player or GW.
+
+Fix 3 as originally applied covered `gameweeks.py` and `history.py`. The same atomic write pattern was subsequently applied to `core.py` (in `_write_raw_cache`) and `fixtures.py` (in `_write_raw_cache`), completing the fix across all four modules.
 
 **Fix applied:** Replaced direct `write_text` with write-to-`.tmp`-then-`rename`:
 ```python
@@ -419,7 +425,7 @@ tmp.rename(dest)
 
 **What was wrong:** Skipped rows were logged per-row at WARNING level but there was no aggregate threshold check. A mass validation failure (e.g., FPL renames a field) produced 826 individual WARNING lines in the logs but no single alertable signal.
 
-**Fix applied:** In `_finish_stage`, after recording the run:
+**Fix applied:** In `_record_stage`, after recording the run:
 ```python
 total_rows = result.upserted + result.skipped
 if total_rows > 0 and result.skipped / total_rows > 0.01:

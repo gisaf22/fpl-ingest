@@ -10,11 +10,11 @@ The following properties are enforced by the implementation and can be tested.
 
 | # | Guarantee | How it is enforced |
 |---|---|---|
-| G1 | Exit code is non-zero if any stage records a non-zero error count. Skipped rows (validation failures) do not affect the exit code in the default mode. | `_async_main` returns 1 when `sum(r.errors for r in stage_results) > 0`; `main()` passes this to `sys.exit`. |
+| G1 | Exit code is non-zero if any stage records a non-zero error count. Skipped rows (validation failures) do not affect the exit code in the default mode. | `_exit_code()` computes `sum(r.errors for r in stage_results)` and returns 1 when the total is non-zero; `_run_pipeline()` calls `_exit_code()` and returns its result; `main()` passes this to `sys.exit`. |
 | G2 | `_metadata.last_successful_run_at` is written only when all stages complete with zero errors. Runs with skipped rows but zero errors are treated as clean and will update this value. | Set inside the `total_errors == 0` branch after all stages complete. |
 | G3 | `gw_{n}.json` and `players/{id}.json` cache files are written atomically. A partial download does not leave a corrupt file at the final path. | Both file types are written to a `.tmp` path then renamed. |
-| G4 | A warning is emitted when the skipped-row rate for any stage exceeds 1%. | `_finish_stage` computes `skipped / (upserted + skipped)` and calls `logger.warning` when above 0.01. |
-| G5 | Every stage that completes normally (with or without errors) is recorded in `_runs`. Stages that raise an unhandled exception are not recorded. | `_finish_stage` calls `store.record_run` unconditionally on every stage that returns a `StageResult`. |
+| G4 | A warning is emitted when the skipped-row rate for any stage exceeds 1%. | `_warn_if_high_skip_rate()` computes `skipped / (upserted + skipped)` and calls `logger.warning` when above 0.01; it is called from `_record_stage()` after each stage completes. |
+| G5 | Every stage that completes normally (with or without errors) is recorded in `_runs`. Stages that raise an unhandled exception are not recorded. | `_record_stage()` calls `store.record_run` unconditionally on every stage that returns a `StageResult`. |
 | G6 | Each stage's database writes are atomic. A stage that raises mid-write is fully rolled back. | Each stage runs inside `with store.transaction()`, which calls `conn.rollback()` on any exception. |
 | G7 | Upsert semantics: re-ingesting the same source row updates the existing record and does not create a duplicate. | `bulk_upsert` uses `INSERT ... ON CONFLICT({grain_cols}) DO UPDATE SET ...` when a conflict target is known. |
 | G8 | Every persisted row carries an `ingested_at` ISO 8601 UTC timestamp set at upsert time. | `upsert_models` injects `ingested_at = datetime.now(timezone.utc).isoformat()` into every row tuple. |

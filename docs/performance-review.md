@@ -79,6 +79,8 @@ at construction time.
 
 826 requests / 10 req/s = 82.6s for player histories.
 
+A warm re-run (finished gameweeks and player histories already cached) completes in roughly 5 seconds. Only the current gameweek is re-fetched from the API; everything else is served from the local JSON cache in `FPL_RAW_DIR`. Finished gameweek data is stable once FPL has settled bonus points and score corrections, typically within 24-48 hours of the final whistle. Use `--force` if running shortly after a gameweek closes or if a late correction is suspected.
+
 ---
 
 ## Phase 2: Production-Grade Hardening
@@ -208,7 +210,12 @@ Pipeline stages and the CLI are unaware of the limiter implementation.
 - 10 req/s sustained is below a typical browser session hitting the FPL web app.
 - The semaphore hard-caps in-flight requests even if the token bucket misfires.
 - 429 responses trigger exponential backoff with respect for the `Retry-After` header.
-- `--rate` on the CLI lets callers reduce the ceiling without touching any other code.
+- `--rate` on the CLI lets callers reduce the ceiling without touching any other code:
+
+```bash
+fpl-ingest --rate 4   # more conservative: ~4 req/s
+fpl-ingest --rate 10  # default
+```
 
 ---
 

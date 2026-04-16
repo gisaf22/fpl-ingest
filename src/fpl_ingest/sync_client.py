@@ -1,6 +1,12 @@
-"""FPL API HTTP client with rate limiting and retry logic.
+"""Synchronous FPL API HTTP client (sync_client.py).
 
-Handles all communication with the official Fantasy Premier League API.
+Kept for backwards compatibility with callers that cannot use async.
+The pipeline itself uses AsyncFPLClient. This client wraps the same
+sync HTTP layer (requests session, retry logic, pacing gate) and
+exposes the same FPL endpoint methods.
+
+This module is HTTP-only — it has no knowledge of FPL domain models
+or pipeline stages.
 
 Usage:
     from fpl_ingest import FPLClient
@@ -19,7 +25,7 @@ from typing import Optional
 import requests
 from requests.adapters import HTTPAdapter
 
-from fpl_ingest.transport import (
+from fpl_ingest.sync_http import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_PLAYER_HISTORY_REQUEST_DELAY,
     DEFAULT_REQUEST_DELAY,
@@ -43,10 +49,10 @@ ENDPOINTS = {
 
 
 class FPLClient:
-    """HTTP client for the FPL API with rate limiting and bootstrap caching.
+    """Synchronous HTTP client for the FPL API.
 
-    Only the bootstrap-static response is cached in memory for the lifetime of
-    the client instance. All other endpoints fetch fresh on every call.
+    Only the bootstrap-static response is cached in memory for the lifetime
+    of the client instance. All other endpoints fetch fresh on every call.
     """
 
     def __init__(
@@ -76,18 +82,7 @@ class FPLClient:
         """Close the underlying HTTP session."""
         self.session.close()
 
-    def clone(self) -> FPLClient:
-        """Create a new client with the same transport settings."""
-        return FPLClient(
-            request_delay=self._request_delay,
-            max_retries=self._max_retries,
-            timeout=self._timeout,
-            request_gate=self._request_gate,
-            pool_size=self._pool_size,
-        )
-
     def _get(self, url: str, *, request_delay: float | None = None) -> JSON | None:
-        """Make a GET request with retry logic for transient failures."""
         return execute_json_request(
             self.session,
             url,
@@ -98,7 +93,7 @@ class FPLClient:
         )
 
     def get_bootstrap(self, force: bool = False) -> JSON:
-        """Get bootstrap-static data (cached).
+        """Fetch bootstrap-static data, caching the result for the client lifetime.
 
         Args:
             force: If True, bypass cache and fetch fresh data.
@@ -107,7 +102,7 @@ class FPLClient:
             Bootstrap data dict.
 
         Raises:
-            RuntimeError: If bootstrap data cannot be fetched.
+            FPLClientError: If bootstrap data cannot be fetched.
         """
         if self._bootstrap_cache is None or force:
             logger.info("Fetching bootstrap-static data...")
@@ -119,10 +114,13 @@ class FPLClient:
         return self._bootstrap_cache
 
     def get_current_gw(self) -> int:
-        """Get the current gameweek, or the latest finished one if none is current.
+        """Return the current gameweek, or the latest finished one if none is current.
+
+        Returns:
+            Gameweek number.
 
         Raises:
-            RuntimeError: If no gameweek data found.
+            RuntimeError: If no gameweek data is found in bootstrap.
         """
         logger.info("Getting current gameweek...")
         bootstrap = self.get_bootstrap()
@@ -142,39 +140,55 @@ class FPLClient:
 
         raise RuntimeError("No gameweek data found in bootstrap")
 
-    def get_gw_deadline(self, gw: int) -> Optional[datetime]:
-        """Get deadline datetime for a specific gameweek."""
-        logger.info(f"Getting GW{gw} deadline...")
+    def get_gw_deadline(self, gameweek: int) -> Optional[datetime]:
+        """Return the deadline datetime for a specific gameweek.
+
+        Args:
+            gameweek: Gameweek number.
+
+        Returns:
+            Deadline as a timezone-aware datetime, or None if not found.
+        """
+        logger.info("Getting gameweek %d deadline...", gameweek)
         bootstrap = self.get_bootstrap()
         for event in bootstrap.get("events", []):
-            if event["id"] == gw:
+            if event["id"] == gameweek:
                 deadline_str = event.get("deadline_time")
                 if deadline_str:
                     return datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
         return None
 
-    def get_gw(self, gw: int) -> Optional[JSON]:
-        """Get player stats for a gameweek (live endpoint)."""
-        url = ENDPOINTS["live"].format(gw=gw)
-        logger.info(f"Fetching GW{gw} data...")
+    def get_gw(self, gameweek: int) -> Optional[JSON]:
+        """Fetch live player stats for a gameweek.
+
+        Args:
+            gameweek: Gameweek number.
+
+        Returns:
+            Dict with an 'elements' list, or None on failure.
+        """
+        url = ENDPOINTS["live"].format(gw=gameweek)
+        logger.info("Fetching gameweek %d data...", gameweek)
         return self._get(url)
 
     def get_fixtures(self) -> Optional[JSON]:
-        """Get all fixtures for the season."""
+        """Fetch all fixtures for the current season.
+
+        Returns:
+            List of fixture dicts, or None on failure.
+        """
         logger.info("Fetching fixtures...")
         return self._get(ENDPOINTS["fixtures"])
 
     def get_player_history(self, player_id: int) -> Optional[JSON]:
-        """Get a player's detailed history (element-summary)."""
-        logger.info(f"Fetching player {player_id} history...")
+        """Fetch element-summary history for a player.
+
+        Args:
+            player_id: FPL element ID.
+
+        Returns:
+            Dict with 'history' and 'history_past' lists, or None on failure.
+        """
+        logger.info("Fetching player %d history...", player_id)
         url = ENDPOINTS["player"].format(player_id=player_id)
         return self._get(url, request_delay=self._player_history_request_delay)
-
-    def is_gw_finished(self, gw: int) -> bool:
-        """Check if a gameweek has finished (all matches complete, bonus confirmed)."""
-        logger.info(f"Checking if GW{gw} is finished...")
-        bootstrap = self.get_bootstrap()
-        for event in bootstrap.get("events", []):
-            if event["id"] == gw:
-                return event.get("finished", False)
-        return False

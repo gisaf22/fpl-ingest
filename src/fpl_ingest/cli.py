@@ -1,6 +1,8 @@
 """CLI entry point for fpl-ingest.
 
-Fetches FPL API data, transforms it, and stores in SQLite.
+Responsible for argument parsing, configuration resolution, and wiring the
+pipeline stages together. All business logic lives in the pipeline modules.
+This module does not contain fetch logic, transformation, or storage code.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import asyncio
 import logging
 import sys
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fpl_ingest.async_client import AsyncFPLClient
@@ -25,9 +28,11 @@ from fpl_ingest.pipeline import (
 from fpl_ingest.rate_limiter import TokenBucketLimiter
 from fpl_ingest.store import SQLiteStore
 
+_MAX_CONCURRENT_REQUESTS = 10
+
 
 def _argparse_positive_float(value: str) -> float:
-    """Argparse type for strictly positive float CLI options."""
+    """Argparse type validator for strictly positive float options."""
     try:
         parsed = float(value)
     except ValueError:
@@ -38,7 +43,15 @@ def _argparse_positive_float(value: str) -> float:
 
 
 def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
-    """Build the command-line parser for the ingest entry point."""
+    """Build the command-line argument parser.
+
+    Args:
+        config: Config used to populate default help text. Falls back to
+            environment-backed defaults if not provided.
+
+    Returns:
+        Configured argparse.ArgumentParser instance.
+    """
     config = config or default_config()
     parser = argparse.ArgumentParser(
         prog="fpl-ingest",
@@ -63,7 +76,7 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
     return parser
 
 
-def _raise_if_unclean(result: StageResult, *, strict: bool = False) -> None:
+def _warn_or_raise_on_unclean_stage(result: StageResult, *, strict: bool = False) -> None:
     """Warn (or raise in strict mode) when a stage reports skipped rows or errors."""
     if result.skipped or result.errors:
         msg = f"Ingest stage did not complete cleanly: {result.summary_line()}"
@@ -79,11 +92,8 @@ def _log_run_summary(logger: logging.Logger, results: Iterable[StageResult]) -> 
         logger.info("  %s", result.summary_line())
 
 
-async def _async_main(argv: list[str] | None = None) -> int:
-    """Async pipeline body — called by main() via asyncio.run().
-
-    Returns 0 on a clean run, 1 if any stage recorded errors.
-    """
+async def _run_pipeline(argv: list[str] | None = None) -> int:
+    """Execute the full ingest pipeline. Returns 0 on clean run, 1 on errors."""
     args = build_parser().parse_args(argv)
     config = resolve_config(db_path=args.db, raw_dir=args.raw_dir)
 
@@ -96,13 +106,13 @@ async def _async_main(argv: list[str] | None = None) -> int:
 
     config.raw_dir.mkdir(parents=True, exist_ok=True)
 
-    from datetime import datetime, timezone
-
     store = SQLiteStore(config.db_path)
     run_started_at = datetime.now(timezone.utc).isoformat()
     stage_results: list[StageResult] = []
 
-    def _finish_stage(result: StageResult) -> StageResult:
+    # Closure so each stage shares store, args, and the accumulating
+    # stage_results list without threading them through every call site.
+    def _record_stage(result: StageResult) -> StageResult:
         stage_results.append(result)
         store.record_run(
             run_started_at,
@@ -112,38 +122,31 @@ async def _async_main(argv: list[str] | None = None) -> int:
             result.skipped,
             result.errors,
         )
-        _raise_if_unclean(result, strict=args.strict)
-        total_rows = result.upserted + result.skipped
-        if total_rows > 0 and result.skipped / total_rows > 0.01:
-            logger.warning(
-                "High skip rate: stage=%s skipped=%d/%d (%.1f%%)",
-                result.stage, result.skipped, total_rows,
-                100 * result.skipped / total_rows,
-            )
+        _warn_or_raise_on_unclean_stage(result, strict=args.strict)
+        _warn_if_high_skip_rate(logger, result)
         return result
 
-    _max_concurrent = 10
-    rate_limiter = TokenBucketLimiter(rate=args.rate, max_concurrent=_max_concurrent)
+    rate_limiter = TokenBucketLimiter(rate=args.rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)
 
     async with AsyncFPLClient(
         rate_limiter=rate_limiter,
-        connector_limit=_max_concurrent,
+        connector_limit=_MAX_CONCURRENT_REQUESTS,
     ) as client:
         with store.transaction():
             setup_store(store)
             core, core_stage = await ingest_core_data(client, store, config.raw_dir)
-        _finish_stage(core_stage)
+        _record_stage(core_stage)
 
         with store.transaction():
-            _finish_stage(await ingest_fixtures(client, store, config.raw_dir))
+            _record_stage(await ingest_fixtures(client, store, config.raw_dir))
 
         with store.transaction():
-            _finish_stage(await ingest_gameweeks(
+            _record_stage(await ingest_gameweeks(
                 client, store, config.raw_dir, core.events, force=args.force,
             ))
 
         with store.transaction():
-            _finish_stage(await ingest_player_histories(
+            _record_stage(await ingest_player_histories(
                 client,
                 store,
                 config.raw_dir,
@@ -152,15 +155,29 @@ async def _async_main(argv: list[str] | None = None) -> int:
             ))
 
     _log_run_summary(logger, stage_results)
+    return _exit_code(logger, stage_results, store, run_started_at, core)
 
+
+def _warn_if_high_skip_rate(logger: logging.Logger, result: StageResult) -> None:
+    total_rows = result.upserted + result.skipped
+    if total_rows > 0 and result.skipped / total_rows > 0.01:
+        logger.warning(
+            "High skip rate: stage=%s skipped=%d/%d (%.1f%%)",
+            result.stage, result.skipped, total_rows,
+            100 * result.skipped / total_rows,
+        )
+
+
+def _exit_code(
+    logger: logging.Logger,
+    stage_results: list[StageResult],
+    store: SQLiteStore,
+    run_started_at: str,
+    core: object,
+) -> int:
     total_errors = sum(r.errors for r in stage_results)
     if total_errors == 0:
-        current_gw = next((e.id for e in core.events if e.is_current), None)
-        with store.transaction():
-            store.set_metadata("last_successful_run_at", run_started_at)
-            if current_gw is not None:
-                store.set_metadata("current_gameweek", str(current_gw))
-            store.set_metadata("total_players", str(len(core.players)))
+        _write_success_metadata(store, run_started_at, core)
         logger.info("Done.")
         return 0
 
@@ -171,9 +188,18 @@ async def _async_main(argv: list[str] | None = None) -> int:
     return 1
 
 
+def _write_success_metadata(store: SQLiteStore, run_started_at: str, core: object) -> None:
+    current_gameweek = next((e.id for e in core.events if e.is_current), None)
+    with store.transaction():
+        store.set_metadata("last_successful_run_at", run_started_at)
+        if current_gameweek is not None:
+            store.set_metadata("current_gameweek", str(current_gameweek))
+        store.set_metadata("total_players", str(len(core.players)))
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run the ingest pipeline."""
-    sys.exit(asyncio.run(_async_main(argv)))
+    sys.exit(asyncio.run(_run_pipeline(argv)))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,15 @@
-"""HTTP transport helpers for the FPL client."""
+"""HTTP helpers for the synchronous FPL client (FPLClient).
+
+Handles retry logic, rate limiting, and response decoding for the
+requests-based sync client. This module is HTTP-only — it has no
+knowledge of FPL domain objects, models, or pipeline stages.
+
+The async client (AsyncFPLClient) does not use the request execution
+logic here, but borrows the following shared symbols rather than
+defining its own versions:
+  DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, FPLClientError,
+  RETRYABLE_STATUS_CODES, compute_retry_delay, parse_retry_after.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +30,7 @@ DEFAULT_REQUEST_DELAY = 1.0
 DEFAULT_PLAYER_HISTORY_REQUEST_DELAY = 0.25
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_TIMEOUT = 30
-MAX_DELAY = 60
+MAX_BACKOFF_SECONDS = 60
 RATE_LIMIT_STATUS = 429
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
@@ -29,25 +40,42 @@ class FPLClientError(RuntimeError):
 
 
 class _RetryRequest(Exception):
-    """Internal signal indicating the current request should be retried."""
+    """Internal signal: the current request should be retried."""
 
 
 @dataclass
 class RequestGate:
-    """Shared pacing gate to avoid bursty parallel request starts."""
+    """Shared pacing gate used to prevent bursty parallel request starts.
+
+    Multiple threads share one gate to ensure the inter-request delay
+    is applied globally rather than per-thread.
+    """
 
     lock: Lock = field(default_factory=Lock)
     next_request_at: float = 0.0
 
 
 def compute_retry_delay(request_delay: float, attempt: int) -> float:
-    """Compute backoff delay for a retry attempt."""
-    base_delay = max(request_delay, 0)
-    return min(base_delay + (2 ** (attempt - 1)) + random.uniform(0, 1), MAX_DELAY)
+    """Compute exponential backoff delay for a retry attempt.
+
+    Args:
+        request_delay: The base per-request delay in seconds.
+        attempt: The current attempt number (1-indexed).
+
+    Returns:
+        Delay in seconds, capped at MAX_BACKOFF_SECONDS.
+    """
+    base = max(request_delay, 0)
+    return min(base + (2 ** (attempt - 1)) + random.uniform(0, 1), MAX_BACKOFF_SECONDS)
 
 
 def sleep_with_jitter(request_delay: float, request_gate: RequestGate | None = None) -> None:
-    """Sleep before a request to smooth out bursts against the upstream API."""
+    """Sleep before a request to smooth bursts against the upstream API.
+
+    Args:
+        request_delay: Minimum sleep duration in seconds.
+        request_gate: Optional shared gate that serialises access across threads.
+    """
     if request_delay <= 0:
         return
     jitter = random.uniform(0, 0.3 * request_delay)
@@ -66,7 +94,17 @@ def sleep_with_jitter(request_delay: float, request_gate: RequestGate | None = N
 
 
 def parse_retry_after(value: str | None) -> float:
-    """Parse Retry-After as seconds or HTTP-date, falling back safely."""
+    """Parse a Retry-After header value into a delay in seconds.
+
+    Accepts both integer-seconds and HTTP-date formats. Falls back to
+    30 seconds for malformed or missing values.
+
+    Args:
+        value: Raw Retry-After header string, or None.
+
+    Returns:
+        Delay in seconds (non-negative float).
+    """
     if not value:
         return 30.0
     try:
@@ -89,7 +127,6 @@ def _handle_rate_limit(
     attempt: int,
     max_retries: int,
 ) -> None:
-    """Handle a 429 response, sleeping before a retry when possible."""
     retry_after = parse_retry_after(resp.headers.get("Retry-After"))
     logger.warning(
         "Rate limited (429) for %s on attempt %d/%d; waiting %.1fs",
@@ -107,7 +144,6 @@ def _decode_json(
     request_delay: float,
     max_retries: int,
 ) -> Any:
-    """Decode a successful JSON response, retrying invalid payloads when allowed."""
     try:
         return resp.json()
     except ValueError as exc:
@@ -128,7 +164,6 @@ def _handle_response(
     request_delay: float,
     max_retries: int,
 ) -> Any | None:
-    """Classify and handle an HTTP response."""
     if resp.status_code == RATE_LIMIT_STATUS:
         _handle_rate_limit(resp, url, attempt, max_retries)
         return None
@@ -163,7 +198,19 @@ def execute_json_request(
     max_retries: int,
     request_gate: RequestGate | None = None,
 ) -> Any | None:
-    """Execute a GET request with retry logic for transient failures."""
+    """Execute a GET request with retry logic for transient failures.
+
+    Args:
+        session: requests.Session to use for the request.
+        url: Target URL.
+        timeout: Per-attempt timeout in seconds.
+        request_delay: Minimum delay between attempts in seconds.
+        max_retries: Maximum number of attempts before giving up.
+        request_gate: Optional shared gate for cross-thread pacing.
+
+    Returns:
+        Decoded JSON response, or None if all attempts failed.
+    """
     for attempt in range(1, max_retries + 1):
         sleep_with_jitter(request_delay, request_gate=request_gate)
 

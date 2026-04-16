@@ -19,7 +19,7 @@ import pytest
 
 from fpl_ingest.async_client import AsyncFPLClient
 from fpl_ingest.rate_limiter import NoopRateLimiter
-from fpl_ingest.transport import FPLClientError
+from fpl_ingest.sync_http import FPLClientError
 
 pytestmark = pytest.mark.unit
 
@@ -74,7 +74,7 @@ def test_get_returns_json_on_200():
         resp = _mock_response(200, json_data={"key": "value"})
         with patch("aiohttp.ClientSession.get", return_value=resp):
             async with client:
-                result = await client._get("https://example.com/api/")
+                result = await client._fetch_with_retries("https://example.com/api/")
         assert result == {"key": "value"}
 
     asyncio.run(_run())
@@ -145,7 +145,7 @@ def test_retries_on_429_then_succeeds():
 
         with patch("aiohttp.ClientSession.get", side_effect=_fake_get):
             async with client:
-                result = await client._get("https://example.com/")
+                result = await client._fetch_with_retries("https://example.com/")
         assert result == {"ok": True}
         assert call_count == 2
 
@@ -158,7 +158,7 @@ def test_returns_none_after_exhausting_429_retries():
         resp = _mock_response(429, headers={"Retry-After": "0"})
         with patch("aiohttp.ClientSession.get", return_value=resp):
             async with client:
-                result = await client._get("https://example.com/")
+                result = await client._fetch_with_retries("https://example.com/")
         assert result is None
 
     asyncio.run(_run())
@@ -185,7 +185,7 @@ def test_retries_on_5xx(status: int):
 
         with patch("aiohttp.ClientSession.get", side_effect=_fake_get):
             async with client:
-                result = await client._get("https://example.com/")
+                result = await client._fetch_with_retries("https://example.com/")
         assert result == {"recovered": True}
 
     asyncio.run(_run())
@@ -203,7 +203,7 @@ def test_returns_none_on_non_retryable_4xx(status: int):
         resp = _mock_response(status)
         with patch("aiohttp.ClientSession.get", return_value=resp) as mock_get:
             async with client:
-                result = await client._get("https://example.com/")
+                result = await client._fetch_with_retries("https://example.com/")
         assert result is None
         assert mock_get.call_count == 1  # no retry
 
@@ -232,7 +232,7 @@ def test_retries_on_client_error_then_succeeds():
 
         with patch("aiohttp.ClientSession.get", side_effect=_fake_get):
             async with client:
-                result = await client._get("https://example.com/")
+                result = await client._fetch_with_retries("https://example.com/")
         assert result == {"data": 1}
 
     asyncio.run(_run())
@@ -248,7 +248,7 @@ def test_returns_none_after_exhausting_network_retries():
             side_effect=_aiohttp.ClientConnectionError("timeout"),
         ):
             async with client:
-                result = await client._get("https://example.com/")
+                result = await client._fetch_with_retries("https://example.com/")
         assert result is None
 
     asyncio.run(_run())
@@ -282,7 +282,7 @@ def test_token_consumed_per_dispatch():
         bad = _mock_response(500)
         with patch("aiohttp.ClientSession.get", return_value=bad):
             async with client:
-                result = await client._get("https://example.com/")
+                result = await client._fetch_with_retries("https://example.com/")
         assert result is None
         assert acquire_count == 3, (
             f"Expected 3 token acquisitions (one per dispatch), got {acquire_count}. "
@@ -339,7 +339,7 @@ def test_concurrency_slot_released_before_retry_sleep():
             patch("fpl_ingest.async_client.asyncio.sleep", side_effect=_tracking_sleep),
         ):
             async with client:
-                result = await client._get("https://example.com/")
+                result = await client._fetch_with_retries("https://example.com/")
 
         assert result == {"ok": True}
         assert slots_held_during_sleep, "No backoff sleep occurred — test may be misconfigured"

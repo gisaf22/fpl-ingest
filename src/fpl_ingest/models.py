@@ -1,20 +1,15 @@
 """Pydantic models for FPL API data.
 
-Typed representations of FPL entities (players, teams, fixtures, events,
-element types) and fact records (gameweek performance, fixture stats). Each
-model validates raw API JSON against a strict schema and rejects unknown fields.
+Defines typed representations of FPL entities (players, teams, fixtures,
+events, element types) and fact records (gameweek performance, fixture stats,
+player history). Each model validates raw API JSON against a strict schema
+and rejects unknown fields.
 
-A small number of models expose convenience properties (e.g. position name,
-cost in millions). These are non-persisted, read-only helpers for display and
-testing only. They do not derive analytics fields and are not stored in SQLite.
-Adding new derived or aggregated properties to these models is out of scope per
-docs/governance.md.
+Convenience properties on domain models (position name, cost in millions)
+are non-persisted read-only helpers for display and testing only. They do
+not add derived or aggregated analytics fields — see docs/governance.md.
 
-Usage:
-    from fpl_ingest import PlayerModel
-
-    player = PlayerModel.model_validate(api_dict)
-    print(player.position, player.cost_millions)
+This module does not perform I/O, transformation, or any pipeline logic.
 """
 
 from __future__ import annotations
@@ -26,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fpl_ingest.transforms import ELEMENT_TYPE_TO_POS, cost_to_millions
 
 # ---------------------------------------------------------------------------
-# SQLite helpers — kept with models since they operate on Pydantic schemas
+# SQLite schema helpers — kept here because they operate on Pydantic schemas
 # ---------------------------------------------------------------------------
 
 PYTHON_TO_SQLITE: Dict[Type, str] = {
@@ -41,7 +36,15 @@ ALIASED_STRICT_MODEL_CONFIG = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 def pydantic_to_sqlite_column(field_name: str, field_info: Any) -> str:
-    """Convert a Pydantic field to a SQLite column definition."""
+    """Convert a Pydantic field to a SQLite column definition.
+
+    Args:
+        field_name: The field name, used as the column name.
+        field_info: Pydantic FieldInfo object with annotation metadata.
+
+    Returns:
+        SQL column definition string, e.g. 'goals_scored INTEGER'.
+    """
     annotation = field_info.annotation
 
     origin = get_origin(annotation)
@@ -67,7 +70,17 @@ def schema_to_create_table(
     extra_columns: Optional[List[str]] = None,
     unique_constraint: Optional[str] = None,
 ) -> str:
-    """Generate CREATE TABLE SQL from a Pydantic schema."""
+    """Generate a CREATE TABLE SQL statement from a Pydantic schema.
+
+    Args:
+        table_name: SQL table name.
+        schema: Pydantic model whose fields become columns.
+        extra_columns: Additional column definitions not on the model.
+        unique_constraint: Optional UNIQUE constraint clause.
+
+    Returns:
+        CREATE TABLE IF NOT EXISTS SQL string.
+    """
     columns = []
 
     for field_name, field_info in schema.model_fields.items():
@@ -93,7 +106,7 @@ def schema_to_create_table(
 
 
 class PlayerModel(BaseModel):
-    """FPL player data — all fields from bootstrap-static elements."""
+    """FPL player (element) — all fields from bootstrap-static elements."""
 
     model_config = STRICT_MODEL_CONFIG
 
@@ -104,10 +117,10 @@ class PlayerModel(BaseModel):
     known_name: Optional[str] = None
     team: Optional[int] = None
     team_code: Optional[int] = None
-    element_type: Optional[int] = None
-    now_cost: Optional[int] = None
+    element_type: Optional[int] = None    # 1=GKP, 2=DEF, 3=MID, 4=FWD
+    now_cost: Optional[int] = None        # price in tenths of millions (e.g. 130 = £13.0m)
     price_change_percent: Optional[int] = None
-    status: Optional[str] = None
+    status: Optional[str] = None          # 'a'=available, 'i'=injured, 'd'=doubtful, etc.
     code: Optional[int] = None
     opta_code: Optional[str] = None
     photo: Optional[str] = None
@@ -123,7 +136,7 @@ class PlayerModel(BaseModel):
 
     # Season totals
     total_points: Optional[int] = None
-    event_points: Optional[int] = None
+    event_points: Optional[int] = None    # points in most recent gameweek
     minutes: Optional[int] = None
     goals_scored: Optional[int] = None
     assists: Optional[int] = None
@@ -136,7 +149,7 @@ class PlayerModel(BaseModel):
     red_cards: Optional[int] = None
     saves: Optional[int] = None
     bonus: Optional[int] = None
-    bps: Optional[int] = None
+    bps: Optional[int] = None             # bonus points system raw score
     starts: Optional[int] = None
     tackles: Optional[int] = None
     recoveries: Optional[int] = None
@@ -145,19 +158,19 @@ class PlayerModel(BaseModel):
     dreamteam_count: Optional[int] = None
     in_dreamteam: Optional[bool] = None
 
-    # ICT
+    # ICT index components
     influence: Optional[float] = None
     creativity: Optional[float] = None
     threat: Optional[float] = None
     ict_index: Optional[float] = None
 
-    # xG
+    # Expected stats
     expected_goals: Optional[float] = None
     expected_assists: Optional[float] = None
     expected_goal_involvements: Optional[float] = None
     expected_goals_conceded: Optional[float] = None
 
-    # Per-90 stats
+    # Per-90-minute stats
     clean_sheets_per_90: Optional[float] = None
     goals_conceded_per_90: Optional[float] = None
     saves_per_90: Optional[float] = None
@@ -168,16 +181,16 @@ class PlayerModel(BaseModel):
     defensive_contribution_per_90: Optional[float] = None
     starts_per_90: Optional[float] = None
 
-    # Form and value
+    # Form and value metrics
     form: Optional[float] = None
     points_per_game: Optional[float] = None
     selected_by_percent: Optional[float] = None
     value_form: Optional[float] = None
     value_season: Optional[float] = None
-    ep_next: Optional[float] = None
-    ep_this: Optional[float] = None
+    ep_next: Optional[float] = None       # expected points next gameweek
+    ep_this: Optional[float] = None       # expected points this gameweek
 
-    # Ranks
+    # Relative rank fields (overall and within position type)
     form_rank: Optional[int] = None
     form_rank_type: Optional[int] = None
     points_per_game_rank: Optional[int] = None
@@ -195,7 +208,7 @@ class PlayerModel(BaseModel):
     ict_index_rank: Optional[int] = None
     ict_index_rank_type: Optional[int] = None
 
-    # Ownership and transfers
+    # Ownership and transfer data
     chance_of_playing_next_round: Optional[int] = None
     chance_of_playing_this_round: Optional[int] = None
     transfers_in: Optional[int] = None
@@ -207,7 +220,7 @@ class PlayerModel(BaseModel):
     cost_change_start: Optional[int] = None
     cost_change_start_fall: Optional[int] = None
 
-    # Set pieces
+    # Set-piece order assignments
     penalties_order: Optional[int] = None
     penalties_text: Optional[str] = None
     corners_and_indirect_freekicks_order: Optional[int] = None
@@ -215,7 +228,7 @@ class PlayerModel(BaseModel):
     direct_freekicks_order: Optional[int] = None
     direct_freekicks_text: Optional[str] = None
 
-    # News
+    # Injury/availability news
     news: Optional[str] = None
     news_added: Optional[str] = None
 
@@ -238,22 +251,22 @@ class PlayerModel(BaseModel):
 
     @property
     def position(self) -> str:
-        """Position string (GKP, DEF, MID, FWD)."""
+        """Position code string: GKP, DEF, MID, or FWD."""
         return ELEMENT_TYPE_TO_POS.get(self.element_type, "UNK")
 
     @property
     def cost_millions(self) -> float:
-        """Cost in millions (e.g., 10.5)."""
+        """Cost in millions (e.g., now_cost=130 → 13.0)."""
         return cost_to_millions(self.now_cost or 0)
 
     @property
     def display_name(self) -> str:
-        """Best available display name."""
+        """Best available display name for logs and UI."""
         return self.web_name or f"{self.first_name} {self.second_name}"
 
 
 class TeamModel(BaseModel):
-    """FPL team data — all fields from bootstrap-static teams."""
+    """FPL team — all fields from bootstrap-static teams."""
 
     model_config = STRICT_MODEL_CONFIG
 
@@ -262,7 +275,7 @@ class TeamModel(BaseModel):
     short_name: Optional[str] = None
     code: Optional[int] = None
     pulse_id: Optional[int] = None
-    strength: Optional[int] = None
+    strength: Optional[int] = None        # overall FPL strength rating (1–5)
     strength_overall_home: Optional[int] = None
     strength_overall_away: Optional[int] = None
     strength_attack_home: Optional[int] = None
@@ -274,7 +287,7 @@ class TeamModel(BaseModel):
     draw: Optional[int] = None
     loss: Optional[int] = None
     points: Optional[int] = None
-    position: Optional[int] = None
+    position: Optional[int] = None        # league table position
     form: Optional[float] = None
     team_division: Optional[str] = None
     unavailable: Optional[bool] = None
@@ -293,15 +306,15 @@ class TeamModel(BaseModel):
 
 
 class FixtureModel(BaseModel):
-    """FPL fixture data — all fields from fixtures endpoint."""
+    """FPL fixture — all fields from the fixtures endpoint."""
 
     model_config = STRICT_MODEL_CONFIG
 
     id: int
     code: Optional[int] = None
-    event: Optional[int] = None
-    team_h: Optional[int] = None
-    team_a: Optional[int] = None
+    event: Optional[int] = None           # gameweek number this fixture belongs to
+    team_h: Optional[int] = None          # home team id
+    team_a: Optional[int] = None          # away team id
     team_h_score: Optional[int] = None
     team_a_score: Optional[int] = None
     team_h_difficulty: Optional[int] = None
@@ -333,17 +346,17 @@ class FixtureModel(BaseModel):
 
 
 class FixtureStatModel(BaseModel):
-    """Individual player stat within a fixture (goals, assists, etc.)."""
+    """Individual player stat entry within a fixture (goals, assists, etc.)."""
 
     model_config = STRICT_MODEL_CONFIG
 
     fixture_id: int
-    identifier: str
-    element: int
+    identifier: str    # stat type name, e.g. 'goals_scored', 'assists'
+    element: int       # player id
     value: int
-    side: str  # 'h' or 'a'
+    side: str          # 'h' (home) or 'a' (away)
 
-    DEFAULT_UNIQUE: ClassVar[str] = "UNIQUE(fixture_id, identifier, element)"
+    GRAIN_CONSTRAINT: ClassVar[str] = "UNIQUE(fixture_id, identifier, element)"
 
 
 class EventModel(BaseModel):
@@ -378,7 +391,7 @@ class EventModel(BaseModel):
     top_element: Optional[int] = None
     top_element_points: Optional[int] = None
     transfers_made: Optional[int] = None
-    chip_plays_json: Optional[str] = None
+    chip_plays_json: Optional[str] = None    # JSON-serialised chip_plays list
 
     @model_validator(mode="after")
     def validate_critical_fields(self) -> "EventModel":
@@ -394,7 +407,7 @@ class EventModel(BaseModel):
 
 
 class ElementTypeModel(BaseModel):
-    """Position type definition from bootstrap-static."""
+    """Position type definition from bootstrap-static (GKP, DEF, MID, FWD)."""
 
     model_config = STRICT_MODEL_CONFIG
 
@@ -403,7 +416,7 @@ class ElementTypeModel(BaseModel):
     singular_name_short: Optional[str] = None
     plural_name: Optional[str] = None
     plural_name_short: Optional[str] = None
-    squad_select: Optional[int] = None
+    squad_select: Optional[int] = None      # how many of this type in a squad
     squad_min_select: Optional[int] = None
     squad_max_select: Optional[int] = None
     squad_min_play: Optional[int] = None
@@ -459,18 +472,17 @@ class GameweekModel(BaseModel):
     kickoff_time: Optional[str] = None
     team_h_score: Optional[int] = None
     team_a_score: Optional[int] = None
-    value: Optional[int] = None
-    selected: Optional[int] = None
+    value: Optional[int] = None           # player price at the time of the gameweek
+    selected: Optional[int] = None        # number of FPL squads selecting this player
     transfers_in: Optional[int] = None
     transfers_out: Optional[int] = None
     transfers_balance: Optional[int] = None
 
-    # Default uniqueness: one row per player per gameweek
-    DEFAULT_UNIQUE: ClassVar[str] = "UNIQUE(element_id, round)"
+    GRAIN_CONSTRAINT: ClassVar[str] = "UNIQUE(element_id, round)"
 
 
 class PlayerHistoryModel(BaseModel):
-    """Per-fixture player history row from ``element-summary/{id}/history[]``.
+    """Per-fixture player history row from element-summary/{id}/history[].
 
     Source is different from GameweekModel (element-summary vs live endpoint),
     different grain, and different uniqueness key. Fields overlap by coincidence
@@ -526,5 +538,4 @@ class PlayerHistoryModel(BaseModel):
         """Strip modified field the API sends that is not part of this schema."""
         return {k: v for k, v in raw.items() if k != "modified"}
 
-    # Default uniqueness: one row per player, gameweek, and fixture.
-    DEFAULT_UNIQUE: ClassVar[str] = "UNIQUE(element_id, round, fixture)"
+    GRAIN_CONSTRAINT: ClassVar[str] = "UNIQUE(element_id, round, fixture)"

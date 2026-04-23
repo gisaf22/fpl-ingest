@@ -1,10 +1,9 @@
 # fpl‑ingest
 
-`fpl‑ingest` is an FPL ingestion pipeline that stores structured data in SQLite.
+`fpl‑ingest` is an ingestion pipeline for current-season Fantasy Premier League data stored in SQLite.
 
-It fetches season metadata, fixtures, live gameweek data, and per‑player history, validates those payloads against typed models, and persists a reproducible SQLite snapshot plus raw API payloads.
+It fetches season metadata, fixtures, live gameweek data, and player history, validates them with typed models, and writes a reproducible snapshot plus raw API payloads.
 
-It is designed to make ingestion failure modes explicit and enforceable: upstream shape drift, partial fetches, silent row drops, and runs that appear to succeed without producing a complete snapshot.
 
 ## Quick Start (90 seconds)
 
@@ -34,27 +33,24 @@ uv sync
 uv run fpl-ingest run
 ```
 
-Common flags:
+Flags:
 
 ```bash
 uv run fpl-ingest run --db ~/.fpl/fpl.db --raw-dir ~/.fpl/raw --rate 3.0 --strict
 ```
 
-Path resolution order for `db` and `raw‑dir` is:
+The system uses the first available value in this order:
 
-1. CLI flag
-2. environment variable
-3. `~/.fpl/config.yaml`
-4. default path
+CLI flag → env var → config file → default
 
 ## Key Guarantees
 
-- **Single source of truth**: schema is compiled into the database, validator, and tests.
-- **Truthful success**: a run is only successful if zero rows are skipped and zero errors occur.
-- **Invariant‑checked metrics**: stage metrics satisfy `fetched >= validated >= written`.
-- **Idempotent execution**: safe to rerun without duplicating data.
-- **Failure containment**: `--strict` aborts on the first unclean stage boundary; post‑failure writes are blocked.
-- **Live API drift detection**: smoke test checks upstream shape before ingestion.
+- Single source of truth schema (DB + validation + tests)
+- Success only if no errors or skipped rows
+- Metrics invariant: fetched ≥ validated ≥ written
+- Idempotent runs (no duplication)
+- Strict mode blocks partial writes
+- Smoke test detects API drift early
 
 ## System Overview
 
@@ -81,14 +77,14 @@ Fantasy Premier League API
 
 ### Layer Breakdown
 
-- CLI boundary: [`src/fpl_ingest/cli.py`](src/fpl_ingest/cli.py) parses arguments, routes commands, and emits final command output.
-- CLI output formatting: [`src/fpl_ingest/cli_formatters.py`](src/fpl_ingest/cli_formatters.py) owns command‑facing text rendering for status, schema, and smoke‑test output.
-- Pipeline runner: [`src/fpl_ingest/pipeline/runner.py`](src/fpl_ingest/pipeline/runner.py) owns execution orchestration, stage ordering, and run finalization.
-- API client: [`src/fpl_ingest/transport/async_client.py`](src/fpl_ingest/transport/async_client.py) fetches `bootstrap‑static`, `fixtures`, `event/{id}/live`, and `element‑summary/{id}` with rate limiting.
-- Ingestion stages: [`src/fpl_ingest/pipeline/`](src/fpl_ingest/pipeline/) orchestrate fetch → validate → persist for core data, fixtures, gameweeks, and player histories.
-- Contract enforcement: [`src/fpl_ingest/domain/schema.py`](src/fpl_ingest/domain/schema.py) defines the public table contract, and [`src/fpl_ingest/contract/compiler.py`](src/fpl_ingest/contract/compiler.py) compiles it into SQLite DDL, validation rules, and test‑facing artifacts used by [`src/fpl_ingest/pipeline/db_setup.py`](src/fpl_ingest/pipeline/db_setup.py).
-- Storage: [`src/fpl_ingest/storage/store.py`](src/fpl_ingest/storage/store.py) owns SQLite pragmas, transactions, upserts, schema registration, audit logging, and metadata finalization.
-- Runtime validation and drift checks: typed models, schema validation commands, `_runs`, `_metadata`, and [`src/fpl_ingest/validation/smoke_test.py`](src/fpl_ingest/validation/smoke_test.py) surface upstream drift and partial‑run risk early.
+- **CLI** (`cli.py`) → command parsing + routing  
+- **CLI output** (`cli_formatters.py`) → user-facing rendering  
+- **Runner** (`pipeline/runner.py`) → pipeline orchestration  
+- **API client** (`transport/async_client.py`) → FPL API + rate limiting  
+- **Pipeline** (`pipeline/`) → fetch → validate → persist stages  
+- **Contract** (`domain/schema.py`, `contract/compiler.py`) → schema + validation rules  
+- **Storage** (`storage/store.py`) → SQLite writes + transactions  
+- **Validation** (`validation/`, smoke tests) → drift + runtime checks  
 
 ## Repository Structure
 

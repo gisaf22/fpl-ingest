@@ -179,10 +179,11 @@ Smoke test failed: Missing field: elements[].now_cost
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md)
-- [docs/data-contract.md](docs/data-contract.md)
-- [docs/schema-contract.md](docs/schema-contract.md)
-- [docs/guarantees.md](docs/guarantees.md)
+- [Architecture Overview](docs/architecture/architecture.md)
+- [Architecture Contract](docs/architecture/contract.md)
+- [Data Contract](docs/data-contract.md)
+- [Schema Contract](docs/schema-contract.md)
+- [Guarantees](docs/guarantees.md)
 
 ## Limitations
 

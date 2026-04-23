@@ -118,7 +118,7 @@ Fantasy Premier League API
 - Truthful success semantics: each stage returns an immutable [`StageResult`](src/fpl_ingest/pipeline/stage_result.py) with invariant-checked metrics, run status is classified deterministically in [`src/fpl_ingest/domain/run_status.py`](src/fpl_ingest/domain/run_status.py), and [`src/fpl_ingest/cli.py`](src/fpl_ingest/cli.py) returns exit code `0` only for a fully clean run.
 - Failure containment: `--strict` aborts on the first unclean stage boundary, [`src/fpl_ingest/domain/execution_state.py`](src/fpl_ingest/domain/execution_state.py) propagates shared failed state, and post-failure cache or database writes are blocked.
 - Idempotent and reproducible execution: writes are upserts through [`src/fpl_ingest/storage/store.py`](src/fpl_ingest/storage/store.py), conflict targets are inferred from compiled keys, finished gameweeks and player histories can reuse raw JSON cache unless `--force` is supplied, and gameweek rows are written in ascending order.
-- Observability: every stage emits canonical metrics, completed stages are recorded in `_runs`, final run status is persisted for all stage rows, and `_metadata` stores freshness information separately from domain tables.
+- Each stage emits structured metrics and run summaries via logging and persisted run metadata.
 
 For the full semantics and deeper implementation details, see the documentation in [`docs/`](docs/).
 

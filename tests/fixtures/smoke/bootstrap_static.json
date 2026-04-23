@@ -1,0 +1,65 @@
+{
+  "elements": [
+    {
+      "id": 1,
+      "team": 11,
+      "now_cost": 130
+    },
+    {
+      "id": 2,
+      "team": 3,
+      "now_cost": 75
+    },
+    {
+      "id": 3,
+      "team": 7,
+      "now_cost": 68
+    }
+  ],
+  "teams": [
+    {
+      "id": 11,
+      "name": "Liverpool",
+      "short_name": "LIV"
+    },
+    {
+      "id": 3,
+      "name": "Arsenal",
+      "short_name": "ARS"
+    },
+    {
+      "id": 7,
+      "name": "Chelsea",
+      "short_name": "CHE"
+    }
+  ],
+  "events": [
+    {
+      "id": 1,
+      "deadline_time": "2026-08-15T10:00:00Z",
+      "finished": false
+    },
+    {
+      "id": 2,
+      "deadline_time": "2026-08-22T10:00:00Z",
+      "finished": false
+    }
+  ],
+  "element_types": [
+    {
+      "id": 1,
+      "singular_name_short": "GKP",
+      "plural_name_short": "GKP"
+    },
+    {
+      "id": 2,
+      "singular_name_short": "DEF",
+      "plural_name_short": "DEF"
+    },
+    {
+      "id": 3,
+      "singular_name_short": "MID",
+      "plural_name_short": "MID"
+    }
+  ]
+}

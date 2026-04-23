@@ -114,6 +114,7 @@ The `_runs` table records one row per completed pipeline stage and is not part o
 | `upserted` | `INTEGER` | Rows written to SQLite. |
 | `skipped` | `INTEGER` | Rows that failed Pydantic validation and were not persisted. |
 | `errors` | `INTEGER` | Network or processing errors during the stage. |
+| `status` | `TEXT` | Final run status for the enclosing run. Precedence is `FAILED > FAILED_PARTIAL > SUCCESS`: `FAILED` for any error or strict-mode fail-fast abort, `FAILED_PARTIAL` for skipped rows with no hard errors, and `SUCCESS` only when both `errors == 0` and `skipped == 0`. |
 
 ## Downstream Responsibility
 

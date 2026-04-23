@@ -1,106 +1,205 @@
 # fpl-ingest
 
-A lightweight Python library for pulling data from the [Fantasy Premier League API](https://fantasy.premierleague.com/api/bootstrap-static/) into a local SQLite database.
+`fpl-ingest` is an FPL ingestion pipeline that stores structured data in SQLite.
 
-## What it does
+It fetches season metadata, fixtures, live gameweek data, and per-player history, validates those payloads against typed models, and persists a reproducible SQLite snapshot plus raw API payloads.
 
-- Fetches players, teams, fixtures, live gameweek data, and per-player history from the FPL API
-- Validates everything through typed Pydantic models
-- Stores it in SQLite with a single `SQLiteStore` class
-- Includes a `fpl-ingest` CLI for fully automated ingestion
+It is designed to make ingestion failure modes explicit and enforceable: upstream shape drift, partial fetches, silent row drops, and runs that appear to succeed without producing a complete snapshot.
 
-For the table grain and source-to-table contract, see [docs/data-contract.md](docs/data-contract.md). Persisted tables store API-provided values, with only minimal structural flattening for storage.
+## Who This Is For
 
-## Documentation
+- engineers who want a local, reproducible FPL snapshot with clear success semantics
+- projects that treat ingestion correctness as a contract problem, not a best-effort scrape
+- engineers who want a predictable ingestion workflow and a local SQLite snapshot
 
-| Document | Description |
-|---|---|
-| [Architecture](docs/architecture.md) | Layer stack, data flow, and how to extend the pipeline |
-| [Data contract](docs/data-contract.md) | Table grain and source-to-table mapping |
-| [Guarantees](docs/guarantees.md) | Operational guarantees and error handling |
-| [Performance](docs/performance-review.md) | Throughput analysis and rate limiter design |
-| [Production readiness](docs/production-readiness.md) | Stability assessment |
-| [Governance](docs/governance.md) | Versioning and compatibility policy |
+## Not For
 
-## Requirements
+- teams looking for a distributed ingestion platform or scheduler
+- users who only need ad hoc FPL notebooks without a maintained local SQLite snapshot
+- projects focused on downstream analytics modeling rather than ingestion correctness
+
+## Why This Exists
+
+Most API pipelines break long before they throw an obvious exception.
+
+- Upstream providers change payload shape without notice.
+- Validation is often advisory instead of enforced.
+- Pipelines frequently log row skips but still report success.
+- Schema expectations drift across application code, database DDL, and tests.
+- `fpl-ingest` focuses on reliable ingestion into SQLite rather than "fetch some JSON and hope for the best."
+
+## Key Properties
+
+- Schema is compiled into the database, validator, and tests from a single source of truth.
+- A run is only successful if zero rows are skipped and zero errors occur.
+- Stage metrics are invariant-checked (`fetched >= validated >= written`).
+- The pipeline is idempotent and safe to rerun without duplicating data.
+- Live API drift is checked before ingestion via a smoke test.
+
+## Quick Start
+
+### Requirements
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/)
+- [`uv`](https://docs.astral.sh/uv/)
 
-## Getting started
-
-**1. Clone the repo:**
+### Install
 
 ```bash
 git clone https://github.com/gisaf22/fpl-ingest.git
 cd fpl-ingest
-```
-
-**2. Install dependencies:**
-
-```bash
 uv sync
 ```
 
-**3. (Optional) Set where data should be stored:**
-
-By default, data is written to `~/.fpl/fpl.db` and `~/.fpl/raw`. To use a different location, set these in your shell profile and reload it:
+### Run
 
 ```bash
-export FPL_DB_PATH=~/your/custom/path/fpl.db
-export FPL_RAW_DIR=~/your/custom/path/raw
-source ~/.zshrc
+uv run fpl-ingest run
 ```
 
-**4. Run the ingestion:**
+Useful commands:
 
 ```bash
-uv run fpl-ingest
+uv run fpl-ingest run
+uv run fpl-ingest status
+uv run fpl-ingest schema validate
+uv run fpl-ingest smoke-test
 ```
 
-The SQLite database will contain these tables:
-
-| Table | Contents |
-|---|---|
-| `players` | All players in the current season (name, team, position, price, stats) |
-| `teams` | All 20 Premier League teams |
-| `fixtures` | Every match in the season with scores and status |
-| `fixture_stats` | Per-player stats per fixture (goals, assists, cards, etc.) |
-| `gameweeks` | Live endpoint rows at player-per-gameweek grain |
-| `player_histories` | `element-summary/history` rows at player-per-fixture grain |
-| `events` | Gameweek metadata (deadlines, average score, top scorer) |
-| `element_types` | Position definitions (GKP, DEF, MID, FWD) |
-
-Raw JSON responses are also saved to `FPL_RAW_DIR` for inspection or reprocessing. `gameweeks` stores live player-per-gameweek rows, while `player_histories` preserves player-per-fixture history rows without collapsing multiple fixtures from the same round.
-
-## CLI reference
+Common flags:
 
 ```bash
-fpl-ingest [--db PATH] [--raw-dir PATH] [--force] [--rate RATE] [--strict] [--verbose]
+uv run fpl-ingest run --db ~/.fpl/fpl.db --raw-dir ~/.fpl/raw --rate 3.0 --strict
 ```
 
-| Option | Description |
-|---|---|
-| `--db` | SQLite database path. Overrides `FPL_DB_PATH`, defaults to `~/.fpl/fpl.db` if neither is set. |
-| `--raw-dir` | Directory for raw JSON cache. Overrides `FPL_RAW_DIR`, defaults to `~/.fpl/raw` if neither is set. |
-| `--force` | Re-fetch finished gameweeks even if already cached. |
-| `--rate RATE` | Max API requests per second (default: 10.0). |
-| `--strict` | Abort the run if any stage reports skipped rows or fetch errors. |
-| `--verbose` | Enable debug logging. |
+Path resolution order for `db` and `raw-dir` is:
 
-## What gets re-fetched each run
+1. CLI flag
+2. environment variable
+3. `~/.fpl/config.yaml`
+4. default path
 
-| Data | Default run | With `--force` |
-|---|---|---|
-| Players, teams, fixtures, events | Always re-fetched | Always re-fetched |
-| Current gameweek | Always re-fetched | Always re-fetched |
-| Player history | Fetched on first run; served from cache on re-runs | Re-fetched |
-| Finished gameweeks | Skipped if JSON file exists in `FPL_RAW_DIR` | Re-fetched |
+## System Architecture
 
-Finished gameweeks are skipped on re-runs because the data is stable once FPL has settled bonus points and score corrections, typically within 24-48 hours of the final whistle. Use `--force` if running the pipeline shortly after a gameweek closes or if a late correction is suspected.
+```text
+Fantasy Premier League API
+            |
+            v
+   Async ingestion client
+            |
+            v
+  Contract enforcement layer
+  (typed models + schema compiler)
+            |
+            v
+    Transformation pipeline
+            |
+            v
+       SQLite storage
+            |
+            v
+ Validation, run audit,
+ freshness metadata, smoke tests
+```
 
-Use `--strict` when running the pipeline in a scheduled or automated context. Without it, stages that encounter fetch errors or validation failures exit with code 0 and log warnings. With `--strict`, the first stage that reports any skipped rows or errors raises an error immediately and halts the run, making failures visible to the scheduler.
+### Layer Breakdown
 
-## Performance
+- CLI boundary: [`src/fpl_ingest/cli.py`](src/fpl_ingest/cli.py) parses arguments, routes commands, and emits final command output.
+- CLI output formatting: [`src/fpl_ingest/cli_formatters.py`](src/fpl_ingest/cli_formatters.py) owns command-facing text rendering for status, schema, and smoke-test output.
+- Pipeline runner: [`src/fpl_ingest/pipeline/runner.py`](src/fpl_ingest/pipeline/runner.py) owns execution orchestration, stage ordering, and run finalization.
+- API client: [`src/fpl_ingest/transport/async_client.py`](src/fpl_ingest/transport/async_client.py) fetches `bootstrap-static`, `fixtures`, `event/{id}/live`, and `element-summary/{id}` with rate limiting.
+- Ingestion stages: [`src/fpl_ingest/pipeline/`](src/fpl_ingest/pipeline/) orchestrate fetch -> validate -> persist for core data, fixtures, gameweeks, and player histories.
+- Contract enforcement: [`src/fpl_ingest/domain/schema.py`](src/fpl_ingest/domain/schema.py) defines the public table contract, and [`src/fpl_ingest/contract/compiler.py`](src/fpl_ingest/contract/compiler.py) compiles it into SQLite DDL, validation rules, and test-facing artifacts used by [`src/fpl_ingest/pipeline/db_setup.py`](src/fpl_ingest/pipeline/db_setup.py).
+- Storage: [`src/fpl_ingest/storage/store.py`](src/fpl_ingest/storage/store.py) owns SQLite pragmas, transactions, upserts, schema registration, audit logging, and metadata finalization.
+- Runtime validation and drift checks: typed models, schema validation commands, `_runs`, `_metadata`, and [`src/fpl_ingest/validation/smoke_test.py`](src/fpl_ingest/validation/smoke_test.py) surface upstream drift and partial-run risk early.
 
-For throughput numbers, rate limiter design, and cache behavior, see [docs/performance-review.md](docs/performance-review.md).
+## Operational Guarantees
+
+- Truthful success semantics: each stage returns an immutable [`StageResult`](src/fpl_ingest/pipeline/stage_result.py) with invariant-checked metrics, run status is classified deterministically in [`src/fpl_ingest/domain/run_status.py`](src/fpl_ingest/domain/run_status.py), and [`src/fpl_ingest/cli.py`](src/fpl_ingest/cli.py) returns exit code `0` only for a fully clean run.
+- Failure containment: `--strict` aborts on the first unclean stage boundary, [`src/fpl_ingest/domain/execution_state.py`](src/fpl_ingest/domain/execution_state.py) propagates shared failed state, and post-failure cache or database writes are blocked.
+- Idempotent and reproducible execution: writes are upserts through [`src/fpl_ingest/storage/store.py`](src/fpl_ingest/storage/store.py), conflict targets are inferred from compiled keys, finished gameweeks and player histories can reuse raw JSON cache unless `--force` is supplied, and gameweek rows are written in ascending order.
+- Observability: every stage emits canonical metrics, completed stages are recorded in `_runs`, final run status is persisted for all stage rows, and `_metadata` stores freshness information separately from domain tables.
+
+For the full semantics and deeper implementation details, see the documentation in [`docs/`](docs/).
+
+## Repository Structure
+
+```text
+src/fpl_ingest/
+  cli.py                 # thin CLI router
+  cli_formatters.py      # command output formatting
+  contract/              # schema compiler, DDL generation, validation artifacts
+  domain/                # models, schema contract, transforms, run semantics
+  pipeline/              # runner plus stage modules for core, fixtures, gameweeks, history
+  storage/               # SQLite persistence layer
+  transport/             # API clients, sync HTTP, rate limiting
+  validation/            # smoke tests and runtime drift validation
+
+tests/
+  contract/              # contract alignment and schema drift tests
+  domain/                # transform and domain behavior
+  integration/           # broader API and behavior tests
+  pipeline/              # CLI and stage orchestration tests
+  smoke/                 # smoke test behavior
+  storage/               # SQLite persistence tests
+  transport/             # client and rate limiter tests
+
+```
+
+## Example Behavior
+
+Representative stage logs:
+
+```text
+12:00:01 INFO     fpl_ingest — [stage=core] fetched=650 validated=650 written=650 skipped=0
+12:00:03 INFO     fpl_ingest — [stage=fixtures] fetched=380 validated=380 written=380 skipped=0
+12:00:05 INFO     fpl_ingest — [stage=gameweeks] fetched=11400 validated=11400 written=11400 skipped=0
+12:00:19 INFO     fpl_ingest — [stage=player_histories] fetched=22800 validated=22800 written=22800 skipped=0
+```
+
+Representative run summary:
+
+```text
+12:00:19 INFO     fpl_ingest — [run] status=SUCCESS total_fetched=35230 total_validated=35230 total_written=35230 total_skipped=0 total_errors=0
+```
+
+Representative smoke-test output:
+
+```text
+Smoke test passed.
+Checked endpoints: bootstrap-static, fixtures, element-summary
+Sample size: 5
+```
+
+Representative drift failure:
+
+```text
+Smoke test failed: Missing field: elements[].now_cost
+```
+
+## Documentation
+
+- [docs/architecture.md](docs/architecture.md)
+- [docs/data-contract.md](docs/data-contract.md)
+- [docs/schema-contract.md](docs/schema-contract.md)
+- [docs/guarantees.md](docs/guarantees.md)
+
+## Limitations
+
+- SQLite is the storage engine, so this is not a distributed ingestion platform.
+- There is no scheduler or orchestration layer built in; execution is CLI-driven.
+- The project focuses on ingestion correctness and contract enforcement, not downstream analytics modeling.
+- The smoke test checks structural drift, not semantic correctness of every upstream value.
+
+Those constraints are deliberate. The point of the repository is to demonstrate strong ingestion system design, not to impersonate a full data platform.
+
+## Future Extensions
+
+- publish into DuckDB, Postgres, or a warehouse while preserving the same compiled contract model
+- emit run metrics to an external observability backend
+- add snapshot/versioned exports for downstream model training or feature generation
+- add orchestration only if operational scale justifies it
+
+## License
+
+[MIT](LICENSE)

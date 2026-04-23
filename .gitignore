@@ -20,6 +20,12 @@ wheels/
 .venv
 .coverage
 *.code-workspace
+.vscode/
 
 # Claude Code internal state
 .claude/
+
+# AI md files
+AI_PROMPT_TEMPLATE.md
+AI_RULES.md
+.aider*

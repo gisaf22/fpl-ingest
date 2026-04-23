@@ -2,31 +2,30 @@
 
 Thanks for contributing to `fpl-ingest`.
 
-## Development Setup
+## Workflow
 
-1. Clone the repository.
-2. Install dependencies:
+1. Install dependencies:
 
 ```bash
 uv sync
 ```
 
-3. Run the test suite:
-
-```bash
-PYTHONPATH=src pytest -q
-```
-
-Or with `uv`:
+2. Run the full test suite:
 
 ```bash
 uv run pytest -q
 ```
 
+3. Run the upstream smoke test when touching API-facing code:
+
+```bash
+uv run fpl-ingest smoke-test
+```
+
 ## Project Expectations
 
-- Keep the README short and user-facing.
-- Put deeper technical or contract details under `docs/`.
+- Keep the README concise and operator-facing.
+- Put deeper implementation or contract details under `docs/`.
 - Preserve source fidelity in ingest whenever possible.
 - Keep ingestion concerns separate from downstream analytics modeling.
 - Add or update tests with behavior changes.

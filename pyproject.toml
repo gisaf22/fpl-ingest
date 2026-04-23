@@ -1,16 +1,28 @@
 [project]
 name = "fpl-ingest"
 version = "1.0.0"
-description = "Reusable FPL API ingestion library: HTTP client, typed models, and generic transforms."
+description = "Contract-driven CLI ingestion system for Fantasy Premier League data."
 readme = "README.md"
 authors = [
     { name = "gisaf22", email = "safari.gisa@gmail.com" }
 ]
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.9",
     "pydantic>=2.0",
     "requests>=2.28",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Database",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Quality Assurance",
 ]
 
 [dependency-groups]
@@ -31,6 +43,10 @@ fpl-ingest = "fpl_ingest.cli:main"
 [build-system]
 requires = ["uv_build>=0.10.9,<0.11.0"]
 build-backend = "uv_build"
+
+[project.urls]
+Repository = "https://github.com/gisaf22/fpl-ingest"
+Issues = "https://github.com/gisaf22/fpl-ingest/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

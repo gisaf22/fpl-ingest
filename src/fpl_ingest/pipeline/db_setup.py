@@ -1,56 +1,16 @@
-"""Database setup — registers all pipeline tables, indexes, and constraints.
-
-This is the single place that decides which tables exist, what constraints
-they carry, and which indexes are created. It does not fetch data or
-perform any I/O beyond issuing DDL statements to the SQLiteStore.
-
-To add a new table to the pipeline, register it here.
-"""
+"""Database setup — registers all pipeline tables, indexes, and constraints."""
 
 from __future__ import annotations
 
-from fpl_ingest.models import (
-    ElementTypeModel,
-    EventModel,
-    FixtureModel,
-    FixtureStatModel,
-    GameweekModel,
-    PlayerHistoryModel,
-    PlayerModel,
-    TeamModel,
-)
-from fpl_ingest.store import SQLiteStore
+from fpl_ingest.contract import compile_contract
+from fpl_ingest.storage.store import SQLiteStore
 
 
 def setup_store(store: SQLiteStore) -> None:
-    """Register all pipeline tables, constraints, and indexes against the store.
+    """Register all pipeline tables from the compiled public contract."""
+    contract = compile_contract()
+    for table in contract.tables.values():
+        store.register_contract_table(table)
 
-    Args:
-        store: Active SQLiteStore. Must be called within a store.transaction()
-            block so DDL and subsequent DML share the same connection.
-    """
-    store.register_table("players", PlayerModel)
-    store.register_table("teams", TeamModel)
-    store.register_table("fixtures", FixtureModel)
-    store.register_table(
-        "fixture_stats", FixtureStatModel,
-        unique_constraint=FixtureStatModel.GRAIN_CONSTRAINT,
-    )
-    store.register_table(
-        "gameweeks", GameweekModel,
-        unique_constraint=GameweekModel.GRAIN_CONSTRAINT,
-    )
-    store.register_table(
-        "player_histories", PlayerHistoryModel,
-        unique_constraint=PlayerHistoryModel.GRAIN_CONSTRAINT,
-    )
-    store.register_table("events", EventModel)
-    store.register_table("element_types", ElementTypeModel)
-
-    store.create_index("gameweeks", ["round"])
-    store.create_index("player_histories", ["round"])
-    store.create_index("player_histories", ["element_id"])
-    store.create_index("fixtures", ["event"])
-    store.create_index("fixture_stats", ["element"])
     store.setup_runs_table()
     store.setup_metadata_table()

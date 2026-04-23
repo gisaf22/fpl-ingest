@@ -1,0 +1,1691 @@
+{
+  "schema_version": "1.0.0",
+  "tables": {
+    "element_types": {
+      "columns": {
+        "element_count": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "id": {
+          "nullable": false,
+          "primary_key": true,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ingested_at": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "system",
+          "sqlite_type": "TEXT"
+        },
+        "plural_name": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "plural_name_short": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "singular_name": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "singular_name_short": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "squad_max_play": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "squad_max_select": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "squad_min_play": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "squad_min_select": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "squad_select": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ui_shirt_specific": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        }
+      },
+      "indexes": [],
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": []
+    },
+    "events": {
+      "columns": {
+        "average_entry_score": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "can_enter": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "can_manage": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "chip_plays_json": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "cup_leagues_created": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "data_checked": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "deadline_time": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "deadline_time_epoch": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "deadline_time_game_offset": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "finished": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "h2h_ko_matches_created": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "highest_score": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "highest_scoring_entry": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "id": {
+          "nullable": false,
+          "primary_key": true,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ingested_at": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "system",
+          "sqlite_type": "TEXT"
+        },
+        "is_current": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "is_next": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "is_previous": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "most_captained": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "most_selected": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "most_transferred_in": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "most_vice_captained": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "name": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "ranked_count": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "release_time": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "released": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "top_element": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "top_element_points": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "transfers_made": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        }
+      },
+      "indexes": [],
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": []
+    },
+    "fixture_stats": {
+      "columns": {
+        "element": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "fixture_id": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "identifier": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "ingested_at": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "system",
+          "sqlite_type": "TEXT"
+        },
+        "side": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "value": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        }
+      },
+      "indexes": [
+        [
+          "element"
+        ]
+      ],
+      "primary_key": [],
+      "unique_constraints": [
+        [
+          "fixture_id",
+          "identifier",
+          "element"
+        ]
+      ]
+    },
+    "fixtures": {
+      "columns": {
+        "code": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "event": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "finished": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "finished_provisional": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "id": {
+          "nullable": false,
+          "primary_key": true,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ingested_at": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "system",
+          "sqlite_type": "TEXT"
+        },
+        "kickoff_time": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "minutes": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "provisional_start_time": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "pulse_id": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "started": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_a": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_a_difficulty": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_a_score": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_h": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_h_difficulty": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_h_score": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        }
+      },
+      "indexes": [
+        [
+          "event"
+        ]
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": []
+    },
+    "gameweeks": {
+      "columns": {
+        "assists": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "bonus": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "bps": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "clean_sheets": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "clearances_blocks_interceptions": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "creativity": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "defensive_contribution": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "element_id": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "expected_assists": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goal_involvements": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goals": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goals_conceded": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "goals_conceded": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "goals_scored": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ict_index": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "in_dreamteam": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "influence": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "ingested_at": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "system",
+          "sqlite_type": "TEXT"
+        },
+        "minutes": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "own_goals": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "penalties_missed": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "penalties_saved": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "recoveries": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "red_cards": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "round": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "saves": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "starts": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "tackles": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "threat": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "total_points": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "yellow_cards": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        }
+      },
+      "indexes": [
+        [
+          "round"
+        ]
+      ],
+      "primary_key": [],
+      "unique_constraints": [
+        [
+          "element_id",
+          "round"
+        ]
+      ]
+    },
+    "player_histories": {
+      "columns": {
+        "assists": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "bonus": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "bps": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "clean_sheets": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "clearances_blocks_interceptions": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "creativity": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "defensive_contribution": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "element_id": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "expected_assists": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goal_involvements": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goals": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goals_conceded": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "fixture": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "goals_conceded": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "goals_scored": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ict_index": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "in_dreamteam": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "influence": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "ingested_at": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "system",
+          "sqlite_type": "TEXT"
+        },
+        "kickoff_time": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "minutes": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "opponent_team": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "own_goals": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "penalties_missed": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "penalties_saved": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "recoveries": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "red_cards": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "round": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "saves": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "selected": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "starts": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "tackles": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_a_score": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_h_score": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "threat": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "total_points": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "transfers_balance": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "transfers_in": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "transfers_out": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "value": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "was_home": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "yellow_cards": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        }
+      },
+      "indexes": [
+        [
+          "round"
+        ],
+        [
+          "element_id"
+        ]
+      ],
+      "primary_key": [],
+      "unique_constraints": [
+        [
+          "element_id",
+          "round",
+          "fixture"
+        ]
+      ]
+    },
+    "players": {
+      "columns": {
+        "assists": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "birth_date": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "bonus": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "bps": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "can_select": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "can_transact": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "chance_of_playing_next_round": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "chance_of_playing_this_round": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "clean_sheets": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "clean_sheets_per_90": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "clearances_blocks_interceptions": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "code": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "corners_and_indirect_freekicks_order": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "corners_and_indirect_freekicks_text": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "cost_change_event": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "cost_change_event_fall": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "cost_change_start": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "cost_change_start_fall": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "creativity": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "creativity_rank": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "creativity_rank_type": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "defensive_contribution": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "defensive_contribution_per_90": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "direct_freekicks_order": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "direct_freekicks_text": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "dreamteam_count": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "element_type": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ep_next": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "ep_this": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "event_points": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "expected_assists": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_assists_per_90": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goal_involvements": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goal_involvements_per_90": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goals": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goals_conceded": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goals_conceded_per_90": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "expected_goals_per_90": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "first_name": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "form": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "form_rank": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "form_rank_type": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "goals_conceded": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "goals_conceded_per_90": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "goals_scored": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "has_temporary_code": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ict_index": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "ict_index_rank": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ict_index_rank_type": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "id": {
+          "nullable": false,
+          "primary_key": true,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "in_dreamteam": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "influence": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "influence_rank": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "influence_rank_type": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ingested_at": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "system",
+          "sqlite_type": "TEXT"
+        },
+        "known_name": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "minutes": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "news": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "news_added": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "now_cost": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "now_cost_rank": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "now_cost_rank_type": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "opta_code": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "own_goals": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "penalties_missed": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "penalties_order": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "penalties_saved": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "penalties_text": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "photo": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "points_per_game": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "points_per_game_rank": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "points_per_game_rank_type": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "price_change_percent": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "recoveries": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "red_cards": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "region": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "removed": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "saves": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "saves_per_90": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "second_name": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "selected_by_percent": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "selected_rank": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "selected_rank_type": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "special": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "squad_number": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "starts": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "starts_per_90": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "status": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "tackles": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_code": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_join_date": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "threat": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "threat_rank": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "threat_rank_type": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "total_points": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "transfers_in": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "transfers_in_event": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "transfers_out": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "transfers_out_event": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "value_form": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "value_season": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "web_name": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "yellow_cards": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        }
+      },
+      "indexes": [],
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": []
+    },
+    "teams": {
+      "columns": {
+        "code": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "draw": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "form": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "REAL"
+        },
+        "id": {
+          "nullable": false,
+          "primary_key": true,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "ingested_at": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "system",
+          "sqlite_type": "TEXT"
+        },
+        "loss": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "name": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "played": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "points": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "position": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "pulse_id": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "short_name": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "strength": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "strength_attack_away": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "strength_attack_home": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "strength_defence_away": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "strength_defence_home": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "strength_overall_away": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "strength_overall_home": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "team_division": {
+          "nullable": true,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "TEXT"
+        },
+        "unavailable": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        },
+        "win": {
+          "nullable": false,
+          "primary_key": false,
+          "source": "model",
+          "sqlite_type": "INTEGER"
+        }
+      },
+      "indexes": [],
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": []
+    }
+  }
+}

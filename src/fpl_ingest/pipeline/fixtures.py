@@ -8,16 +8,17 @@ It does not contain HTTP or SQL logic directly.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
-from fpl_ingest.async_client import AsyncFPLClient
-from fpl_ingest.models import FixtureModel, FixtureStatModel
+from fpl_ingest.transport.async_client import AsyncFPLClient
+from fpl_ingest.domain.execution_state import PipelineExecutionState
+from fpl_ingest.domain.models import FixtureModel, FixtureStatModel
+from fpl_ingest.pipeline.shared import write_json_cache
 from fpl_ingest.pipeline.stage_result import StageResult
-from fpl_ingest.store import SQLiteStore
-from fpl_ingest.transforms import flatten_fixture_stats
-from fpl_ingest.sync_http import FPLClientError
+from fpl_ingest.storage.store import SQLiteStore
+from fpl_ingest.domain.transforms import flatten_fixture_stats
+from fpl_ingest.transport.sync_http import FPLClientError
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,8 @@ async def ingest_fixtures(
     client: AsyncFPLClient,
     store: SQLiteStore,
     raw_dir: Path,
+    *,
+    execution_state: PipelineExecutionState | None = None,
 ) -> StageResult:
     """Fetch fixtures and upsert fixture rows and per-player fixture stats.
 
@@ -35,7 +38,7 @@ async def ingest_fixtures(
         raw_dir: Directory to write the raw fixtures.json cache file.
 
     Returns:
-        StageResult with fetched/upserted/skipped/error counts.
+        StageResult with canonical fetched/validated/written/skipped counts.
     """
     logger.info("Fetching fixtures...")
     try:
@@ -48,40 +51,47 @@ async def ingest_fixtures(
         logger.warning("No fixture data returned")
         return StageResult(stage="fixtures")
 
-    _write_raw_cache(raw_dir / "fixtures.json", fixtures)
+    write_json_cache(raw_dir / "fixtures.json", fixtures, execution_state=execution_state)
 
-    total_upserted, total_skipped = _upsert_fixtures(store, fixtures)
-    stat_upserted, stat_skipped = _upsert_fixture_stats(store, fixtures)
+    fixture_fetched = len(fixtures)
+    fixture_validated, fixture_written = _upsert_fixtures(store, fixtures)
+    stat_rows = _flatten_fixture_stat_rows(fixtures)
+    stat_fetched = len(stat_rows)
+    stat_validated, stat_written = _upsert_fixture_stats(store, stat_rows)
 
     return StageResult(
         stage="fixtures",
-        fetched=len(fixtures),
-        upserted=total_upserted + stat_upserted,
-        skipped=total_skipped + stat_skipped,
+        fetched=fixture_fetched + stat_fetched,
+        validated=fixture_validated + stat_validated,
+        written=fixture_written + stat_written,
+        skipped=(fixture_fetched - fixture_validated) + (stat_fetched - stat_validated),
     )
-
-
-def _write_raw_cache(path: Path, data: object) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.rename(path)
-
-
 def _upsert_fixtures(store: SQLiteStore, fixtures: list) -> tuple[int, int]:
     prepared = [FixtureModel.prepare(f) for f in fixtures]
-    upserted, skipped = store.upsert_models("fixtures", FixtureModel, prepared)
-    logger.info("Fixtures: %d upserted, %d skipped", upserted, skipped)
-    return upserted, skipped
+    written, skipped = store.upsert_models("fixtures", FixtureModel, prepared)
+    validated = len(prepared) - skipped
+    logger.debug("Fixtures extracted: raw=%d validated=%d written=%d skipped=%d", len(prepared), validated, written, skipped)
+    return validated, written
 
 
-def _upsert_fixture_stats(store: SQLiteStore, fixtures: list) -> tuple[int, int]:
+def _flatten_fixture_stat_rows(fixtures: list) -> list[dict]:
     all_stats: list[dict] = []
     for fixture in fixtures:
         all_stats.extend(flatten_fixture_stats(fixture))
+    return all_stats
 
+
+def _upsert_fixture_stats(store: SQLiteStore, all_stats: list[dict]) -> tuple[int, int]:
     if not all_stats:
         return 0, 0
 
-    upserted, skipped = store.upsert_models("fixture_stats", FixtureStatModel, all_stats)
-    logger.info("Fixture stats: %d upserted, %d skipped", upserted, skipped)
-    return upserted, skipped
+    written, skipped = store.upsert_models("fixture_stats", FixtureStatModel, all_stats)
+    validated = len(all_stats) - skipped
+    logger.debug(
+        "Fixture stats extracted: raw=%d validated=%d written=%d skipped=%d",
+        len(all_stats),
+        validated,
+        written,
+        skipped,
+    )
+    return validated, written

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from typing import Literal
+from collections.abc import Sequence
 
 RunStatus = Literal["SUCCESS", "FAILED", "FAILED_PARTIAL"]
 
-RUN_STATUS_SUCCESS = "SUCCESS"
-RUN_STATUS_FAILED = "FAILED"
-RUN_STATUS_FAILED_PARTIAL = "FAILED_PARTIAL"
+RUN_STATUS_SUCCESS: Literal["SUCCESS"] = "SUCCESS"
+RUN_STATUS_FAILED: Literal["FAILED"] = "FAILED"
+RUN_STATUS_FAILED_PARTIAL: Literal["FAILED_PARTIAL"] = "FAILED_PARTIAL"
 
 
 def classify_run(*, errors: int, skipped: int, strict_mode: bool) -> RunStatus:
@@ -24,7 +25,7 @@ def classify_run(*, errors: int, skipped: int, strict_mode: bool) -> RunStatus:
     return RUN_STATUS_SUCCESS
 
 
-def classify_run_from_results(stage_results: list[object], *, strict_mode: bool) -> RunStatus:
+def classify_run_from_results(stage_results: Sequence[object], *, strict_mode: bool) -> RunStatus:
     """Classify the terminal run status from canonical stage results."""
     skipped = sum(getattr(result, "skipped", 0) for result in stage_results)
     errors = sum(getattr(result, "errors", 0) for result in stage_results)

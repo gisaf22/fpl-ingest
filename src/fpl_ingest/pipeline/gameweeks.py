@@ -122,14 +122,14 @@ async def _collect_gameweeks(
     strict: bool,
 ) -> tuple[dict[int, tuple[dict[str, Any], list[dict[str, Any]]]], int]:
     """Fetch gameweeks, cancelling pending work on the first strict failure."""
+    fetched_rows: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
+    error_count = 0
+
     if not strict:
         raw_results = await asyncio.gather(
             *[_fetch_one_gameweek(client, gw) for gw in gameweek_ids],
             return_exceptions=True,
         )
-
-        fetched_rows: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
-        error_count = 0
 
         for gameweek_id, result in zip(gameweek_ids, raw_results):
             if isinstance(result, BaseException):
@@ -145,8 +145,6 @@ async def _collect_gameweeks(
         asyncio.create_task(_fetch_one_gameweek(client, gw)): gw
         for gw in gameweek_ids
     }
-    fetched_rows: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
-    error_count = 0
 
     try:
         pending = set(tasks)

@@ -6,7 +6,7 @@ import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from time import perf_counter
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from fpl_ingest.domain.execution_state import PipelineExecutionState
 from fpl_ingest.domain.run_status import (
@@ -32,11 +32,6 @@ _MAX_CONCURRENT_REQUESTS = 10
 _StageOutput = TypeVar("_StageOutput")
 
 
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-
 class StrictRunFailure(RuntimeError):
     """Raised when strict mode aborts the run at a stage boundary."""
 
@@ -44,11 +39,6 @@ class StrictRunFailure(RuntimeError):
         self.result = result
         self.failure_reason = failure_reason
         super().__init__(f"Ingest stage did not complete cleanly: {result.summary_line()}")
-
-
-# ---------------------------------------------------------------------------
-# Logging helpers
-# ---------------------------------------------------------------------------
 
 
 def _warn_or_raise_on_unclean_stage(result: StageResult, *, strict: bool = False) -> None:
@@ -141,11 +131,6 @@ def _log_fail_fast_failure(logger: logging.Logger, stage_result: StageResult) ->
     _log_partial_run_warning(logger)
 
 
-# ---------------------------------------------------------------------------
-# Run finalization helpers
-# ---------------------------------------------------------------------------
-
-
 def _success_metadata(run_started_at: str, core: CoreData) -> dict[str, str]:
     metadata_updates = {
         "last_successful_run_at": run_started_at,
@@ -185,11 +170,6 @@ def _exit_code(
     logger.error("Freshness metadata not updated because the run was not fully clean.")
     _log_partial_run_warning(logger)
     return 1
-
-
-# ---------------------------------------------------------------------------
-# Stage execution helpers
-# ---------------------------------------------------------------------------
 
 
 def _record_stage(
@@ -235,6 +215,7 @@ async def _execute_stage(
     logger: logging.Logger,
     strict: bool,
 ) -> _StageOutput:
+    result: Any
     with store.transaction():
         result, stage_started_at, stage_ended_at, duration_seconds = await _measure_stage(awaitable)
 
@@ -253,17 +234,12 @@ async def _execute_stage(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Pipeline execution
-# ---------------------------------------------------------------------------
-
-
 async def _run_pipeline_async(*, args, config, logger: logging.Logger, store: SQLiteStore) -> int:
     """Execute the full ingest pipeline. Returns 0 only on a fully clean run."""
     config.raw_dir.mkdir(parents=True, exist_ok=True)
 
     execution_state = PipelineExecutionState()
-    store.execution_state = execution_state
+    store._execution_state = execution_state
     run_started_at = datetime.now(timezone.utc).isoformat()
     stage_results: list[StageResult] = []
     core: CoreData | None = None
@@ -278,6 +254,7 @@ async def _run_pipeline_async(*, args, config, logger: logging.Logger, store: SQ
         ) as client:
             with store.transaction():
                 setup_store(store)
+                core_stage: StageResult
                 (core, core_stage), stage_started_at, stage_ended_at, duration_seconds = await _measure_stage(
                     ingest_core_data(
                         client,
@@ -312,6 +289,7 @@ async def _run_pipeline_async(*, args, config, logger: logging.Logger, store: SQ
                 strict=args.strict,
             )
 
+            assert core is not None
             await _execute_stage(
                 awaitable=ingest_gameweeks(
                     client,
@@ -329,6 +307,7 @@ async def _run_pipeline_async(*, args, config, logger: logging.Logger, store: SQ
                 strict=args.strict,
             )
 
+            assert core is not None
             await _execute_stage(
                 awaitable=ingest_player_histories(
                     client,
@@ -383,11 +362,6 @@ async def _run_pipeline_async(*, args, config, logger: logging.Logger, store: SQ
 
     assert core is not None
     return _exit_code(logger, stage_results, store, run_started_at, core)
-
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
 
 
 async def run_pipeline(*, args, config, logger: logging.Logger, store: SQLiteStore) -> int:

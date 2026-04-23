@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from fpl_ingest.contract.compiler import CompiledTable
 
 
-def generate_test_contracts(schema_version: str, tables: dict[str, object]) -> dict[str, Any]:
+def generate_test_contracts(schema_version: str, tables: dict[str, CompiledTable]) -> dict[str, Any]:
     """Build test fixtures derived entirely from the compiled contract."""
     return {
         "schema_version": schema_version,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fpl_ingest.config import resolve_db_path
 from fpl_ingest.domain.schema import (
@@ -14,8 +14,11 @@ from fpl_ingest.domain.schema import (
     ValidationResult,
 )
 
+if TYPE_CHECKING:
+    from fpl_ingest.contract.compiler import CompiledColumn, CompiledContract, CompiledTable
 
-def generate_validation_rules(schema_version: str, tables: dict[str, object]) -> dict[str, Any]:
+
+def generate_validation_rules(schema_version: str, tables: dict[str, CompiledTable]) -> dict[str, Any]:
     """Build validation rules derived entirely from the compiled contract."""
     return {
         "schema_version": schema_version,
@@ -39,7 +42,7 @@ def generate_validation_rules(schema_version: str, tables: dict[str, object]) ->
     }
 
 
-def _column_map(table: object) -> dict[str, object]:
+def _column_map(table: CompiledTable) -> dict[str, CompiledColumn]:
     return {column.name: column for column in table.columns}
 
 
@@ -78,7 +81,7 @@ def _introspect_table(
     return columns, primary_key, unique_constraints, indexes
 
 
-def validate_contract_db(contract: object, db_path: str | Path | None = None) -> ValidationResult:
+def validate_contract_db(contract: CompiledContract, db_path: str | Path | None = None) -> ValidationResult:
     """Validate a live database against the compiled contract."""
     resolved = resolve_db_path(str(db_path) if db_path is not None else None)
     checked_at = datetime.now(timezone.utc).isoformat()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,8 +23,8 @@ def format_status_output(
     *,
     db_path: Path,
     raw_dir: Path,
-    runs: list[Mapping[str, object]],
-    metadata: list[Mapping[str, object]],
+    runs: Sequence[Mapping[str, object]],
+    metadata: Sequence[Mapping[str, object]],
     detailed: bool,
 ) -> str:
     lines = [
@@ -100,10 +100,10 @@ def format_schema_output(
 
     if result.nullability_mismatches:
         lines.append("Nullability mismatches:")
-        for table_name, mismatches in sorted(result.nullability_mismatches.items()):
+        for table_name, constraint_mismatches in sorted(result.nullability_mismatches.items()):
             rendered = ", ".join(
                 f"{mismatch.name} expected {mismatch.expected} got {mismatch.actual}"
-                for mismatch in mismatches
+                for mismatch in constraint_mismatches
             )
             lines.append(f"  - {table_name}: {rendered}")
 

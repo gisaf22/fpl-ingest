@@ -47,37 +47,16 @@ Path resolution order for `db` and `raw‑dir` is:
 3. `~/.fpl/config.yaml`
 4. default path
 
-## Who This Is For
+## Key Guarantees
 
-- engineers who want a local, reproducible FPL snapshot with clear success semantics
-- projects that treat ingestion correctness as a contract problem, not a best‑effort scrape
-- engineers who want a predictable ingestion workflow and a local SQLite snapshot
+- **Single source of truth**: schema is compiled into the database, validator, and tests.
+- **Truthful success**: a run is only successful if zero rows are skipped and zero errors occur.
+- **Invariant‑checked metrics**: stage metrics satisfy `fetched >= validated >= written`.
+- **Idempotent execution**: safe to rerun without duplicating data.
+- **Failure containment**: `--strict` aborts on the first unclean stage boundary; post‑failure writes are blocked.
+- **Live API drift detection**: smoke test checks upstream shape before ingestion.
 
-## Not For
-
-- teams looking for a distributed ingestion platform or scheduler
-- users who only need ad‑hoc FPL notebooks without a maintained local SQLite snapshot
-- projects focused on downstream analytics modeling rather than ingestion correctness
-
-## Why This Exists
-
-Most API pipelines break long before they throw an obvious exception.
-
-- Upstream providers change payload shape without notice.
-- Validation is often advisory instead of enforced.
-- Pipelines frequently log row skips but still report success.
-- Schema expectations drift across application code, database DDL, and tests.
-- `fpl‑ingest` focuses on reliable ingestion into SQLite rather than “fetch some JSON and hope for the best.”
-
-## Key Properties
-
-- Schema is compiled into the database, validator, and tests from a single source of truth.
-- A run is only successful if zero rows are skipped and zero errors occur.
-- Stage metrics are invariant‑checked (`fetched >= validated >= written`).
-- The pipeline is idempotent and safe to rerun without duplicating data.
-- Live API drift is checked before ingestion via a smoke test.
-
-## System Architecture
+## System Overview
 
 ```text
 Fantasy Premier League API
@@ -110,15 +89,6 @@ Fantasy Premier League API
 - Contract enforcement: [`src/fpl_ingest/domain/schema.py`](src/fpl_ingest/domain/schema.py) defines the public table contract, and [`src/fpl_ingest/contract/compiler.py`](src/fpl_ingest/contract/compiler.py) compiles it into SQLite DDL, validation rules, and test‑facing artifacts used by [`src/fpl_ingest/pipeline/db_setup.py`](src/fpl_ingest/pipeline/db_setup.py).
 - Storage: [`src/fpl_ingest/storage/store.py`](src/fpl_ingest/storage/store.py) owns SQLite pragmas, transactions, upserts, schema registration, audit logging, and metadata finalization.
 - Runtime validation and drift checks: typed models, schema validation commands, `_runs`, `_metadata`, and [`src/fpl_ingest/validation/smoke_test.py`](src/fpl_ingest/validation/smoke_test.py) surface upstream drift and partial‑run risk early.
-
-## Operational Guarantees
-
-- Truthful success semantics: each stage returns an immutable [`StageResult`](src/fpl_ingest/pipeline/stage_result.py) with invariant‑checked metrics, run status is classified deterministically in [`src/fpl_ingest/domain/run_status.py`](src/fpl_ingest/domain/run_status.py), and [`src/fpl_ingest/cli.py`](src/fpl_ingest/cli.py) returns exit code `0` only for a fully clean run.
-- Failure containment: `--strict` aborts on the first unclean stage boundary, [`src/fpl_ingest/domain/execution_state.py`](src/fpl_ingest/domain/execution_state.py) propagates shared failed state, and post‑failure cache or database writes are blocked.
-- Idempotent and reproducible execution: writes are upserts through [`src/fpl_ingest/storage/store.py`](src/fpl_ingest/storage/store.py), conflict targets are inferred from compiled keys, finished gameweeks and player histories can reuse raw JSON cache unless `--force` is supplied, and gameweek rows are written in ascending order.
-- Each stage emits structured metrics and run summaries via logging and persisted run metadata.
-
-For the full semantics and deeper implementation details, see the documentation in [`docs/`](docs/).
 
 ## Repository Structure
 
@@ -174,14 +144,6 @@ Representative drift failure:
 Smoke test failed: Missing field: elements[].now_cost
 ```
 
-## Documentation
-
-- [Architecture Overview](docs/architecture/architecture.md)
-- [Architecture Contract](docs/architecture/contract.md)
-- [Data Contract](docs/data‑contract.md)
-- [Schema Contract](docs/schema‑contract.md)
-- [Guarantees](docs/guarantees.md)
-
 ## Limitations
 
 - SQLite is the storage engine, so this is not a distributed ingestion platform.
@@ -191,12 +153,13 @@ Smoke test failed: Missing field: elements[].now_cost
 
 Those constraints are deliberate. The point of the repository is to demonstrate strong ingestion system design, not to impersonate a full data platform.
 
-## Future Extensions
+## Documentation
 
-- publish into DuckDB, Postgres, or a warehouse while preserving the same compiled contract model
-- emit run metrics to an external observability backend
-- add snapshot/versioned exports for downstream model training or feature generation
-- add orchestration only if operational scale justifies it
+- [Architecture Overview](docs/architecture/architecture.md)
+- [Architecture Contract](docs/architecture/contract.md)
+- [Data Contract](docs/data‑contract.md)
+- [Schema Contract](docs/schema‑contract.md)
+- [Guarantees](docs/guarantees.md)
 
 ## License
 

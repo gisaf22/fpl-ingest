@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+DEFAULT_STALE_AFTER_HOURS: float = 26.0
+
 _DEFAULT_DB_PATH = Path.home() / ".fpl" / "fpl.db"
 _DEFAULT_RAW_DIR = Path.home() / ".fpl" / "raw"
 _CONFIG_FILE = Path.home() / ".fpl" / "config.yaml"

@@ -2,87 +2,82 @@
 
 `fpl-ingest` is organized as a small set of layers with clear ownership.
 
+For system-level purpose, non-goals, operational assumptions, and major tradeoffs, read [System Purpose](system-purpose.md). This page focuses on execution flow and package ownership.
+
 ## Execution Flow
 
 ```text
-CLI router -> runner -> Pipeline stages -> StageResult -> SQLite store -> Finalize run
+CLI router -> orchestration runner -> extract stages -> transform models -> load store -> finalize run
 ```
 
 At a high level:
 
-1. `cli.py` parses arguments, routes commands, and delegates run execution to `pipeline/runner.py`.
-2. `pipeline/runner.py` resolves runtime dependencies and orchestrates stage order.
-3. `pipeline/` stages fetch, validate, transform, and persist data one stage at a time.
-4. Each stage returns a canonical `StageResult` with fetched, validated, written, skipped, and error counts.
-5. `storage/store.py` persists rows, `_runs` audit state, and `_metadata` freshness information.
-6. Terminal run status is derived from canonical stage results and persisted at the end of the run.
+1. `cli.py` parses arguments, resolves command handlers, and delegates run execution to `orchestration/runner.py`.
+2. `orchestration/runner.py` resolves runtime dependencies and orchestrates stage order.
+3. `extract/stages/` endpoint stages fetch, transform, and persist data one stage at a time.
+4. Each stage returns a `StageResult` with stage-level counts.
+5. `load/store.py` persists rows, `_runs` audit state, and `_metadata` freshness information.
+6. Run finalization persists terminal status at the end of the run.
 
 ## Package Layout
 
-### `transport/`
+### `extract/`
 
-Owns API access and request pacing:
+Owns API access, request pacing, raw cache writes, and endpoint-oriented extract stages:
 
-- `async_client.py`
-- `sync_client.py`
-- `sync_http.py`
-- `rate_limiter.py`
-- `rate_config.py`
+- `extract/http/client.py`
+- `extract/http/sync_client.py`
+- `extract/http/sync_http.py`
+- `extract/http/rate_limiter.py`
+- `extract/http/rate_config.py`
+- `extract/stages/bootstrap.py`
+- `extract/stages/fixtures.py`
+- `extract/stages/gameweeks.py`
+- `extract/stages/element_summary.py`
 
-### `domain/`
+### `transform/`
 
-Owns typed models, schema metadata, transforms, and run semantics:
+Owns typed models and pure structural transforms:
 
 - `models.py`
-- `schema.py`
 - `transforms.py`
-- `run_status.py`
-- `execution_state.py`
 - `types.py`
 
-### `pipeline/`
+### `orchestration/`
 
-Owns ingestion orchestration and per-stage execution:
+Owns run lifecycle, stage accounting, replay, and status classification:
 
 - `runner.py`
-- `core.py`
-- `fixtures.py`
-- `gameweeks.py`
-- `history.py`
-- `db_setup.py`
-- `shared.py`
+- `replay.py`
 - `stage_result.py`
+- `run_status.py`
+- `execution_state.py`
 
-### `storage/`
+### `load/`
 
-Owns SQLite persistence and run finalization:
+Owns SQLite persistence, run finalization, and post-run integrity checks:
 
 - `store.py`
+- `integrity.py`
+- `db_setup.py`
 
-### `validation/`
+### `schema/`
 
-Owns upstream structural drift checks:
+Owns the public table contract, compiled artifacts, DDL, database validation, and smoke tests:
 
-- `smoke_test.py`
+- `definition.py`
+- `compiler.py`
+- `ddl.py`
+- `validation.py`
+- `test_data.py`
 
-### `contract/`
+## Boundary Intent
 
-Owns compiled schema outputs derived from the canonical domain contract:
+The package boundaries are:
 
-- compiler
-- DDL generation
-- validation rules
-- test-facing artifacts
-
-## Design Intent
-
-The important boundaries are:
-
-- cli routes commands but does not own pipeline orchestration
-- transport fetches data but does not know pipeline policy
-- domain defines structure and rules but does not perform I/O
-- pipeline orchestrates stage work but does not own storage internals
-- storage persists canonical results but does not infer business meaning
-- contract artifacts are generated from canonical schema metadata, not hand-maintained in parallel
-
-This keeps schema ownership, execution flow, and observability easier to reason about.
+- cli routes commands but does not own orchestration
+- extract fetches and caches raw API data but does not own run policy
+- transform defines row shape and structural flattening but does not perform I/O
+- orchestration coordinates stage work but does not own SQLite internals
+- load persists canonical results but does not infer business meaning
+- schema owns contract artifacts and validation metadata

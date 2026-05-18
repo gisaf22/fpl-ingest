@@ -1812,11 +1812,11 @@
           "sqlite_type": "TEXT"
         }
       ],
-      "description": "Current-season player snapshot; one row per player.",
+      "description": "Current-season player latest-state dataset; one row per player.",
       "field_notes": {
         "element_type": "1=GK, 2=DEF, 3=MID, 4=FWD.",
         "now_cost": "Current price multiplied by 10. Example: 65 = \u00a36.5m.",
-        "selected_by_percent": "Snapshot ownership percentage, not historical ownership.",
+        "selected_by_percent": "Latest-state ownership percentage, not historical ownership.",
         "status": "a=available, i=injured, d=doubtful, s=suspended, n=unavailable."
       },
       "grain": "one row per player",

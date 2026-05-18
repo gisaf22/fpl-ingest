@@ -1,13 +1,8 @@
-"""fpl-ingest package.
+"""Top-level package for the fpl-ingest FPL data ingestion system.
 
-Use grouped package imports:
-
-- `fpl_ingest.transport`
-- `fpl_ingest.storage`
-- `fpl_ingest.domain`
-- `fpl_ingest.validation`
-- `fpl_ingest.pipeline`
-- `fpl_ingest.contract`
+Coordinates extraction, transformation, loading, schema governance, and
+CLI observability across five capability sub-packages. Import from
+sub-packages directly rather than from this module.
 """
 
 __version__ = "1.0.0"

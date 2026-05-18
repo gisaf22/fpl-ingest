@@ -197,3 +197,53 @@ def history_row(**overrides: Any) -> dict:
     }
     base.update(overrides)
     return base
+
+
+def store_history_row(**overrides: Any) -> dict:
+    """history_row variant using the Python field name ``element_id`` instead of the API alias ``element``.
+
+    Use this when building raw dicts for store.upsert_models("player_histories", ...) calls that
+    exercise the store directly (not through the API ingest path). PlayerHistoryModel accepts both
+    forms because pydantic is configured with populate_by_name=True — but the API shape uses
+    ``element`` while the store-layer tests historically used ``element_id`` to be explicit about
+    the DB column name.
+    """
+    base = history_row(**overrides)
+    base["element_id"] = base.pop("element")
+    return base
+
+
+def element_type_row(**overrides: Any) -> dict:
+    """Realistic bootstrap-static element_type row with all required fields."""
+    base: dict = {
+        "id": 3,
+        "singular_name": "Midfielder",
+        "singular_name_short": "MID",
+        "plural_name": "Midfielders",
+        "plural_name_short": "MIDs",
+        "squad_select": 5,
+        "squad_min_select": 2,
+        "squad_max_select": 5,
+        "squad_min_play": 2,
+        "squad_max_play": 5,
+        "ui_shirt_specific": False,
+        "element_count": 250,
+    }
+    base.update(overrides)
+    return base
+
+
+def run_row(**overrides: Any) -> dict:
+    """Realistic _runs audit row with all required fields."""
+    base: dict = {
+        "started_at": "2026-05-14T08:00:00+00:00",
+        "stage": "core",
+        "status": "success",
+        "fetched": 10,
+        "validated": 10,
+        "written": 10,
+        "skipped": 0,
+        "errors": 0,
+    }
+    base.update(overrides)
+    return base

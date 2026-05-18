@@ -22,8 +22,11 @@ jobs:
       - name: Run unit tests
         run: uv run pytest -m unit
 
+      - name: Run integration tests
+        run: uv run pytest -m integration
+
       - name: Verify checked-in schema contract artifact
-        run: uv run pytest -q tests/contract/test_schema_drift.py -k test_checked_in_contract_artifacts_match_compiled_outputs
+        run: uv run pytest -q tests/schema/test_compiler.py -k test_checked_in_contract_artifacts_match_compiled_outputs
 
       - name: Type check
         run: uv run mypy src/fpl_ingest

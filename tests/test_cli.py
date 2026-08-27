@@ -129,10 +129,9 @@ def _make_async_client(bootstrap=MINIMAL_BOOTSTRAP, history_side_effect=None):
 
 def _run(argv: list[str], mock_client, tmp_path) -> Path:
     raw = tmp_path / "raw"
-    db = tmp_path / "test.db"
     with patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=mock_client):
         try:
-            main(["--db", str(db), "--raw-dir", str(raw)] + argv)
+            main(["--raw-dir", str(raw)] + argv)
         except SystemExit as exc:
             if exc.code != 0:
                 raise
@@ -166,10 +165,9 @@ class TestConcurrentPlayerFetch:
 
         client = _make_async_client(history_side_effect=side_effect)
         raw = tmp_path / "raw"
-        db = tmp_path / "test.db"
         with patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=client):
             try:
-                main(["--db", str(db), "--raw-dir", str(raw)])
+                main(["--raw-dir", str(raw)])
             except SystemExit:
                 pass
 
@@ -184,10 +182,9 @@ class TestConcurrentPlayerFetch:
 
         client = _make_async_client(history_side_effect=side_effect)
         raw = tmp_path / "raw"
-        db = tmp_path / "test.db"
         with patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=client):
             with pytest.raises(SystemExit) as exc:
-                main(["--db", str(db), "--raw-dir", str(raw), "--strict"])
+                main(["--raw-dir", str(raw), "--strict"])
 
         assert exc.value.code == 1
 
@@ -229,7 +226,6 @@ class TestCliLifecycle:
         """Raw captures are per-object writes, not a transaction: stage 3 failing
         must not retroactively remove what stages 1 and 2 already wrote to disk."""
         raw = tmp_path / "raw"
-        db = tmp_path / "test.db"
         client = _make_async_client(bootstrap=MINIMAL_BOOTSTRAP)
 
         with (
@@ -238,7 +234,7 @@ class TestCliLifecycle:
                   new=AsyncMock(side_effect=RuntimeError("stage 3 fails"))),
         ):
             with pytest.raises(SystemExit) as exc:
-                main(["--db", str(db), "--raw-dir", str(raw)])
+                main(["--raw-dir", str(raw)])
 
         assert exc.value.code == 1
         bootstrap_payloads = sorted((raw / "fpl" / "bootstrap-static").rglob("payload.json"))
@@ -248,7 +244,6 @@ class TestCliLifecycle:
 
     def test_closes_client_on_success(self, tmp_path):
         raw = tmp_path / "raw"
-        db = tmp_path / "test.db"
         client = FakeClient()
         core = CoreData(events=[], player_ids=[])
 
@@ -260,7 +255,7 @@ class TestCliLifecycle:
             patch("fpl_ingest.orchestration.runner.ingest_player_histories", new=AsyncMock(return_value=StageOutcome(result=StageResult(stage="player_histories")))),
         ):
             try:
-                main(["--db", str(db), "--raw-dir", str(raw)])
+                main(["--raw-dir", str(raw)])
             except SystemExit as exc:
                 if exc.code != 0:
                     raise
@@ -269,7 +264,6 @@ class TestCliLifecycle:
 
     def test_closes_client_when_stage_fails(self, tmp_path):
         raw = tmp_path / "raw"
-        db = tmp_path / "test.db"
         client = FakeClient()
         core = CoreData(events=[], player_ids=[])
 
@@ -281,7 +275,7 @@ class TestCliLifecycle:
             patch("fpl_ingest.orchestration.runner.ingest_player_histories", new=AsyncMock(return_value=StageOutcome(result=StageResult(stage="player_histories")))),
         ):
             with pytest.raises(SystemExit) as exc:
-                main(["--db", str(db), "--raw-dir", str(raw)])
+                main(["--raw-dir", str(raw)])
 
         assert exc.value.code == 1
         assert client.closed, "client session must be closed even when a stage fails"
@@ -294,35 +288,27 @@ class TestCliLifecycle:
         assert manifest["status"] == "IN_PROGRESS"
 
     def test_parser_uses_config_defaults(self, monkeypatch):
-        monkeypatch.setenv("FPL_DB_PATH", "/tmp/fpl-test.db")
         monkeypatch.setenv("FPL_RAW_DIR", "/tmp/fpl-raw")
 
         parser = build_parser()
         args = parser.parse_args([])
 
-        assert args.db is None
         assert args.raw_dir is None
         assert args.rate == DEFAULT_RATE
 
     def test_smoke_test_command_runs_without_triggering_ingestion(self, tmp_path):
-        db = tmp_path / "test.db"
-
         with patch("fpl_ingest.cli.execute_smoke_test") as run_smoke_test:
             run_smoke_test.return_value.endpoints_checked = ("bootstrap-static", "fixtures", "element-summary")
             run_smoke_test.return_value.sample_size = 5
 
             with pytest.raises(SystemExit) as exc:
-                main(["--db", str(db), "--raw-dir", str(tmp_path / "raw"), "smoke-test"])
+                main(["--raw-dir", str(tmp_path / "raw"), "smoke-test"])
 
         assert exc.value.code == 0
-        # Prove no ingestion occurred: the DB is never touched at all now that
-        # the run pipeline no longer opens a store.
-        assert not db.exists()
 
     @pytest.mark.integration
     def test_main_runs_real_stages_with_mocked_client(self, tmp_path):
         raw = tmp_path / "raw"
-        db = tmp_path / "test.db"
         client = _make_async_client(
             bootstrap=VALID_BOOTSTRAP,
             history_side_effect=AsyncMock(return_value=PLAYER_HISTORY_1),
@@ -330,7 +316,7 @@ class TestCliLifecycle:
 
         with patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=client):
             try:
-                main(["--db", str(db), "--raw-dir", str(raw)])
+                main(["--raw-dir", str(raw)])
             except SystemExit as exc:
                 if exc.code != 0:
                     raise
@@ -366,7 +352,6 @@ class TestCliLifecycle:
 
     def test_strict_mode_aborts_before_later_stages_execute(self, tmp_path):
         raw = tmp_path / "raw"
-        db = tmp_path / "test.db"
         client = _make_async_client()
         core_data = CoreData(events=[], player_ids=[])
         ingest_fixtures = AsyncMock(return_value=StageOutcome(result=StageResult(stage="fixtures")))
@@ -384,7 +369,7 @@ class TestCliLifecycle:
             patch("fpl_ingest.orchestration.runner.ingest_player_histories", new=ingest_player_histories),
         ):
             with pytest.raises(SystemExit) as exc:
-                main(["--db", str(db), "--raw-dir", str(raw), "--strict"])
+                main(["--raw-dir", str(raw), "--strict"])
 
         assert exc.value.code == 1
         ingest_fixtures.assert_not_called()
@@ -403,7 +388,6 @@ class TestRateLimiting:
 
     def test_pipeline_uses_clamped_rate_for_token_bucket(self, tmp_path):
         raw = tmp_path / "raw"
-        db = tmp_path / "test.db"
         client = _make_async_client()
         applied_rates: list[float] = []
 
@@ -426,7 +410,7 @@ class TestRateLimiting:
             patch("fpl_ingest.orchestration.runner.ingest_player_histories", new=AsyncMock(return_value=StageOutcome(result=StageResult(stage="player_histories")))),
         ):
             with pytest.raises(SystemExit) as exc:
-                main(["--db", str(db), "--raw-dir", str(raw), "--rate", "99"])
+                main(["--raw-dir", str(raw), "--rate", "99"])
 
         assert exc.value.code == 0
         assert applied_rates, "TokenBucketLimiter must be instantiated during the pipeline"
@@ -473,11 +457,10 @@ class TestRunSuccessSemantics:
     @pytest.mark.parametrize("strict", [True, False])
     def test_exits_non_zero_when_stage_reports_skipped_rows(self, tmp_path, strict):
         raw = tmp_path / "raw"
-        db = tmp_path / "test.db"
         client = _make_async_client()
         core_data = CoreData(events=[], player_ids=[])
         core_stage = StageResult(stage="core", fetched=1, validated=0, written=0, skipped=1, errors=0)
-        argv = ["--db", str(db), "--raw-dir", str(raw)]
+        argv = ["--raw-dir", str(raw)]
         if strict:
             argv.append("--strict")
 

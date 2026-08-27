@@ -54,7 +54,6 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
 
     config = config or default_config()
     parser = argparse.ArgumentParser(prog="fpl-ingest", description="Collect and store FPL API data.")
-    parser.add_argument("--db", type=Path, default=None, help=f"SQLite database path (default resolved path: {config.db_path}).")
     parser.add_argument(
         "--raw-dir",
         type=Path,
@@ -101,7 +100,7 @@ def configure_logging(verbose: bool) -> logging.Logger:
 
 
 def run_pipeline(args: argparse.Namespace) -> int:
-    config = resolve_config(db_path=args.db, raw_dir=args.raw_dir)
+    config = resolve_config(raw_dir=args.raw_dir)
     logger = configure_logging(args.verbose)
     return asyncio.run(execute_pipeline(args=args, config=config, logger=logger))
 

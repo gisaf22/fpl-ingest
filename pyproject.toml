@@ -52,7 +52,7 @@ Issues = "https://github.com/gisaf22/fpl-ingest/issues"
 testpaths = ["tests"]
 markers = [
     "unit: pure unit tests — in-memory fixtures, no DB, no network",
-    "integration: tests against real master.db — skip if DB not found",
+    "integration: tests exercising the orchestration pipeline end-to-end against tmp_path fixtures",
     "smoke: end-to-end tests with real API — requires TEAM_ID env var",
     "perf: wall-clock performance benchmarks — not run by default",
 ]

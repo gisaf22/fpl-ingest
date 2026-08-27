@@ -2,7 +2,6 @@
 name = "fpl-ingest"
 version = "1.0.0"
 description = "Contract-driven CLI ingestion system for Fantasy Premier League data."
-readme = "README.md"
 authors = [
     { name = "gisaf22", email = "safari.gisa@gmail.com" }
 ]

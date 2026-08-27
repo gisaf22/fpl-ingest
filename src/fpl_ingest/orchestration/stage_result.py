@@ -3,9 +3,9 @@
 ``StageResult`` is the shared contract between extract stages and the runner.
 Its four counting fields (fetched, validated, written, skipped) follow strict
 invariants enforced at construction time, ensuring the audit table is always
-internally consistent. The runner, replay, and integrity checks all read from
-this shape — no stage should return a plain dict or raise instead of returning
-a result.
+internally consistent. The runner and integrity checks all read from this
+shape — no stage should return a plain dict or raise instead of returning a
+result.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ class StageLineage:
 
 @dataclass(frozen=True)
 class StageOutcome(Generic[_T]):
-    """Explicit stage execution contract returned by live and replay stages."""
+    """Explicit stage execution contract returned by every ingest stage."""
 
     result: StageResult
     output: _T | None = None

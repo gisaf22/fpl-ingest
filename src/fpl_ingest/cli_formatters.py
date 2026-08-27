@@ -1,20 +1,18 @@
 """Human-readable output formatters for the fpl-ingest CLI.
 
-Converts structured data from the store, schema contract, and smoke test
-into terminal-safe strings. Each formatter is a pure function: no I/O,
-no logging, no side effects. All CLI output paths pass through this module
-so formatting changes stay localised here.
+Converts structured data from the store and smoke test into terminal-safe
+strings. Each formatter is a pure function: no I/O, no logging, no side
+effects. All CLI output paths pass through this module so formatting changes
+stay localised here.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fpl_ingest.config import DEFAULT_STALE_AFTER_HOURS
-from fpl_ingest.schema.definition import ValidationResult
 
 if TYPE_CHECKING:
     from fpl_ingest.schema.validation import SmokeTestResult
@@ -101,97 +99,6 @@ def format_status_output(
         summary = "System healthy"
 
     lines = [freshness_line, ""] + table_lines + ["", summary]
-    return "\n".join(lines)
-
-
-def format_schema_output(
-    *,
-    db_path: Path,
-    db_source: str,
-    table_count: int,
-    result: ValidationResult | None = None,
-    destination: Path | None = None,
-) -> str:
-    """Format schema export confirmation (destination set) or validation report (result set)."""
-    lines = [
-        "Public SQLite schema",
-        f"db:       {db_path} (source: {db_source})",
-        f"tables:   {table_count} public tables",
-        "",
-    ]
-    if destination is not None:
-        lines.extend([f"schema:   {destination}", "Export complete."])
-        return "\n".join(lines)
-
-    assert result is not None
-    if result.missing_tables:
-        lines.append("Missing tables:")
-        lines.extend(f"  - {table_name}" for table_name in result.missing_tables)
-
-    if result.missing_columns:
-        lines.append("Missing columns:")
-        for table_name, columns in sorted(result.missing_columns.items()):
-            lines.append(f"  - {table_name}: {', '.join(columns)}")
-
-    if result.extra_columns:
-        lines.append("Drift columns:")
-        for table_name, columns in sorted(result.extra_columns.items()):
-            lines.append(f"  - {table_name}: {', '.join(columns)}")
-
-    if result.type_mismatches:
-        lines.append("Type mismatches:")
-        for table_name, mismatches in sorted(result.type_mismatches.items()):
-            rendered = ", ".join(
-                f"{mismatch.column} expected {mismatch.expected} got {mismatch.actual}"
-                for mismatch in mismatches
-            )
-            lines.append(f"  - {table_name}: {rendered}")
-
-    if result.nullability_mismatches:
-        lines.append("Nullability mismatches:")
-        for table_name, constraint_mismatches in sorted(result.nullability_mismatches.items()):
-            rendered = ", ".join(
-                f"{mismatch.name} expected {mismatch.expected} got {mismatch.actual}"
-                for mismatch in constraint_mismatches
-            )
-            lines.append(f"  - {table_name}: {rendered}")
-
-    if result.primary_key_mismatches:
-        lines.append("Primary key mismatches:")
-        for table_name, mismatch in sorted(result.primary_key_mismatches.items()):
-            lines.append(f"  - {table_name}: expected {mismatch.expected} got {mismatch.actual}")
-
-    if result.unique_constraint_mismatches:
-        lines.append("Unique constraint mismatches:")
-        for table_name, mismatch in sorted(result.unique_constraint_mismatches.items()):
-            lines.append(f"  - {table_name}: expected {mismatch.expected} got {mismatch.actual}")
-
-    if result.index_mismatches:
-        lines.append("Index mismatches:")
-        for table_name, mismatch in sorted(result.index_mismatches.items()):
-            lines.append(f"  - {table_name}: expected {mismatch.expected} got {mismatch.actual}")
-
-    if result.status == "valid":
-        lines.extend(
-            [
-                f"Status: valid (schema v{result.schema_version})",
-                "Validation passed. The live database matches the public schema.",
-            ]
-        )
-    elif result.status == "drift":
-        lines.extend(
-            [
-                f"Status: valid with drift (schema v{result.schema_version})",
-                "Validation passed with drift. Review extra columns and decide whether the schema should be updated.",
-            ]
-        )
-    else:
-        lines.extend(
-            [
-                f"Status: invalid (schema v{result.schema_version})",
-                "Validation failed. The live database is missing required public schema elements.",
-            ]
-        )
     return "\n".join(lines)
 
 

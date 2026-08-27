@@ -2,7 +2,7 @@
 
 Defines the three terminal states (SUCCESS, FAILED_PARTIAL, FAILED) and the
 deterministic precedence rules that derive them from stage-level error and
-skip counts. All callers — runner, replay, and store finalisation — use the
+skip counts. All callers — the runner and store finalisation — use the
 same ``classify_run`` function to ensure consistent status assignment.
 """
 

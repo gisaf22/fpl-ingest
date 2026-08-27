@@ -1,118 +1,191 @@
-"""Fixture ingest pipeline stage.
+"""Fixture raw-capture pipeline stage.
 
-Fetches all season fixtures from the FPL API, validates them, and upserts
-both the fixture metadata and the per-player fixture stats into SQLite.
-This module orchestrates: fetch → validate → transform → store.
-It does not contain HTTP or SQL logic directly.
+Fetches the FPL fixtures endpoint and writes the response verbatim through
+``LocalRawWriter`` — payload bytes, per-object metadata sidecar, and the run
+manifest. It performs the minimal structural checks the raw boundary calls for
+(strategy doc B.2) and nothing more.
+
+This stage no longer writes SQLite. ``process_fixtures_payload``,
+``upsert_fixtures``, ``flatten_fixture_stat_rows``, and ``upsert_fixture_stats``
+were removed deliberately (strategy doc B.1): flatten-and-upsert is warehouse
+work, and the decision was taken not to dual-write during the migration. The
+``fixtures`` and ``fixture_stats`` tables in fpl.db are consequently frozen at
+their last-written state until fpl-warehouse reads from raw storage.
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from typing import Any
 
-from fpl_ingest.extract.http.client import AsyncFPLClient, write_json_cache
-from fpl_ingest.orchestration.execution_state import PipelineExecutionState
-from fpl_ingest.transform.models import FixtureModel, FixtureStatModel
-from fpl_ingest.orchestration.stage_result import StageLineage, StageMetadata, StageOutcome, StageResult
-from fpl_ingest.load.store import SQLiteStore
-from fpl_ingest.transform.transforms import flatten_fixture_stats
+from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
+from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.extract.http.sync_http import FPLClientError
+from fpl_ingest.orchestration.execution_state import PipelineExecutionState
+from fpl_ingest.orchestration.stage_result import (
+    StageLineage,
+    StageMetadata,
+    StageOutcome,
+    StageResult,
+)
 
 logger = logging.getLogger(__name__)
 
+RAW_SOURCE = "fpl"
+RAW_ENDPOINT = "fixtures"
+
+#: Identifying fields a sampled fixture record must carry (strategy doc B.2).
+_SAMPLED_FIXTURE_FIELDS = ("id", "team_h", "team_a", "event")
+
+#: The stage writes one raw object and no tables. ``raw_artifacts`` is filled
+#: in per run with the actual payload key, so the metadata default is empty.
 FIXTURES_STAGE = StageMetadata(
     name="fixtures",
-    raw_artifacts=("fixtures.json",),
-    output_tables=("fixtures", "fixture_stats"),
+    raw_artifacts=(),
+    output_tables=(),
 )
 
 
 async def ingest_fixtures(
     client: AsyncFPLClient,
-    store: SQLiteStore,
-    raw_dir: Path,
+    raw_writer: LocalRawWriter,
     *,
     execution_state: PipelineExecutionState | None = None,
-) -> StageResult:
-    """Fetch fixtures and upsert fixture rows and per-player fixture stats.
+) -> StageOutcome[None]:
+    """Fetch fixtures and capture the response verbatim into raw storage.
 
     Args:
         client: Async FPL client for the HTTP fetch.
-        store: Active SQLiteStore for upsert operations.
-        raw_dir: Directory to write the raw fixtures.json cache file.
+        raw_writer: Writer for this run; also accumulates the run manifest.
+        execution_state: Fail-fast sentinel. When a previous stage has already
+            failed, the capture is skipped rather than written.
 
     Returns:
-        StageOutcome with canonical fetched/validated/written/skipped counts and lineage.
+        StageOutcome whose result counts captured objects, not rows — this
+        stage no longer produces rows. A shape-validation failure reports
+        ``skipped=1`` so ``classify_run`` marks the run FAILED_PARTIAL; the
+        payload is written regardless.
     """
-    logger.info("Fetching fixtures...")
-    try:
-        fixtures = await client.get_fixtures()
-    except FPLClientError as exc:
-        logger.error("Failed to fetch fixtures: %s", exc)
-        return StageOutcome(result=StageResult(stage="fixtures", errors=1))
-
-    if not fixtures:
-        logger.warning("No fixture data returned")
+    if execution_state is not None and execution_state.is_failed:
+        logger.info("Fail-fast tripped; skipping fixtures capture")
         return StageOutcome(result=StageResult(stage="fixtures"))
 
-    write_json_cache(raw_dir / "fixtures.json", fixtures, execution_state=execution_state)
+    logger.info("Fetching fixtures...")
+    try:
+        raw = await client.get_fixtures_raw()
+    except FPLClientError as exc:
+        logger.error("Failed to fetch fixtures: %s", exc)
+        raw_writer.record_failure(
+            RAW_ENDPOINT,
+            request_url=_ENDPOINTS["fixtures"],
+            error_class=type(exc).__name__,
+            message=str(exc),
+        )
+        return StageOutcome(result=StageResult(stage="fixtures", errors=1))
 
-    return process_fixtures_payload(store, fixtures, artifact_path=raw_dir / "fixtures.json")
+    shape = validate_fixtures_shape(raw)
+    if not shape["ok"]:
+        logger.error(
+            "Fixtures payload failed shape validation (%s); writing it anyway",
+            ", ".join(shape["failures"]),
+        )
 
+    write = raw_writer.write_object(
+        RAW_ENDPOINT,
+        raw.body,
+        request_url=raw.url,
+        requested_at=raw.requested_at,
+        received_at=raw.received_at,
+        http_status=raw.status,
+        response_headers=raw.headers,
+        attempt_count=raw.attempt_count,
+        shape_validation=shape,
+    )
+    logger.info(
+        "Captured fixtures: %d bytes -> %s", write.content_length, write.payload_key
+    )
 
-def process_fixtures_payload(
-    store: SQLiteStore,
-    fixtures: list,
-    *,
-    artifact_path: Path | str = "fixtures.json",
-) -> StageOutcome[None]:
-    """Validate, flatten, and persist fixture payload rows."""
-    fixture_fetched = len(fixtures)
-    fixture_validated, fixture_written = upsert_fixtures(store, fixtures)
-    stat_rows = flatten_fixture_stat_rows(fixtures)
-    stat_fetched = len(stat_rows)
-    stat_validated, stat_written = upsert_fixture_stats(store, stat_rows)
-
+    # StageResult counts objects here, not rows: one captured object per run.
+    # Its invariants (fetched >= validated >= written, skipped == fetched -
+    # validated) mean a shape failure must be reported as validated=0/written=0
+    # even though the payload was deliberately still written to raw storage —
+    # the sidecar's shape_validation field is where that fact lives. skipped=1
+    # is what makes classify_run mark the run FAILED_PARTIAL.
+    ok = bool(shape["ok"])
     result = StageResult(
         stage="fixtures",
-        fetched=fixture_fetched + stat_fetched,
-        validated=fixture_validated + stat_validated,
-        written=fixture_written + stat_written,
-        skipped=(fixture_fetched - fixture_validated) + (stat_fetched - stat_validated),
+        fetched=1,
+        validated=1 if ok else 0,
+        written=1 if ok else 0,
+        skipped=0 if ok else 1,
     )
     return StageOutcome(
         result=result,
-        lineage=StageLineage.from_metadata(FIXTURES_STAGE, raw_artifacts=(artifact_path,)),
+        lineage=StageLineage.from_metadata(
+            FIXTURES_STAGE, raw_artifacts=(write.payload_key,)
+        ),
     )
 
 
-def upsert_fixtures(store: SQLiteStore, fixtures: list) -> tuple[int, int]:
-    prepared = [FixtureModel.prepare(f) for f in fixtures]
-    written, skipped = store.upsert_models("fixtures", FixtureModel, prepared)
-    validated = len(prepared) - skipped
-    logger.debug("Fixtures extracted: raw=%d validated=%d written=%d skipped=%d", len(prepared), validated, written, skipped)
-    return validated, written
+def validate_fixtures_shape(raw: RawResponse) -> dict[str, Any]:
+    """Return the raw-boundary structural verdict for a fixtures response.
+
+    Checks exactly what strategy doc B.2 permits at this boundary and stops:
+    the status is 2xx, the body parses as JSON, the top level is a list, and a
+    sampled record carries its identifying fields. Nothing about types, ranges,
+    or cross-record consistency — that is warehouse work.
+
+    Args:
+        raw: The captured response.
+
+    Returns:
+        A JSON-serialisable dict for the sidecar's ``shape_validation`` field:
+        ``ok``, the list of ``checks`` run, and any ``failures``.
+    """
+    checks: list[str] = []
+    failures: list[str] = []
+
+    checks.append("http_status_2xx")
+    if not 200 <= raw.status < 300:
+        failures.append(f"http_status_2xx: got {raw.status}")
+        return _verdict(checks, failures, record_count=None)
+
+    checks.append("body_parses_as_json")
+    payload = raw.json()
+    if payload is None:
+        failures.append("body_parses_as_json: body is not valid JSON")
+        return _verdict(checks, failures, record_count=None)
+
+    checks.append("top_level_is_list")
+    if not isinstance(payload, list):
+        failures.append(f"top_level_is_list: got {type(payload).__name__}")
+        return _verdict(checks, failures, record_count=None)
+
+    checks.append("sampled_record_has_identifying_fields")
+    if payload:
+        sample = payload[0]
+        if not isinstance(sample, dict):
+            failures.append(
+                f"sampled_record_has_identifying_fields: record is {type(sample).__name__}"
+            )
+        else:
+            missing = [f for f in _SAMPLED_FIXTURE_FIELDS if f not in sample]
+            if missing:
+                failures.append(
+                    "sampled_record_has_identifying_fields: missing "
+                    + ", ".join(missing)
+                )
+
+    return _verdict(checks, failures, record_count=len(payload))
 
 
-def flatten_fixture_stat_rows(fixtures: list) -> list[dict]:
-    all_stats: list[dict] = []
-    for fixture in fixtures:
-        all_stats.extend(flatten_fixture_stats(fixture))
-    return all_stats
-
-
-def upsert_fixture_stats(store: SQLiteStore, all_stats: list[dict]) -> tuple[int, int]:
-    if not all_stats:
-        return 0, 0
-
-    written, skipped = store.upsert_models("fixture_stats", FixtureStatModel, all_stats)
-    validated = len(all_stats) - skipped
-    logger.debug(
-        "Fixture stats extracted: raw=%d validated=%d written=%d skipped=%d",
-        len(all_stats),
-        validated,
-        written,
-        skipped,
-    )
-    return validated, written
+def _verdict(
+    checks: list[str], failures: list[str], *, record_count: int | None
+) -> dict[str, Any]:
+    """Assemble the sidecar-shaped validation result."""
+    return {
+        "ok": not failures,
+        "checks": checks,
+        "failures": failures,
+        "record_count": record_count,
+    }

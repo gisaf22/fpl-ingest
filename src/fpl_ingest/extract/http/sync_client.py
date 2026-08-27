@@ -34,7 +34,7 @@ from fpl_ingest.extract.http.sync_http import (
     RequestGate,
     execute_json_request,
 )
-from fpl_ingest.transform.types import JSON
+from fpl_ingest.extract.http.types import JSON
 
 logger = logging.getLogger(__name__)
 

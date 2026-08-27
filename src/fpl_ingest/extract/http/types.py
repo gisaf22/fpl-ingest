@@ -1,4 +1,4 @@
-"""Shared type aliases for JSON-like data used throughout fpl-ingest.
+"""Shared type aliases for the HTTP/extract layer.
 
 This module only defines type aliases. It does not contain logic,
 validation, or data transformation of any kind.

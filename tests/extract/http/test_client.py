@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,11 +39,24 @@ def _make_client() -> AsyncFPLClient:
     return AsyncFPLClient(rate_limiter=NoopRateLimiter(), max_retries=2, timeout=5.0)
 
 
-def _mock_response(status: int, json_data: object = None, headers: dict | None = None):
-    """Build a mock aiohttp response usable as an async context manager."""
+def _mock_response(
+    status: int,
+    json_data: object = None,
+    headers: dict | None = None,
+    body: bytes | None = None,
+):
+    """Build a mock aiohttp response usable as an async context manager.
+
+    ``read`` is what the client actually calls — it captures the body as bytes
+    once and decodes from those same bytes — so the body is the authoritative
+    part of the mock. ``body`` overrides it for malformed-payload cases.
+    """
     resp = AsyncMock()
     resp.status = status
     resp.headers = headers or {}
+    if body is None:
+        body = b"" if json_data is None else json.dumps(json_data).encode("utf-8")
+    resp.read = AsyncMock(return_value=body)
     resp.json = AsyncMock(return_value=json_data)
     resp.raise_for_status = MagicMock()
     resp.__aenter__ = AsyncMock(return_value=resp)
@@ -383,5 +397,262 @@ def test_concurrency_slot_released_before_retry_sleep():
             "Concurrency slot was held during retry sleep. "
             "The rate-limiter context must exit before asyncio.sleep is called."
         )
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Raw-bytes / headers access path
+# ---------------------------------------------------------------------------
+
+
+def test_get_fixtures_raw_returns_verbatim_bytes_and_headers():
+    """The raw path must hand back the exact bytes and the response headers."""
+    body = b'[{"id": 1, "team_h": 11, "team_a": 7, "event": 1}]'
+    headers = {"Content-Type": "application/json", "ETag": "W/\"abc\"", "Age": "12"}
+
+    async def _run():
+        resp = _mock_response(200, headers=headers, body=body)
+        with patch("aiohttp.ClientSession.get", return_value=resp):
+            async with _make_client() as client:
+                raw = await client.get_fixtures_raw()
+
+        assert raw.body == body, "payload bytes must be preserved verbatim"
+        assert raw.status == 200
+        assert raw.url.endswith("/fixtures/")
+        assert raw.attempt_count == 1
+        # Header names are lowercased so the sidecar has a stable shape.
+        assert raw.headers["etag"] == 'W/"abc"'
+        assert raw.headers["age"] == "12"
+        assert raw.requested_at <= raw.received_at
+        assert raw.json() == [{"id": 1, "team_h": 11, "team_a": 7, "event": 1}]
+
+    asyncio.run(_run())
+
+
+def test_get_fixtures_raw_and_get_fixtures_agree_on_the_same_bytes():
+    """The decoded path must keep working alongside the raw path."""
+    payload = [{"id": 1, "team_h": 11, "team_a": 7, "event": 1}]
+
+    async def _run():
+        with patch(
+            "aiohttp.ClientSession.get",
+            side_effect=lambda *a, **k: _mock_response(200, json_data=payload),
+        ):
+            async with _make_client() as client:
+                decoded = await client.get_fixtures()
+                raw = await client.get_fixtures_raw()
+
+        assert decoded == payload
+        assert raw.json() == payload
+
+    asyncio.run(_run())
+
+
+def test_get_fixtures_raw_returns_unparseable_body_rather_than_discarding_it():
+    """A body that is not JSON is still returned — judging it is the caller's job."""
+    body = b"<html>502 Bad Gateway</html>"
+
+    async def _run():
+        with (
+            patch(
+                "aiohttp.ClientSession.get",
+                side_effect=lambda *a, **k: _mock_response(200, body=body),
+            ),
+            patch("fpl_ingest.extract.http.client.asyncio.sleep", new=AsyncMock()),
+        ):
+            async with _make_client() as client:
+                raw = await client.get_fixtures_raw()
+                decoded = await client.get_fixtures_raw()
+
+        assert raw.body == body
+        assert raw.json() is None
+        assert decoded.body == body
+
+    asyncio.run(_run())
+
+
+def test_get_fixtures_raw_returns_non_2xx_response_for_the_caller_to_judge():
+    """A 4xx comes back as a RawResponse, not as a raise."""
+
+    async def _run():
+        with patch(
+            "aiohttp.ClientSession.get",
+            side_effect=lambda *a, **k: _mock_response(404, body=b"not found"),
+        ):
+            async with _make_client() as client:
+                raw = await client.get_fixtures_raw()
+
+        assert raw.status == 404
+        assert raw.body == b"not found"
+
+    asyncio.run(_run())
+
+
+def test_get_fixtures_raw_raises_when_nothing_came_off_the_wire():
+    """A transport failure on every attempt is still an FPLClientError."""
+    import aiohttp as _aiohttp
+
+    async def _run():
+        with (
+            patch(
+                "aiohttp.ClientSession.get",
+                side_effect=_aiohttp.ClientError("boom"),
+            ),
+            patch("fpl_ingest.extract.http.client.asyncio.sleep", new=AsyncMock()),
+        ):
+            async with _make_client() as client:
+                with pytest.raises(FPLClientError):
+                    await client.get_fixtures_raw()
+
+    asyncio.run(_run())
+
+
+def test_get_bootstrap_raw_returns_verbatim_bytes_and_headers():
+    """bootstrap-static takes the same raw path as fixtures, at its own URL."""
+    body = b'{"elements": [{"id": 1, "team": 11, "now_cost": 130}]}'
+    headers = {"Content-Type": "application/json", "ETag": "W/\"boot\""}
+
+    async def _run():
+        resp = _mock_response(200, headers=headers, body=body)
+        with patch("aiohttp.ClientSession.get", return_value=resp):
+            async with _make_client() as client:
+                raw = await client.get_bootstrap_raw()
+
+        assert raw.body == body, "payload bytes must be preserved verbatim"
+        assert raw.status == 200
+        assert raw.url.endswith("/bootstrap-static/")
+        assert raw.attempt_count == 1
+        assert raw.headers["etag"] == 'W/"boot"'
+        assert raw.requested_at <= raw.received_at
+        assert raw.json() == {"elements": [{"id": 1, "team": 11, "now_cost": 130}]}
+
+    asyncio.run(_run())
+
+
+def test_get_bootstrap_raw_returns_non_2xx_response_for_the_caller_to_judge():
+    """A 4xx comes back as a RawResponse, not as a raise."""
+
+    async def _run():
+        with patch(
+            "aiohttp.ClientSession.get",
+            side_effect=lambda *a, **k: _mock_response(404, body=b"not found"),
+        ):
+            async with _make_client() as client:
+                raw = await client.get_bootstrap_raw()
+
+        assert raw.status == 404
+        assert raw.body == b"not found"
+
+    asyncio.run(_run())
+
+
+def test_get_bootstrap_raw_returns_unparseable_body_rather_than_discarding_it():
+    """A body that is not JSON is still returned — judging it is the caller's job."""
+    body = b"<html>502 Bad Gateway</html>"
+
+    async def _run():
+        with (
+            patch(
+                "aiohttp.ClientSession.get",
+                side_effect=lambda *a, **k: _mock_response(200, body=body),
+            ),
+            patch("fpl_ingest.extract.http.client.asyncio.sleep", new=AsyncMock()),
+        ):
+            async with _make_client() as client:
+                raw = await client.get_bootstrap_raw()
+
+        assert raw.body == body
+        assert raw.json() is None
+
+    asyncio.run(_run())
+
+
+def test_get_bootstrap_raw_raises_when_nothing_came_off_the_wire():
+    """A transport failure on every attempt is still an FPLClientError."""
+    import aiohttp as _aiohttp
+
+    async def _run():
+        with (
+            patch(
+                "aiohttp.ClientSession.get",
+                side_effect=_aiohttp.ClientError("boom"),
+            ),
+            patch("fpl_ingest.extract.http.client.asyncio.sleep", new=AsyncMock()),
+        ):
+            async with _make_client() as client:
+                with pytest.raises(FPLClientError):
+                    await client.get_bootstrap_raw()
+
+    asyncio.run(_run())
+
+
+def test_get_bootstrap_raw_does_not_populate_the_decoded_bootstrap_cache():
+    """The raw boundary stores what the API sent; it must not seed get_bootstrap."""
+    body = b'{"elements": []}'
+
+    async def _run():
+        with patch(
+            "aiohttp.ClientSession.get",
+            side_effect=lambda *a, **k: _mock_response(200, body=body),
+        ):
+            async with _make_client() as client:
+                await client.get_bootstrap_raw()
+                assert client._bootstrap_cache is None
+
+    asyncio.run(_run())
+
+
+def test_get_event_status_raw_returns_verbatim_bytes_and_headers():
+    """event-status takes the same raw path as fixtures/bootstrap, at its own URL."""
+    body = b'{"status": [{"bonus_added": true, "date": "2026-08-15", "event": 1, "points": "r"}], "leagues": ""}'
+    headers = {"Content-Type": "application/json", "ETag": "W/\"status\""}
+
+    async def _run():
+        resp = _mock_response(200, headers=headers, body=body)
+        with patch("aiohttp.ClientSession.get", return_value=resp):
+            async with _make_client() as client:
+                raw = await client.get_event_status_raw()
+
+        assert raw.body == body
+        assert raw.status == 200
+        assert raw.url.endswith("/event-status/")
+        assert raw.attempt_count == 1
+        assert raw.headers["etag"] == 'W/"status"'
+        assert raw.json()["status"][0]["event"] == 1
+
+    asyncio.run(_run())
+
+
+def test_get_event_status_raw_returns_non_2xx_response_for_the_caller_to_judge():
+    async def _run():
+        with patch(
+            "aiohttp.ClientSession.get",
+            side_effect=lambda *a, **k: _mock_response(404, body=b"not found"),
+        ):
+            async with _make_client() as client:
+                raw = await client.get_event_status_raw()
+
+        assert raw.status == 404
+        assert raw.body == b"not found"
+
+    asyncio.run(_run())
+
+
+def test_get_event_status_raw_raises_when_nothing_came_off_the_wire():
+    """A transport failure on every attempt is still an FPLClientError."""
+    import aiohttp as _aiohttp
+
+    async def _run():
+        with (
+            patch(
+                "aiohttp.ClientSession.get",
+                side_effect=_aiohttp.ClientError("boom"),
+            ),
+            patch("fpl_ingest.extract.http.client.asyncio.sleep", new=AsyncMock()),
+        ):
+            async with _make_client() as client:
+                with pytest.raises(FPLClientError):
+                    await client.get_event_status_raw()
 
     asyncio.run(_run())

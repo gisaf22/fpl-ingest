@@ -1,23 +1,31 @@
 """Full-run pipeline orchestrator for the ingest CLI.
 
-Sequences the four pipeline stages (core → fixtures → gameweeks → histories),
-enforces transactional stage isolation, records per-stage audit rows, checks
-freshness staleness before the run, and runs post-run integrity assertions
-before updating the last_successful_run_at metadata. Returns 0 only when the
-run is fully clean; any stage error or strict-mode abort produces exit code 1.
+Sequences the five pipeline stages (event-status → core → fixtures →
+gameweeks → histories). Every stage captures raw payloads only, through the
+shared ``LocalRawWriter`` — no stage, and no part of this module, writes to a
+database any more. Run/stage provenance lives entirely in the run manifest
+that ``LocalRawWriter`` maintains (``_finalize_raw_manifest``).
+
+NOTE — gap: freshness tracking (a ``last_successful_run_at`` staleness check
+before the run, keyed off metadata written only on a fully clean run) does
+not yet exist against the manifest. It previously read/wrote SQLite's
+``_metadata`` table; that table is gone and nothing has replaced it. The
+manifest does not currently carry a cross-run "last successful run" pointer,
+only per-run status. Wiring that up is follow-up work, not part of this
+change.
+
+Returns 0 only when the run is fully clean; any stage error or strict-mode
+abort produces exit code 1.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from pathlib import Path
 from time import perf_counter
 from typing import Any, TypeVar
 
-from fpl_ingest.config import DEFAULT_STALE_AFTER_HOURS
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.run_status import (
     RUN_STATUS_FAILED,
@@ -26,52 +34,17 @@ from fpl_ingest.orchestration.run_status import (
 )
 from fpl_ingest.orchestration.stage_result import StageOutcome, StageResult
 from fpl_ingest.extract.stages.bootstrap import CoreData, ingest_core_data
-from fpl_ingest.extract.stages.fixtures import ingest_fixtures
+from fpl_ingest.extract.stages.event_status import Finality, ingest_event_status
+from fpl_ingest.extract.stages.fixtures import RAW_SOURCE, ingest_fixtures
 from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
 from fpl_ingest.extract.stages.element_summary import ingest_player_histories
-from fpl_ingest.load.db_setup import setup_store
-from fpl_ingest.load.store import SQLiteStore
 from fpl_ingest.extract.http.client import AsyncFPLClient
+from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.extract.http.rate_config import MAX_RATE, normalize_rate
 from fpl_ingest.extract.http.rate_limiter import TokenBucketLimiter
 
 _MAX_CONCURRENT_REQUESTS = 10
 _StageOutput = TypeVar("_StageOutput")
-
-
-def _resolve_stale_threshold(args: Any) -> float:
-    """Resolve stale-after-hours from CLI args → env var → default."""
-    cli_val = getattr(args, "stale_after_hours", None)
-    if cli_val is not None:
-        return float(cli_val)
-    env_val = os.environ.get("FPL_STALE_AFTER_HOURS")
-    if env_val:
-        try:
-            return float(env_val)
-        except ValueError:
-            pass
-    return DEFAULT_STALE_AFTER_HOURS
-
-
-def _check_stale_freshness(store: SQLiteStore, logger: logging.Logger, stale_after_hours: float) -> None:
-    try:
-        rows = store.query("SELECT value FROM _metadata WHERE key = 'last_successful_run_at'")
-    except Exception:
-        return
-    if not rows or not rows[0].get("value"):
-        return
-    try:
-        last_run = datetime.fromisoformat(str(rows[0]["value"]))
-        age_hours = (datetime.now(timezone.utc) - last_run).total_seconds() / 3600
-        if age_hours > stale_after_hours:
-            logger.warning(
-                "stale data detected: last_successful_run_at=%s age_hours=%.1f threshold_hours=%.1f",
-                rows[0]["value"],
-                age_hours,
-                stale_after_hours,
-            )
-    except (ValueError, TypeError):
-        return
 
 
 class StrictRunFailure(RuntimeError):
@@ -173,62 +146,53 @@ def _log_fail_fast_failure(logger: logging.Logger, stage_result: StageResult) ->
     _log_partial_run_warning(logger)
 
 
-def _success_metadata(run_started_at: str, core: CoreData) -> dict[str, str]:
-    metadata_updates = {
-        "last_successful_run_at": run_started_at,
-        "total_players": str(len(core.players)),
-    }
-    current_gameweek = next((event.id for event in core.events if event.is_current), None)
-    if current_gameweek is not None:
-        metadata_updates["current_gameweek"] = str(current_gameweek)
-    return metadata_updates
-
-
 def _exit_code(
     logger: logging.Logger,
     stage_results: list[StageResult],
-    store: SQLiteStore,
-    run_started_at: str,
-    core: CoreData,
 ) -> int:
-    total_fetched, total_validated, total_written, total_skipped, total_errors = StageResult.totals(stage_results)
     final_status = classify_run_from_results(stage_results, strict_mode=False)
 
     if final_status == RUN_STATUS_SUCCESS:
-        from fpl_ingest.load.integrity import IntegrityViolation
-        _integrity_checker = getattr(store, "run_integrity_checks", None)
-        if _integrity_checker is not None:
-            try:
-                _integrity_checker()
-            except IntegrityViolation as exc:
-                logger.error("Post-run integrity check failed: %s", exc)
-                with store.transaction():
-                    store.finalize_run(run_started_at, errors=total_errors + 1, skipped=total_skipped, strict_mode=False)
-                _log_run_summary(logger, status=RUN_STATUS_FAILED, results=stage_results)
-                return 1
-        with store.transaction():
-            store.finalize_run(
-                run_started_at,
-                errors=total_errors,
-                skipped=total_skipped,
-                strict_mode=False,
-                metadata_updates=_success_metadata(run_started_at, core),
-            )
         _log_run_summary(logger, status=RUN_STATUS_SUCCESS, results=stage_results)
         return 0
 
-    with store.transaction():
-        store.finalize_run(run_started_at, errors=total_errors, skipped=total_skipped, strict_mode=False)
     _log_run_summary(logger, status=final_status, results=stage_results)
     logger.error("Freshness metadata not updated because the run was not fully clean.")
     _log_partial_run_warning(logger)
     return 1
 
 
-def _record_stage(
-    store: SQLiteStore,
+def _finalize_raw_manifest(
+    raw_writer: LocalRawWriter,
+    logger: logging.Logger,
     stage_results: list[StageResult],
-    run_started_at: str,
+    *,
+    strict_mode: bool,
+    event_finality: Finality | None = None,
+) -> None:
+    """Stamp the run's raw manifest with the same status the runner reports.
+
+    ``classify_run_from_results`` is the single source of run status across
+    the runner and now the manifest — a shape-validation failure in a
+    capture stage surfaces here as FAILED_PARTIAL. Manifest finalisation must
+    never be what fails a run, so a writer error is logged and swallowed.
+
+    ``event_finality`` — this run's parsed event-status result, or None if
+    that capture failed or did not validate — becomes the manifest's
+    ``finality`` block (strategy doc A.5). It is omitted, not faked, when
+    unavailable; a consumer must not read a missing block as "settled."
+    """
+    status = classify_run_from_results(stage_results, strict_mode=strict_mode)
+    try:
+        result = raw_writer.finalize(status, finality=event_finality)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to finalize raw manifest: %s", exc)
+        return
+    logger.info("Raw manifest %s written to %s", status, result.manifest_location)
+
+
+def _record_stage(
+    stage_results: list[StageResult],
     logger: logging.Logger,
     result: StageResult,
     *,
@@ -238,8 +202,6 @@ def _record_stage(
     duration_seconds: float | None = None,
 ) -> StageResult:
     stage_results.append(result)
-    with store.transaction():
-        store.record_stage_result(run_started_at, result)
     _log_stage_result(
         logger,
         result,
@@ -250,18 +212,6 @@ def _record_stage(
     _warn_or_raise_on_unclean_stage(result, strict=strict)
     _warn_if_high_skip_rate(logger, result)
     return result
-
-
-def _record_stage_lineage(store: SQLiteStore, run_started_at: str, outcome: StageOutcome[Any]) -> None:
-    if outcome.lineage is None:
-        return
-    with store.transaction():
-        store.record_stage_lineage(
-            run_started_at,
-            outcome.lineage.stage,
-            artifact_paths=outcome.lineage.raw_artifacts,
-            output_tables=outcome.lineage.output_tables,
-        )
 
 
 async def _measure_stage(awaitable) -> tuple[_StageOutput, datetime, datetime, float]:
@@ -275,21 +225,15 @@ async def _measure_stage(awaitable) -> tuple[_StageOutput, datetime, datetime, f
 async def _execute_stage(
     *,
     awaitable,
-    store: SQLiteStore,
     stage_results: list[StageResult],
-    run_started_at: str,
     logger: logging.Logger,
     strict: bool,
 ) -> _StageOutput:
     outcome: StageOutcome[Any]
-    with store.transaction():
-        outcome, stage_started_at, stage_ended_at, duration_seconds = await _measure_stage(awaitable)
+    outcome, stage_started_at, stage_ended_at, duration_seconds = await _measure_stage(awaitable)
 
-    _record_stage_lineage(store, run_started_at, outcome)
     _record_stage(
-        store,
         stage_results,
-        run_started_at,
         logger,
         outcome.result,
         strict=strict,
@@ -302,32 +246,24 @@ async def _execute_stage(
 
 async def _run_core_stage(
     client: AsyncFPLClient,
-    store: SQLiteStore,
-    raw_dir: Path,
+    raw_writer: LocalRawWriter,
     *,
     execution_state: PipelineExecutionState,
     stage_results: list[StageResult],
-    run_started_at: str,
     logger: logging.Logger,
     strict: bool,
 ) -> CoreData:
     """Run the core stage. Returns CoreData or raises — never returns None."""
     outcome: StageOutcome[CoreData]
-    with store.transaction():
-        setup_store(store)
-        outcome, stage_started_at, stage_ended_at, duration_seconds = await _measure_stage(
-            ingest_core_data(
-                client,
-                store,
-                raw_dir,
-                execution_state=execution_state,
-            )
+    outcome, stage_started_at, stage_ended_at, duration_seconds = await _measure_stage(
+        ingest_core_data(
+            client,
+            raw_writer,
+            execution_state=execution_state,
         )
-    _record_stage_lineage(store, run_started_at, outcome)
+    )
     _record_stage(
-        store,
         stage_results,
-        run_started_at,
         logger,
         outcome.result,
         strict=strict,
@@ -340,30 +276,46 @@ async def _run_core_stage(
     return outcome.output
 
 
-async def run_pipeline(*, args, config, logger: logging.Logger, store: SQLiteStore) -> int:
+async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     """Execute the full ingest pipeline. Returns 0 only on a fully clean run."""
     config.raw_dir.mkdir(parents=True, exist_ok=True)
 
     execution_state = PipelineExecutionState()
-    run_started_at = datetime.now(timezone.utc).isoformat()
+    run_start = datetime.now(timezone.utc)
+    run_started_at = run_start.isoformat()
     stage_results: list[StageResult] = []
 
+    # One raw writer — and therefore one manifest — per fpl-ingest run. It is
+    # finalized on every exit path below so a run always leaves a terminal
+    # manifest behind, matching the status the runner reports.
+    raw_writer = LocalRawWriter(config.raw_dir, RAW_SOURCE, started_at=run_start)
+
     applied_rate = _resolve_applied_rate(logger, args.rate)
-    _check_stale_freshness(store, logger, _resolve_stale_threshold(args))
     rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)
+
+    event_finality: Finality | None = None
 
     try:
         async with AsyncFPLClient(
             rate_limiter=rate_limiter,
             connector_limit=_MAX_CONCURRENT_REQUESTS,
         ) as client:
+            event_finality = await _execute_stage(
+                awaitable=ingest_event_status(
+                    client,
+                    raw_writer,
+                    execution_state=execution_state,
+                ),
+                stage_results=stage_results,
+                logger=logger,
+                strict=args.strict,
+            )
+
             core: CoreData = await _run_core_stage(
                 client,
-                store,
-                config.raw_dir,
+                raw_writer,
                 execution_state=execution_state,
                 stage_results=stage_results,
-                run_started_at=run_started_at,
                 logger=logger,
                 strict=args.strict,
             )
@@ -371,13 +323,10 @@ async def run_pipeline(*, args, config, logger: logging.Logger, store: SQLiteSto
             await _execute_stage(
                 awaitable=ingest_fixtures(
                     client,
-                    store,
-                    config.raw_dir,
+                    raw_writer,
                     execution_state=execution_state,
                 ),
-                store=store,
                 stage_results=stage_results,
-                run_started_at=run_started_at,
                 logger=logger,
                 strict=args.strict,
             )
@@ -385,16 +334,15 @@ async def run_pipeline(*, args, config, logger: logging.Logger, store: SQLiteSto
             await _execute_stage(
                 awaitable=ingest_gameweeks(
                     client,
-                    store,
+                    raw_writer,
                     config.raw_dir,
                     core.events,
                     force=args.force,
+                    event_finality=event_finality,
                     strict=args.strict,
                     execution_state=execution_state,
                 ),
-                store=store,
                 stage_results=stage_results,
-                run_started_at=run_started_at,
                 logger=logger,
                 strict=args.strict,
             )
@@ -402,42 +350,27 @@ async def run_pipeline(*, args, config, logger: logging.Logger, store: SQLiteSto
             await _execute_stage(
                 awaitable=ingest_player_histories(
                     client,
-                    store,
-                    config.raw_dir,
-                    [player.id for player in core.players],
-                    force=args.force,
+                    raw_writer,
+                    core.player_ids,
                     strict=args.strict,
                     execution_state=execution_state,
                 ),
-                store=store,
                 stage_results=stage_results,
-                run_started_at=run_started_at,
                 logger=logger,
                 strict=args.strict,
             )
-        return _exit_code(logger, stage_results, store, run_started_at, core)
+        exit_code = _exit_code(logger, stage_results)
+        _finalize_raw_manifest(raw_writer, logger, stage_results, strict_mode=False, event_finality=event_finality)
+        return exit_code
     except StrictRunFailure as exc:
         execution_state.fail()
-        with store.transaction():
-            store.finalize_run(
-                run_started_at,
-                errors=exc.result.errors,
-                skipped=exc.result.skipped,
-                strict_mode=True,
-            )
+        _finalize_raw_manifest(raw_writer, logger, stage_results, strict_mode=True, event_finality=event_finality)
         _log_run_summary(logger, status=RUN_STATUS_FAILED, results=stage_results)
         _log_fail_fast_failure(logger, exc.result)
         return 1
     except Exception:
         execution_state.fail()
         total_fetched, total_validated, total_written, total_skipped, total_errors = StageResult.totals(stage_results)
-        with store.transaction():
-            store.finalize_run(
-                run_started_at,
-                errors=total_errors + 1,
-                skipped=total_skipped,
-                strict_mode=False,
-            )
         _log_run_summary(logger, status=RUN_STATUS_FAILED, results=stage_results)
         logger.exception(
             "Run terminated unexpectedly: total_fetched=%d total_validated=%d total_written=%d total_skipped=%d stage_errors=%d additional_errors=%d",

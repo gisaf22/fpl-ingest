@@ -1,35 +1,63 @@
-"""Element-summary ingest pipeline stage.
+"""Element-summary raw-capture pipeline stage.
 
-Fetches per-player element-summary data (one request per player) and upserts
-the fixture-level history rows into SQLite. Cache files are retained as raw
-cache files, but they are not reused as an input source because the endpoint is
-cumulative and stale files would silently miss newer rounds.
+Concurrently fetches the ``element-summary`` endpoint for every player and
+writes each response verbatim through ``LocalRawWriter`` — payload bytes,
+per-object metadata sidecar, and the shared run manifest — under endpoint
+``element-summary/{player_id}`` (strategy doc A.3). One object per player per
+run; ``{player_id}`` is part of the endpoint segment, so it sits before
+``{extraction_date}`` in the key, matching every other captured endpoint.
 
-This module orchestrates: fetch → validate → store. It does not contain HTTP
-or SQL logic directly.
+This stage no longer writes SQLite. ``raw_history_rows`` and
+``upsert_history_rows`` were removed deliberately (strategy doc B.1):
+flatten-and-upsert is warehouse work, and ``player_histories`` was the last
+table in the schema contract — it, and the compiler/DDL machinery that
+existed to serve it, are retired in the same change. The redirect also fixes,
+for free, the ``fixtures``/``history_past`` loss the strategy doc's audit
+found (§2.1/§6): writing the payload whole means nothing captured is
+discarded any more — previously only ``history`` was ever read from the
+cached file.
+
+``_fetch_player_histories`` keeps its concurrency and strict-mode
+cancellation semantics exactly — only what it fetches, and what it does with
+each response, changed. The dead ``force`` parameter (strategy doc §4.2:
+never read in the function body, so its effect was always "fetch every
+player, every run") is not ported through the redirect — this stage
+unconditionally fetches every player on every run, which was already the
+real behaviour.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
-from time import perf_counter
-from typing import Any, Dict, Optional
+from typing import Any
 
-from fpl_ingest.extract.http.client import AsyncFPLClient, cancel_pending_tasks, write_json_cache
+from fpl_ingest.extract.http.client import (
+    _ENDPOINTS,
+    AsyncFPLClient,
+    RawResponse,
+    cancel_pending_tasks,
+)
+from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
-from fpl_ingest.transform.models import PlayerHistoryModel
 from fpl_ingest.orchestration.stage_result import StageLineage, StageMetadata, StageOutcome, StageResult
-from fpl_ingest.load.store import SQLiteStore
 
 logger = logging.getLogger(__name__)
 
+RAW_SOURCE = "fpl"
+
+#: Top-level keys an ``element-summary/{player_id}`` payload must carry (strategy doc B.2).
+_REQUIRED_TOP_LEVEL_KEYS = ("history", "fixtures", "history_past")
+
+#: Identifying fields a sampled history row must carry (strategy doc B.2).
+_SAMPLED_HISTORY_FIELDS = ("element", "round", "fixture", "minutes", "total_points")
+
+#: The stage writes one raw object per player and no tables.
 PLAYER_HISTORIES_STAGE = StageMetadata(
     name="player_histories",
     dependencies=("core",),
-    raw_artifacts=("players/*.json",),
-    output_tables=("player_histories",),
+    raw_artifacts=(),
+    output_tables=(),
 )
 
 
@@ -37,182 +65,238 @@ class _StrictFetchFailure(RuntimeError):
     """Raised to abort a concurrent strict-mode fetch batch immediately."""
 
 
+def raw_endpoint(player_id: int) -> str:
+    """Return the raw-contract endpoint identity for one player (strategy doc A.3)."""
+    return f"element-summary/{player_id}"
+
+
 async def ingest_player_histories(
     client: AsyncFPLClient,
-    store: SQLiteStore,
-    raw_dir: Path,
+    raw_writer: LocalRawWriter,
     player_ids: list[int],
     *,
-    force: bool = False,
     strict: bool = False,
     execution_state: PipelineExecutionState | None = None,
 ) -> StageOutcome[None]:
-    """Fetch per-player element-summary histories and upsert history rows.
+    """Fetch element-summary for every player and capture each response verbatim.
 
     Args:
-        client: Async FPL client for uncached player fetches.
-        store: Active SQLiteStore for upsert operations.
-        raw_dir: Root of the raw cache directory. Player files are stored
-            under raw_dir/players/{player_id}.json.
-        player_ids: List of FPL element IDs to process.
-        force: If True, re-fetch all players even if cached.
+        client: Async FPL client for the HTTP fetches.
+        raw_writer: Writer for this run; also accumulates the run manifest.
+            The same writer the other capture stages use — one manifest per
+            run covers every endpoint and every player it touches.
+        player_ids: FPL element IDs to fetch this run — every player, every
+            run (strategy doc §4.2: the old ``force`` parameter was already
+            dead, so this was always the real behaviour).
+        strict: If True, the first failed fetch cancels the rest of the batch.
+        execution_state: Fail-fast sentinel.
 
     Returns:
-        StageOutcome with canonical fetched/validated/written/skipped counts and lineage.
+        StageOutcome whose result counts captured objects, not rows — this
+        stage no longer produces rows. Each player whose payload fails shape
+        validation contributes one ``skipped`` so ``classify_run`` marks the
+        run FAILED_PARTIAL while every other player still counts as written;
+        the payload is written either way.
     """
+    if execution_state is not None and execution_state.is_failed:
+        logger.info("Fail-fast tripped; skipping element-summary capture")
+        return StageOutcome(result=StageResult(stage="player_histories"))
+
     if not player_ids:
-        return StageOutcome(result=StageResult(stage="player_histories"), lineage=StageLineage.from_metadata(PLAYER_HISTORIES_STAGE))
-
-    history_dir = raw_dir / "players"
-    history_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info(
-        "Refreshing element-summary for %d players; raw player cache files will be overwritten.",
-        len(player_ids),
-    )
-
-    fetched = errors = validated = written = 0
-
-    network_fetched, network_errors, network_validated, network_written = (
-        await _fetch_and_upsert_uncached(
-            client,
-            store,
-            history_dir,
-            player_ids,
-            strict=strict,
-            execution_state=execution_state,
+        return StageOutcome(
+            result=StageResult(stage="player_histories"),
+            lineage=StageLineage.from_metadata(PLAYER_HISTORIES_STAGE),
         )
-    )
-    fetched += network_fetched
-    errors += network_errors
-    validated += network_validated
-    written += network_written
 
+    logger.info("Collecting element-summary for %d players...", len(player_ids))
+
+    fetched, error_count = await _fetch_player_histories(
+        client, player_ids, raw_writer, strict=strict
+    )
+
+    if strict and error_count > 0:
+        if execution_state is not None:
+            execution_state.fail()
+        return StageOutcome(
+            result=StageResult(
+                stage="player_histories",
+                fetched=len(fetched),
+                skipped=len(fetched),
+                errors=error_count,
+            ),
+            lineage=StageLineage.from_metadata(PLAYER_HISTORIES_STAGE),
+        )
+
+    payload_keys: list[str] = []
+    validated = 0
+    for player_id in sorted(fetched):
+        raw = fetched[player_id]
+        endpoint = raw_endpoint(player_id)
+        shape = validate_element_summary_shape(raw)
+        if not shape["ok"]:
+            logger.error(
+                "Player %d payload failed shape validation (%s); writing it anyway",
+                player_id,
+                ", ".join(shape["failures"]),
+            )
+        else:
+            validated += 1
+        write = raw_writer.write_object(
+            endpoint,
+            raw.body,
+            request_url=raw.url,
+            requested_at=raw.requested_at,
+            received_at=raw.received_at,
+            http_status=raw.status,
+            response_headers=raw.headers,
+            attempt_count=raw.attempt_count,
+            shape_validation=shape,
+        )
+        payload_keys.append(write.payload_key)
+        logger.debug(
+            "Captured player %d: %d bytes -> %s",
+            player_id,
+            write.content_length,
+            write.payload_key,
+        )
+
+    # StageResult counts objects here, not rows: one captured object per
+    # player. Its invariants (fetched >= validated >= written, skipped ==
+    # fetched - validated) mean a shape failure must be reported as not
+    # validated and not written even though the payload was deliberately
+    # still written to raw storage — the sidecar's shape_validation field is
+    # where that fact lives. skipped > 0 is what makes classify_run mark the
+    # run FAILED_PARTIAL, and it does so without discounting the players that
+    # captured cleanly.
+    fetched_count = len(fetched)
     return StageOutcome(
         result=StageResult(
             stage="player_histories",
-            fetched=fetched,
+            fetched=fetched_count,
             validated=validated,
-            written=written,
-            skipped=fetched - validated,
-            errors=errors,
+            written=validated,
+            skipped=fetched_count - validated,
+            errors=error_count,
         ),
-        lineage=StageLineage.from_metadata(
-            PLAYER_HISTORIES_STAGE,
-            raw_artifacts=(history_dir / f"{player_id}.json" for player_id in player_ids),
-        ),
+        lineage=StageLineage.from_metadata(PLAYER_HISTORIES_STAGE, raw_artifacts=payload_keys),
     )
 
-def raw_history_rows(data: Optional[Dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return raw history rows for one player payload."""
-    if not data:
-        return []
-    history = data.get("history", [])
-    if not history:
-        return []
-    return [PlayerHistoryModel.prepare(row) for row in history]
 
+def validate_element_summary_shape(raw: RawResponse) -> dict[str, Any]:
+    """Return the raw-boundary structural verdict for an ``element-summary`` response.
 
-def upsert_history_rows(store: SQLiteStore, data: Optional[Dict[str, Any]]) -> tuple[int, int, int]:
-    """Validate and upsert history rows for one player."""
-    rows = raw_history_rows(data)
-    if not rows:
-        return 0, 0, 0
-    written, skipped = store.upsert_models("player_histories", PlayerHistoryModel, rows)
-    validated = len(rows) - skipped
-    return len(rows), validated, written
+    Checks exactly what strategy doc B.2 permits at this boundary and stops:
+    the status is 2xx, the body parses as JSON, the top level is an object,
+    ``history``/``fixtures``/``history_past`` are present, and a sampled
+    ``history`` row carries its identifying fields. Nothing about types,
+    ranges, or cross-record consistency — that is warehouse work.
 
-async def _fetch_and_upsert_uncached(
-    client: AsyncFPLClient,
-    store: SQLiteStore,
-    history_dir: Path,
-    uncached_ids: list[int],
-    *,
-    strict: bool,
-    execution_state: PipelineExecutionState | None = None,
-) -> tuple[int, int, int, int]:
-    """Fetch uncached players concurrently, write to disk, and upsert history rows.
+    Args:
+        raw: The captured response.
 
     Returns:
-        (fetched_count, error_count, validated_count, written_count)
+        A JSON-serialisable dict for the sidecar's ``shape_validation`` field:
+        ``ok``, the list of ``checks`` run, and any ``failures``.
     """
-    t_fetch_start = perf_counter()
-    raw_results = await _fetch_player_histories(client, uncached_ids, strict=strict)
-    fetch_duration = perf_counter() - t_fetch_start
+    checks: list[str] = []
+    failures: list[str] = []
 
-    fetched_count = error_count = validated_count = written_count = 0
-    write_duration = 0.0
+    checks.append("http_status_2xx")
+    if not 200 <= raw.status < 300:
+        failures.append(f"http_status_2xx: got {raw.status}")
+        return _verdict(checks, failures, record_count=None)
 
-    if strict and any(isinstance(result, BaseException) for _, result in raw_results):
-        if execution_state is not None:
-            execution_state.fail()
-        fetched_count = sum(
-            len(raw_history_rows(result))
-            for _, result in raw_results
-            if not isinstance(result, BaseException)
+    checks.append("body_parses_as_json")
+    payload = raw.json()
+    if payload is None:
+        failures.append("body_parses_as_json: body is not valid JSON")
+        return _verdict(checks, failures, record_count=None)
+
+    checks.append("top_level_is_object")
+    if not isinstance(payload, dict):
+        failures.append(f"top_level_is_object: got {type(payload).__name__}")
+        return _verdict(checks, failures, record_count=None)
+
+    checks.append("required_top_level_keys_present")
+    missing_keys = [key for key in _REQUIRED_TOP_LEVEL_KEYS if key not in payload]
+    if missing_keys:
+        failures.append(
+            "required_top_level_keys_present: missing " + ", ".join(missing_keys)
         )
-        error_count = sum(1 for _, result in raw_results if isinstance(result, BaseException))
-        return fetched_count, error_count, 0, 0
 
-    for index, (player_id, result) in enumerate(raw_results, 1):
-        if isinstance(result, BaseException):
-            error_count += 1
-            logger.error("Failed player fetch: %s", result)
-            continue
+    history = payload.get("history")
+    if not isinstance(history, list):
+        # Without a history list there is no record to sample; the missing-key
+        # or type problem is already reported above.
+        if "history" in payload:
+            failures.append(
+                f"required_top_level_keys_present: history is {type(history).__name__}"
+            )
+        return _verdict(checks, failures, record_count=None)
 
-        data = result
-        if data:
-            _write_player_cache(history_dir, player_id, data, execution_state=execution_state)
-        t_write = perf_counter()
-        raw_rows, validated, written = upsert_history_rows(store, data)
-        write_duration += perf_counter() - t_write
-        if data:
-            validated_count += validated
-            written_count += written
-            fetched_count += raw_rows
-            logger.debug(
-                "Player %d history extracted: raw=%d validated=%d written=%d skipped=%d",
-                player_id,
-                raw_rows,
-                validated,
-                written,
-                raw_rows - validated,
+    checks.append("sampled_record_has_identifying_fields")
+    if history:
+        sample = history[0]
+        if not isinstance(sample, dict):
+            failures.append(
+                "sampled_record_has_identifying_fields: record is "
+                f"{type(sample).__name__}"
             )
         else:
-            error_count += 1
+            missing = [f for f in _SAMPLED_HISTORY_FIELDS if f not in sample]
+            if missing:
+                failures.append(
+                    "sampled_record_has_identifying_fields: missing "
+                    + ", ".join(missing)
+                )
 
-        if index % 50 == 0:
-            logger.info("[%d/%d] Player histories fetched...", index, len(uncached_ids))
+    return _verdict(checks, failures, record_count=len(history))
 
-    logger.info(
-        "[player_histories] timing: players=%d fetch=%.2fs write=%.2fs total=%.2fs",
-        len(uncached_ids),
-        fetch_duration,
-        write_duration,
-        fetch_duration + write_duration,
-    )
-    return fetched_count, error_count, validated_count, written_count
+
+def _verdict(
+    checks: list[str], failures: list[str], *, record_count: int | None
+) -> dict[str, Any]:
+    """Assemble the sidecar-shaped validation result."""
+    return {
+        "ok": not failures,
+        "checks": checks,
+        "failures": failures,
+        "record_count": record_count,
+    }
 
 
 async def _fetch_player_histories(
     client: AsyncFPLClient,
     player_ids: list[int],
+    raw_writer: LocalRawWriter,
     *,
     strict: bool,
-) -> list[tuple[int, Dict[str, Any] | BaseException]]:
-    """Fetch player histories, cancelling pending work on the first strict failure."""
+) -> tuple[dict[int, RawResponse], int]:
+    """Fetch every player's element-summary, cancelling on the first strict failure."""
+    fetched: dict[int, RawResponse] = {}
+    error_count = 0
+
     if not strict:
         raw_results = await asyncio.gather(
-            *[client.get_player_history(pid) for pid in player_ids],
+            *[_fetch_one_player(client, pid) for pid in player_ids],
             return_exceptions=True,
         )
-        return list(zip(player_ids, raw_results))
+
+        for player_id, result in zip(player_ids, raw_results):
+            if isinstance(result, BaseException):
+                error_count += 1
+                logger.error("Failed player fetch %d: %s", player_id, result)
+                _record_fetch_failure(raw_writer, player_id, result)
+                continue
+            pid, raw = result
+            fetched[pid] = raw
+
+        return fetched, error_count
 
     tasks = {
-        asyncio.create_task(client.get_player_history(player_id)): player_id
-        for player_id in player_ids
+        asyncio.create_task(_fetch_one_player(client, pid)): pid
+        for pid in player_ids
     }
-    completed: list[tuple[int, Dict[str, Any] | BaseException]] = []
 
     try:
         pending = set(tasks)
@@ -221,23 +305,36 @@ async def _fetch_player_histories(
             for task in done:
                 player_id = tasks[task]
                 try:
-                    completed.append((player_id, task.result()))
+                    pid, raw = task.result()
                 except Exception as exc:
-                    completed.append((player_id, exc))
+                    error_count += 1
+                    logger.error("Failed player fetch %d: %s", player_id, exc)
+                    _record_fetch_failure(raw_writer, player_id, exc)
                     await cancel_pending_tasks(pending)
                     raise _StrictFetchFailure from exc
+                fetched[pid] = raw
     except _StrictFetchFailure:
-        return completed
+        return fetched, error_count
 
-    return completed
+    return fetched, error_count
 
 
-def _write_player_cache(
-    history_dir: Path,
-    player_id: int,
-    data: Dict[str, Any],
-    *,
-    execution_state: PipelineExecutionState | None = None,
+def _record_fetch_failure(
+    raw_writer: LocalRawWriter, player_id: int, exc: BaseException
 ) -> None:
-    path = history_dir / f"{player_id}.json"
-    write_json_cache(path, data, execution_state=execution_state)
+    """Record one player's failed capture in the shared run manifest."""
+    raw_writer.record_failure(
+        raw_endpoint(player_id),
+        request_url=_ENDPOINTS["player"].format(player_id=player_id),
+        error_class=type(exc).__name__,
+        message=str(exc),
+    )
+
+
+async def _fetch_one_player(
+    client: AsyncFPLClient,
+    player_id: int,
+) -> tuple[int, RawResponse]:
+    raw = await client.get_element_summary_raw(player_id)
+    logger.debug("Player %d — %d bytes fetched", player_id, len(raw.body))
+    return player_id, raw

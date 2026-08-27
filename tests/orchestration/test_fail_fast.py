@@ -1,4 +1,12 @@
-"""Regression tests for strict-mode fail-fast cancellation."""
+"""Regression tests for strict-mode fail-fast cancellation.
+
+Covers ``player_histories`` (element-summary capture): it is the stage whose
+concurrent fetch and strict-mode cancellation semantics this migration was
+explicitly required to keep unmodified (strategy doc B.1). A strict abort
+must cancel in-flight fetches, write no raw payloads, and trip the fail-fast
+sentinel — the same guarantee ``tests/extract/stages/test_gameweeks.py``
+already covers for the gameweeks stage.
+"""
 
 from __future__ import annotations
 
@@ -8,16 +16,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.orchestration.execution_state import PIPELINE_STATE_FAILED, PipelineExecutionState
-from fpl_ingest.load.db_setup import setup_store
-from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
 from fpl_ingest.extract.stages.element_summary import ingest_player_histories
-from fpl_ingest.load.store import SQLiteStore
 
 pytestmark = pytest.mark.integration
 
 
-async def _fail_on_first(id_: int) -> dict:
+async def _fail_on_first(id_: int) -> object:
     """Fail immediately for id==1; simulate a long in-flight request for others."""
     if id_ == 1:
         raise RuntimeError("boom")
@@ -25,76 +31,36 @@ async def _fail_on_first(id_: int) -> dict:
         await asyncio.sleep(10)
     except asyncio.CancelledError:
         raise
-    return {}
+    return object()
 
 
-def _make_store(tmp_path: Path) -> SQLiteStore:
-    store = SQLiteStore(tmp_path / "test.db")
-    with store.transaction():
-        setup_store(store)
-    return store
+def _writer(tmp_path: Path) -> LocalRawWriter:
+    return LocalRawWriter(tmp_path / "raw", "fpl", run_id="20260824T080000Z-abc123")
 
 
-async def _run_gameweeks(client, store: SQLiteStore, raw_dir: Path, state: PipelineExecutionState) -> object:
-    events = [
-        SimpleNamespace(id=1, finished=True, is_current=False),
-        SimpleNamespace(id=2, finished=True, is_current=False),
-    ]
-    return await ingest_gameweeks(
-        client, store, raw_dir, events,
-        force=True, strict=True, execution_state=state,
-    )
-
-
-async def _run_player_histories(client, store: SQLiteStore, raw_dir: Path, state: PipelineExecutionState) -> object:
+async def _run_player_histories(client, writer: LocalRawWriter, state: PipelineExecutionState) -> object:
     return await ingest_player_histories(
-        client, store, raw_dir, [1, 2],
-        force=True, strict=True, execution_state=state,
+        client, writer, [1, 2], strict=True, execution_state=state,
     )
 
 
-def _gameweek_cache_paths(raw_dir: Path) -> list[Path]:
-    return [raw_dir / "gw_1.json", raw_dir / "gw_2.json"]
-
-
-def _history_cache_paths(raw_dir: Path) -> list[Path]:
-    return [raw_dir / "players" / "1.json", raw_dir / "players" / "2.json"]
-
-
-@pytest.mark.parametrize(
-    "run_fn,table,cache_paths_fn",
-    [
-        pytest.param(_run_gameweeks, "gameweeks", _gameweek_cache_paths, id="gameweeks"),
-        pytest.param(_run_player_histories, "player_histories", _history_cache_paths, id="player_histories"),
-    ],
-)
-def test_strict_abort_blocks_writes_and_leaves_no_partial_data(
-    run_fn, table, cache_paths_fn, tmp_path: Path
-) -> None:
-    """A strict fetch failure must block all DB writes and produce no partial cache files."""
-    store = _make_store(tmp_path)
-    raw_dir = tmp_path / "raw"
+def test_strict_abort_blocks_writes_and_leaves_no_partial_data(tmp_path: Path) -> None:
+    """A strict fetch failure must block all raw writes for this stage."""
+    writer = _writer(tmp_path)
 
     async def _run() -> None:
-        client = SimpleNamespace(
-            get_gw=_fail_on_first,
-            get_player_history=_fail_on_first,
-        )
+        client = SimpleNamespace(get_element_summary_raw=_fail_on_first)
         state = PipelineExecutionState()
-        result = (await run_fn(client, store, raw_dir, state)).result
+        result = (await _run_player_histories(client, writer, state)).result
 
         assert result.errors == 1
         assert result.validated == 0
         assert result.written == 0
-        assert result.skipped == 0
+        assert result.skipped == result.fetched
         assert state.state == PIPELINE_STATE_FAILED
 
-        rows = store.query(f"SELECT COUNT(*) as n FROM {table}")
-        assert rows[0]["n"] == 0, (
-            f"strict abort must leave {table} empty; found {rows[0]['n']} row(s)"
+        assert not (tmp_path / "raw" / "fpl" / "element-summary").exists(), (
+            "strict abort must not write any element-summary payload"
         )
-
-        for path in cache_paths_fn(raw_dir):
-            assert not path.exists(), f"strict abort must not write cache file {path.name}"
 
     asyncio.run(_run())

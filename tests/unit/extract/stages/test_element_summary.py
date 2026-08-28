@@ -29,6 +29,7 @@ from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.extract.http.raw_keys import iso_utc
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.extract.stages import element_summary as element_summary_stage
+from fpl_ingest.extract.stages import event_status as event_status_stage
 from fpl_ingest.extract.stages.bootstrap import GameweekInfo
 from fpl_ingest.extract.stages.element_summary import (
     _select_players_to_fetch,
@@ -42,6 +43,7 @@ from fpl_ingest.orchestration.run_status import (
     RUN_STATUS_SUCCESS,
     classify_run_from_results,
 )
+from tests.support.fixture_payloads import payload_bytes
 
 pytestmark = pytest.mark.unit
 
@@ -125,6 +127,25 @@ def _settled(*event_ids: int) -> dict:
 
 def _provisional(*event_ids: int) -> dict:
     return {event_id: {"points": "p", "bonus_added": False} for event_id in event_ids}
+
+
+def _event_status_raw(body: bytes) -> RawResponse:
+    """Wrap an event-status payload body for ``event_status._parse_finality``."""
+    requested_at = datetime(2026, 8, 28, 6, 0, 0, tzinfo=timezone.utc)
+    return RawResponse(
+        url="https://fantasy.premierleague.com/api/event-status/",
+        status=200,
+        headers={"content-type": "application/json"},
+        body=body,
+        requested_at=requested_at,
+        received_at=requested_at + timedelta(seconds=1),
+        attempt_count=1,
+    )
+
+
+def _finality_from_fixture(name: str) -> dict:
+    """Parse a real (or hand-edited) event-status fixture the way the stage would."""
+    return event_status_stage._parse_finality(_event_status_raw(payload_bytes(name)))
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +329,75 @@ class TestSelectionLogic:
 
         client.get_element_summary_raw.assert_not_called()
         assert outcome.result.fetched == 0
+
+    @pytest.mark.asyncio
+    async def test_second_run_after_settlement_refetches_no_players(self, tmp_path):
+        """A run captures a player; a later run, once the gameweek settles, must not refetch it."""
+        raw_dir = tmp_path / "raw"
+        writer = _writer(tmp_path)
+        player_id = 1
+        real_payload = payload_bytes("element_summary_settled_capture")
+        events = [_event(1, finished=True)]
+
+        first_run_client = _client(
+            {player_id: _raw(body=real_payload, player_id=player_id)}
+        )
+        first_outcome = await ingest_player_histories(
+            first_run_client, writer, raw_dir, [player_id], events,
+            event_finality=_provisional(1),
+        )
+        first_run_client.get_element_summary_raw.assert_called_once()
+        assert first_outcome.result.fetched == 1
+
+        settled_finality = _finality_from_fixture("event_status_settled")
+        assert settled_finality[1]["bonus_added"] is True
+
+        second_run_client = _client({})
+        second_outcome = await ingest_player_histories(
+            second_run_client, _writer(tmp_path), raw_dir, [player_id], events,
+            event_finality=settled_finality,
+        )
+
+        second_run_client.get_element_summary_raw.assert_not_called()
+        assert second_outcome.result.fetched == 0
+
+    @pytest.mark.regression
+    def test_empty_finality_map_does_not_skip_every_player(self, tmp_path):
+        """Pins the bug in ``_latest_gameweek_settled``: an empty (not None)
+        finality map for the current gameweek used to be read the same way as
+        an old gameweek's dates having rolled out of event-status's window —
+        i.e. "settled" — which silently skipped every already-captured
+        player even though settlement is actually unknown. An empty map must
+        be treated like ``event_finality is None``: fetch everyone.
+        """
+        (tmp_path / "fpl" / "element-summary" / "1").mkdir(parents=True)
+
+        empty_finality = _finality_from_fixture("event_status_empty_map")
+        assert empty_finality == {}
+
+        assert _select_players_to_fetch(
+            tmp_path, [1], [_event(1, finished=True)], event_finality=empty_finality
+        ) == [1]
+
+    @pytest.mark.parametrize(
+        "event_finality",
+        [
+            pytest.param(None, id="unknown_finality"),
+            pytest.param(_provisional(1), id="provisional_gameweek"),
+            pytest.param(_settled(1), id="settled_gameweek"),
+        ],
+    )
+    def test_new_player_absent_from_prior_run_is_always_fetched(self, tmp_path, event_finality):
+        """A player with no capture directory must never be skipped, regardless of settlement."""
+        (tmp_path / "fpl" / "element-summary" / "1").mkdir(parents=True)
+        new_player_id = 2
+
+        result = _select_players_to_fetch(
+            tmp_path, [1, new_player_id], [_event(1, finished=True)], event_finality=event_finality
+        )
+
+        assert new_player_id in result
+
 
 class TestFetchAndCapture:
     """The happy path: bytes reach raw storage with correct metadata."""

@@ -349,12 +349,23 @@ def _latest_gameweek_settled(
     """Whether the current gameweek is fully settled.
 
     Returns ``None`` (treated as "not settled", i.e. fetch everything) when
-    that cannot be determined: no finality map, or no current gameweek found
-    in ``events`` yet (e.g. pre-season). Mirrors the fail-safe rule in
-    ``gameweeks._needs_fetch`` — an unknown state must never cause
-    under-fetching.
+    that cannot be determined: no finality map, an *empty* finality map, or no
+    current gameweek found in ``events`` yet (e.g. pre-season). Mirrors the
+    fail-safe rule in ``gameweeks._needs_fetch`` — an unknown state must never
+    cause under-fetching.
+
+    An empty map is treated the same as ``None`` deliberately, and
+    differently from ``gameweeks._needs_fetch``'s per-gameweek absent-key
+    check: this function only ever asks about *one* gameweek — the current
+    one — never an already-finished one whose dates could legitimately have
+    aged out of event-status's window. A current gameweek missing from a
+    *non-empty* map (checked below) means event-status covers other dates and
+    genuinely has none for this one, which is the aged-out case. A current
+    gameweek missing because the whole map is empty instead means event-status
+    returned no per-date data at all — an unknown state, not evidence of
+    settlement — so it must not be read as "skip everyone."
     """
-    if event_finality is None:
+    if not event_finality:
         return None
 
     current_id = next((e.id for e in events if e.is_current), None)

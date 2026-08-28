@@ -379,6 +379,27 @@ class TestSelectionLogic:
             tmp_path, [1], [_event(1, finished=True)], event_finality=empty_finality
         ) == [1]
 
+    @pytest.mark.regression
+    def test_old_gameweek_absent_from_nonempty_map_is_still_settled(self, tmp_path):
+        """Old-gameweek regression check for the empty-map fix above.
+
+        The new "empty map means unknown" guard in ``_latest_gameweek_settled``
+        must only fire on a fully empty ``event_finality`` dict. A *non-empty*
+        map that simply has no entry for the current gameweek — because its
+        dates have rolled out of event-status's current-window array, the
+        normal state for a gameweek settled well in the past — must still
+        read as settled and skip an already-captured player, exactly as
+        before this pass's change.
+        """
+        (tmp_path / "fpl" / "element-summary" / "1").mkdir(parents=True)
+
+        finality_missing_current_gameweek = _settled(2)  # non-empty, but no entry for event 1
+
+        assert _select_players_to_fetch(
+            tmp_path, [1], [_event(1, finished=True)],
+            event_finality=finality_missing_current_gameweek,
+        ) == []
+
     @pytest.mark.parametrize(
         "event_finality",
         [

@@ -6,13 +6,12 @@ shared ``LocalRawWriter`` — no stage, and no part of this module, writes to a
 database any more. Run/stage provenance lives entirely in the run manifest
 that ``LocalRawWriter`` maintains (``_finalize_raw_manifest``).
 
-NOTE — gap: freshness tracking (a ``last_successful_run_at`` staleness check
-before the run, keyed off metadata written only on a fully clean run) does
-not yet exist against the manifest. It previously read/wrote SQLite's
-``_metadata`` table; that table is gone and nothing has replaced it. The
-manifest does not currently carry a cross-run "last successful run" pointer,
-only per-run status. Wiring that up is follow-up work, not part of this
-change.
+Freshness visibility is read back from the manifest, not tracked during the
+run: the ``inspect`` CLI command (``orchestration.inspect``) scans
+``_manifests/`` after the fact rather than this module maintaining a
+cross-run "last successful run" pointer as SQLite's ``_metadata`` table used
+to. There is still no in-run staleness check before a run starts; that would
+require the same manifest scan this module doesn't otherwise need.
 
 Returns 0 only when the run is fully clean; any stage error or strict-mode
 abort produces exit code 1.
@@ -21,11 +20,13 @@ abort produces exit code 1.
 from __future__ import annotations
 
 import logging
+import subprocess
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, TypeVar
 
+from fpl_ingest import __version__ as INGEST_VERSION
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.run_status import (
     RUN_STATUS_FAILED,
@@ -162,6 +163,38 @@ def _exit_code(
     return 1
 
 
+def _current_git_sha(logger: logging.Logger) -> str | None:
+    """Best-effort current commit SHA for manifest provenance.
+
+    Provenance metadata must never fail the pipeline: git being unavailable,
+    the working tree not being a repo, or any other git error is logged and
+    swallowed, returning None instead.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except Exception as exc:
+        logger.warning("Could not determine git_sha for manifest: %s", exc)
+        return None
+    return result.stdout.strip() or None
+
+
+def _effective_run_config(args) -> dict[str, Any]:
+    """The run configuration to record in the manifest (strategy doc A.5)."""
+    raw_dir = getattr(args, "raw_dir", None)
+    return {
+        "raw_dir": str(raw_dir) if raw_dir is not None else None,
+        "rate": args.rate,
+        "strict": bool(getattr(args, "strict", False)),
+        "verbose": bool(getattr(args, "verbose", False)),
+    }
+
+
 def _finalize_raw_manifest(
     raw_writer: LocalRawWriter,
     logger: logging.Logger,
@@ -169,6 +202,9 @@ def _finalize_raw_manifest(
     *,
     strict_mode: bool,
     event_finality: Finality | None = None,
+    git_sha: str | None = None,
+    ingest_version: str | None = None,
+    config: dict[str, Any] | None = None,
 ) -> None:
     """Stamp the run's raw manifest with the same status the runner reports.
 
@@ -184,7 +220,13 @@ def _finalize_raw_manifest(
     """
     status = classify_run_from_results(stage_results, strict_mode=strict_mode)
     try:
-        result = raw_writer.finalize(status, finality=event_finality)
+        result = raw_writer.finalize(
+            status,
+            finality=event_finality,
+            git_sha=git_sha,
+            ingest_version=ingest_version,
+            config=config,
+        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to finalize raw manifest: %s", exc)
         return
@@ -294,6 +336,8 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)
 
     event_finality: Finality | None = None
+    git_sha = _current_git_sha(logger)
+    run_config = _effective_run_config(args)
 
     try:
         async with AsyncFPLClient(
@@ -337,7 +381,6 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                     raw_writer,
                     config.raw_dir,
                     core.events,
-                    force=args.force,
                     event_finality=event_finality,
                     strict=args.strict,
                     execution_state=execution_state,
@@ -360,11 +403,17 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 strict=args.strict,
             )
         exit_code = _exit_code(logger, stage_results)
-        _finalize_raw_manifest(raw_writer, logger, stage_results, strict_mode=False, event_finality=event_finality)
+        _finalize_raw_manifest(
+            raw_writer, logger, stage_results, strict_mode=False, event_finality=event_finality,
+            git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,
+        )
         return exit_code
     except StrictRunFailure as exc:
         execution_state.fail()
-        _finalize_raw_manifest(raw_writer, logger, stage_results, strict_mode=True, event_finality=event_finality)
+        _finalize_raw_manifest(
+            raw_writer, logger, stage_results, strict_mode=True, event_finality=event_finality,
+            git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,
+        )
         _log_run_summary(logger, status=RUN_STATUS_FAILED, results=stage_results)
         _log_fail_fast_failure(logger, exc.result)
         return 1

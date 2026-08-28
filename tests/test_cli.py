@@ -296,6 +296,36 @@ class TestCliLifecycle:
         assert args.raw_dir is None
         assert args.rate == DEFAULT_RATE
 
+    def test_raw_dir_honored_before_subcommand(self):
+        parser = build_parser()
+        args = parser.parse_args(["--raw-dir", "/tmp/x", "run"])
+        assert args.raw_dir == Path("/tmp/x")
+
+    def test_raw_dir_honored_after_subcommand(self):
+        parser = build_parser()
+        args = parser.parse_args(["run", "--raw-dir", "/tmp/x"])
+        assert args.raw_dir == Path("/tmp/x")
+
+    def test_raw_dir_after_subcommand_overrides_before(self):
+        parser = build_parser()
+        args = parser.parse_args(["--raw-dir", "/tmp/before", "run", "--raw-dir", "/tmp/after"])
+        assert args.raw_dir == Path("/tmp/after")
+
+    def test_raw_dir_before_subcommand_end_to_end(self, tmp_path):
+        """Regression test for the defect where --raw-dir before the subcommand
+        was silently clobbered by the run subparser's own default."""
+        raw = tmp_path / "raw"
+        client = FakeClient()
+
+        with patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=client):
+            try:
+                main(["--raw-dir", str(raw), "run"])
+            except SystemExit as exc:
+                if exc.code != 0:
+                    raise
+
+        assert raw.exists(), "--raw-dir passed before the subcommand must be honored"
+
     def test_smoke_test_command_runs_without_triggering_ingestion(self, tmp_path):
         with patch("fpl_ingest.cli.execute_smoke_test") as run_smoke_test:
             run_smoke_test.return_value.endpoints_checked = ("bootstrap-static", "fixtures", "element-summary")

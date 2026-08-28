@@ -32,7 +32,7 @@ _EMPTY_CORE = CoreData(events=[], player_ids=[])
 
 
 def _make_args(**overrides) -> SimpleNamespace:
-    base = dict(rate=1.0, force=False, strict=False)
+    base = dict(rate=1.0, strict=False)
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -187,3 +187,52 @@ class TestStrictModeAbort:
 
         assert code == 1
         mock_fixtures.assert_not_called()
+
+
+class TestManifestProvenance:
+    """Strategy doc §A.5 requires git_sha, ingest_version, and config to be
+    populated on the finalized manifest — they must not stay null."""
+
+    pytestmark = pytest.mark.integration
+
+    def test_manifest_records_ingest_version(self, tmp_path):
+        import json
+
+        from fpl_ingest import __version__
+
+        _run_pipeline(_make_args(), tmp_path)
+        manifests = sorted((tmp_path / "raw" / "fpl" / "_manifests").rglob("manifest.json"))
+        manifest = json.loads(manifests[0].read_text())
+        assert manifest["ingest_version"] == __version__
+
+    def test_manifest_records_git_sha_when_git_available(self, tmp_path):
+        import json
+
+        with patch("fpl_ingest.orchestration.runner._current_git_sha", return_value="deadbeef"):
+            _run_pipeline(_make_args(), tmp_path)
+        manifests = sorted((tmp_path / "raw" / "fpl" / "_manifests").rglob("manifest.json"))
+        manifest = json.loads(manifests[0].read_text())
+        assert manifest["git_sha"] == "deadbeef"
+
+    def test_manifest_git_sha_is_none_without_crashing_when_git_unavailable(self, tmp_path):
+        import json
+        import subprocess
+
+        with patch("fpl_ingest.orchestration.runner.subprocess.run",
+                   side_effect=FileNotFoundError("git not found")):
+            code = _run_pipeline(_make_args(), tmp_path)
+
+        assert code == 0
+        manifests = sorted((tmp_path / "raw" / "fpl" / "_manifests").rglob("manifest.json"))
+        manifest = json.loads(manifests[0].read_text())
+        assert manifest["git_sha"] is None
+
+    def test_manifest_records_effective_run_config(self, tmp_path):
+        import json
+
+        args = _make_args(rate=5.0, strict=False)
+        _run_pipeline(args, tmp_path)
+        manifests = sorted((tmp_path / "raw" / "fpl" / "_manifests").rglob("manifest.json"))
+        manifest = json.loads(manifests[0].read_text())
+        assert manifest["config"]["rate"] == 5.0
+        assert manifest["config"]["strict"] is False

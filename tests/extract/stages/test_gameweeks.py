@@ -131,7 +131,6 @@ async def test_ingest_gameweeks_writes_a_raw_object_per_gameweek(tmp_path):
         writer,
         raw_dir,
         [_event(1, finished=True), _event(2, finished=True)],
-        force=False,
         event_finality=None,
     )
 
@@ -164,7 +163,7 @@ async def test_ingest_gameweeks_sidecar_carries_capture_metadata(tmp_path):
     raw = _raw(_payload([1]), gw=7, attempt_count=3)
 
     await ingest_gameweeks(
-        _client({7: raw}), writer, raw_dir, [_event(7, finished=True)], force=False, event_finality=None
+        _client({7: raw}), writer, raw_dir, [_event(7, finished=True)], event_finality=None
     )
 
     sidecar = _read(
@@ -195,7 +194,6 @@ async def test_all_gameweeks_share_one_run_manifest(tmp_path):
         writer,
         raw_dir,
         [_event(gw, finished=True) for gw in (1, 2, 3)],
-        force=False,
         event_finality=None,
     )
 
@@ -221,7 +219,6 @@ async def test_lineage_lists_every_captured_payload_key(tmp_path):
         writer,
         raw_dir,
         [_event(1, finished=True), _event(2, finished=True)],
-        force=False,
         event_finality=None,
     )
 
@@ -305,7 +302,7 @@ async def test_shape_failure_still_writes_the_payload_and_flags_the_manifest(tmp
     raw = _raw(gw=1, body=b"<html>502 Bad Gateway</html>")
 
     outcome = await ingest_gameweeks(
-        _client({1: raw}), writer, raw_dir, [_event(1, finished=True)], force=False, event_finality=None
+        _client({1: raw}), writer, raw_dir, [_event(1, finished=True)], event_finality=None
     )
 
     payload_path = (
@@ -344,7 +341,6 @@ async def test_one_bad_gameweek_does_not_discount_the_good_ones(tmp_path):
         writer,
         raw_dir,
         [_event(gw, finished=True) for gw in (1, 2, 3)],
-        force=False,
         event_finality=None,
     )
 
@@ -379,7 +375,6 @@ async def test_non_strict_failure_captures_the_other_gameweeks(tmp_path):
         writer,
         raw_dir,
         [_event(1, finished=True), _event(2, finished=True)],
-        force=False,
         event_finality=None,
         strict=False,
     )
@@ -409,7 +404,6 @@ async def test_strict_failure_writes_nothing_and_trips_the_fail_fast_sentinel(tm
         writer,
         raw_dir,
         [_event(1, finished=True), _event(2, finished=True)],
-        force=False,
         event_finality=None,
         strict=True,
         execution_state=state,
@@ -432,7 +426,7 @@ async def test_fail_fast_skips_the_capture_entirely(tmp_path):
     writer = _writer(tmp_path)
 
     outcome = await ingest_gameweeks(
-        client, writer, raw_dir, [_event(1, finished=True)], force=False, event_finality=None, execution_state=state
+        client, writer, raw_dir, [_event(1, finished=True)], event_finality=None, execution_state=state
     )
 
     client.get_gameweek_live_raw.assert_not_called()
@@ -446,7 +440,7 @@ async def test_no_events_captures_nothing(tmp_path):
     raw_dir.mkdir()
     client = _client({})
 
-    outcome = await ingest_gameweeks(client, _writer(tmp_path), raw_dir, [], force=False, event_finality=None)
+    outcome = await ingest_gameweeks(client, _writer(tmp_path), raw_dir, [], event_finality=None)
 
     client.get_gameweek_live_raw.assert_not_called()
     assert outcome.result.fetched == 0
@@ -476,21 +470,21 @@ class TestSelectGameweeksToFetch:
     def test_never_captured_gameweek_is_fetched_even_if_reported_settled(self, tmp_path):
         """A settled gameweek that was somehow never captured must still be fetched."""
         assert _select_gameweeks_to_fetch(
-            tmp_path, [_event(1, finished=True)], force=False, event_finality=_settled(1)
+            tmp_path, [_event(1, finished=True)], event_finality=_settled(1)
         ) == [1]
 
     def test_captured_but_provisional_gameweek_is_refetched(self, tmp_path):
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, [_event(1, finished=True)], force=False, event_finality=_provisional(1)
+            tmp_path, [_event(1, finished=True)], event_finality=_provisional(1)
         ) == [1]
 
     def test_captured_and_settled_gameweek_is_skipped(self, tmp_path):
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, [_event(1, finished=True)], force=False, event_finality=_settled(1)
+            tmp_path, [_event(1, finished=True)], event_finality=_settled(1)
         ) == []
 
     def test_missing_finality_signal_fetches_all_uncertain_gameweeks(self, tmp_path):
@@ -502,31 +496,22 @@ class TestSelectGameweeksToFetch:
         assert _select_gameweeks_to_fetch(
             tmp_path,
             [_event(1, finished=True), _event(2, finished=True)],
-            force=False,
             event_finality=None,
         ) == [1, 2]
-
-    def test_force_refetches_an_already_settled_gameweek(self, tmp_path):
-        """``--force`` still serves a purpose: forcing a refetch of a settled GW."""
-        (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
-
-        assert _select_gameweeks_to_fetch(
-            tmp_path, [_event(1, finished=True)], force=True, event_finality=_settled(1)
-        ) == [1]
 
     def test_current_unfinished_gameweek_is_always_included(self, tmp_path):
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
         events = [_event(1, finished=True), _event(2, finished=False, is_current=True)]
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, events, force=False, event_finality=_settled(1)
+            tmp_path, events, event_finality=_settled(1)
         ) == [2]
 
     def test_current_gameweek_is_not_duplicated_when_already_selected(self, tmp_path):
         events = [_event(1, finished=True, is_current=True)]
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, events, force=False, event_finality=None
+            tmp_path, events, event_finality=None
         ) == [1]
 
 
@@ -541,7 +526,6 @@ async def test_a_settled_and_already_captured_gameweek_is_never_fetched(tmp_path
         _writer(tmp_path),
         raw_dir,
         [_event(1, finished=True)],
-        force=False,
         event_finality=_settled(1),
     )
 

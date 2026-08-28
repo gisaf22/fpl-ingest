@@ -85,7 +85,6 @@ async def ingest_gameweeks(
     raw_dir: Path,
     events: list[GameweekInfo],
     *,
-    force: bool,
     event_finality: Finality | None,
     strict: bool = False,
     execution_state: PipelineExecutionState | None = None,
@@ -100,10 +99,6 @@ async def ingest_gameweeks(
         raw_dir: Local raw-capture root; used to check whether a gameweek has
             ever been captured before (§below).
         events: GameweekInfo list from the core stage.
-        force: If True, re-fetch every finished gameweek regardless of
-            finality — the one part of the old all-or-nothing ``--force``
-            behaviour worth keeping: forcing a refetch of an already-settled
-            gameweek.
         event_finality: The per-event finality map from this run's
             event-status capture (``event_status.ingest_event_status``), or
             ``None`` when that capture failed or did not validate. ``None``
@@ -125,7 +120,7 @@ async def ingest_gameweeks(
         return StageOutcome(result=StageResult(stage="gameweeks"))
 
     gameweek_ids_to_fetch = _select_gameweeks_to_fetch(
-        raw_dir, events, force=force, event_finality=event_finality
+        raw_dir, events, event_finality=event_finality
     )
 
     if not gameweek_ids_to_fetch:
@@ -293,7 +288,6 @@ def _select_gameweeks_to_fetch(
     raw_dir: Path,
     events: list[GameweekInfo],
     *,
-    force: bool,
     event_finality: Finality | None,
 ) -> list[int]:
     """Determine which gameweek IDs need to be fetched.
@@ -301,11 +295,7 @@ def _select_gameweeks_to_fetch(
     A finished gameweek is fetched unless ``event_finality`` reports it
     settled (``points == "r"`` and ``bonus_added``) AND it has already been
     captured at least once — a settled gameweek that was somehow never
-    fetched is still fetched, never silently skipped. ``force`` bypasses the
-    finality check entirely and always re-fetches every finished gameweek,
-    including already-settled ones — the one part of the old ``--force``
-    behaviour still worth keeping (strategy doc 4.2 flagged the old
-    all-or-nothing refetch as a problem, not the ability to force a refetch).
+    fetched is still fetched, never silently skipped.
     """
     finished_ids = [e.id for e in events if e.finished]
     current_id = next((e.id for e in events if e.is_current), None)
@@ -314,15 +304,12 @@ def _select_gameweeks_to_fetch(
         len(finished_ids), current_id,
     )
 
-    if force:
-        to_fetch = list(finished_ids)
-    else:
-        known_settled = _known_settled_gameweeks(event_finality)
-        to_fetch = [
-            gw
-            for gw in finished_ids
-            if gw not in known_settled or not _has_event_live_capture(raw_dir, gw)
-        ]
+    known_settled = _known_settled_gameweeks(event_finality)
+    to_fetch = [
+        gw
+        for gw in finished_ids
+        if gw not in known_settled or not _has_event_live_capture(raw_dir, gw)
+    ]
 
     # Always include the current gameweek if it isn't already selected.
     if current_id and current_id not in to_fetch:

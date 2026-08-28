@@ -1,0 +1,71 @@
+# Scheduled FPL ingestion workflow — daily cadence.
+#
+# Runs the full ingestion pipeline twice a day. This is the workflow
+# responsible for the endpoints that don't need 30-minute freshness
+# (bootstrap-static, fixtures, element-summary) — event-status rides along
+# on every run since it's cheap and is captured first regardless. See
+# scheduled_run_live.yml for the 30-minute match-window-gated counterpart
+# that covers event-live.
+#
+# Raw captures land in S3 (FPL_STORAGE_BACKEND=s3), authenticated via GitHub
+# OIDC federation to an IAM role — no long-lived AWS keys in this repo.
+
+name: Scheduled Ingestion — Daily
+
+on:
+  schedule:
+    # 07:00 and 19:00 UTC.
+    - cron: "0 7,19 * * *"
+  workflow_dispatch:
+    # Allows manual triggering from the Actions tab or gh CLI:
+    #   gh workflow run scheduled_run_daily.yml
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+
+    env:
+      FPL_STORAGE_BACKEND: s3
+      FPL_S3_BUCKET: ${{ vars.FPL_S3_BUCKET || 'fpl-data-safari' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::737634035092:role/github-actions-fpl-ingest
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run ingestion
+        run: uv run fpl-ingest run
+
+      - name: Email on failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: fpl-ingest CI <${{ secrets.SMTP_USERNAME }}>
+          to: ${{ secrets.NOTIFY_EMAIL_TO }}
+          subject: "fpl-ingest: scheduled_run_daily failed"
+          body: |
+            scheduled_run_daily.yml failed on ${{ github.repository }}@${{ github.ref_name }}.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

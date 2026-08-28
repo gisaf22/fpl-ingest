@@ -1,0 +1,94 @@
+# Scheduled FPL ingestion workflow — live/match-day cadence.
+#
+# Runs the full ingestion pipeline (`fpl-ingest run`) every 30 minutes,
+# gated by a match-window check so the run only actually fires while a
+# Premier League fixture is in progress. GitHub Actions cron has no native
+# "only during match windows" schedule, so the gating happens in-workflow
+# (src/fpl_ingest/live_window.py) rather than in the cron expression.
+#
+# Cadence-per-endpoint tiering (bootstrap-static ~2x/day, fixtures ~daily,
+# element-summary a few times/day, event-status every run) is NOT built into
+# the pipeline itself in this pass — `fpl-ingest run` always fetches every
+# stage. The cron schedule split between this workflow and
+# scheduled_run_daily.yml IS the cadence mechanism for now; the existing
+# per-gameweek finality-skip logic (already-settled gameweeks aren't
+# re-fetched) keeps a live-triggered run from being wasteful on the
+# event-live side specifically.
+#
+# Raw captures land in S3 (FPL_STORAGE_BACKEND=s3), authenticated via GitHub
+# OIDC federation to an IAM role — no long-lived AWS keys in this repo.
+
+name: Scheduled Ingestion — Live
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    # Manual trigger for testing. Runs the live-window check like any other
+    # run — it does not force a full ingestion outside a match window.
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+
+    env:
+      FPL_STORAGE_BACKEND: s3
+      FPL_S3_BUCKET: ${{ vars.FPL_S3_BUCKET || 'fpl-data-safari' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::737634035092:role/github-actions-fpl-ingest
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      # Fetches fixtures live from the public FPL API (not from S3 — the IAM
+      # role has no s3:ListBucket, so the latest run_id-keyed fixtures object
+      # can't be discovered without listing) and exits 1 when no match is
+      # currently live. continue-on-error keeps that non-zero exit from
+      # failing the job outright, so "no live match right now" — the outcome
+      # on most of these 30-minute triggers — is not reported as a failure.
+      - name: Check for a live match window
+        id: live_check
+        run: uv run python -m fpl_ingest.live_window
+        continue-on-error: true
+
+      - name: Run ingestion
+        if: steps.live_check.outcome == 'success'
+        run: uv run fpl-ingest run
+
+      - name: Skip summary
+        if: steps.live_check.outcome != 'success'
+        run: echo "No match currently live; ingestion skipped." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Email on failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: fpl-ingest CI <${{ secrets.SMTP_USERNAME }}>
+          to: ${{ secrets.NOTIFY_EMAIL_TO }}
+          subject: "fpl-ingest: scheduled_run_live failed"
+          body: |
+            scheduled_run_live.yml failed on ${{ github.repository }}@${{ github.ref_name }}.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

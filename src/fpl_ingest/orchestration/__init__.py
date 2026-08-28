@@ -1,1 +1,1 @@
-"""Pipeline sequencing, replay, stage results, and execution semantics."""
+"""Pipeline sequencing, stage results, and execution semantics."""

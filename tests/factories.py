@@ -231,19 +231,3 @@ def element_type_row(**overrides: Any) -> dict:
     }
     base.update(overrides)
     return base
-
-
-def run_row(**overrides: Any) -> dict:
-    """Realistic _runs audit row with all required fields."""
-    base: dict = {
-        "started_at": "2026-05-14T08:00:00+00:00",
-        "stage": "core",
-        "status": "success",
-        "fetched": 10,
-        "validated": 10,
-        "written": 10,
-        "skipped": 0,
-        "errors": 0,
-    }
-    base.update(overrides)
-    return base

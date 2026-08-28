@@ -1,50 +1,29 @@
-"""Shared pytest fixtures for the fpl-ingest test suite."""
+"""Shared pytest support for the fpl-ingest test suite.
+
+The async runner below was previously local to ``tests/extract/stages``; it
+lives here now so every tier can run ``@pytest.mark.asyncio`` tests without a
+third-party asyncio plugin.
+"""
 
 from __future__ import annotations
 
-import sqlite3
-
-import pytest
-
-from fpl_ingest.load.db_setup import setup_store
-from fpl_ingest.load.store import SQLiteStore
+import asyncio
+import inspect
 
 
-@pytest.fixture
-def contract_db(tmp_path):
-    """Build and return a fully initialised contract database path.
-
-    Creates a SQLiteStore, runs setup_store inside a transaction, and returns
-    the path. Replaces the triplicated _build_contract_db helper previously
-    inlined in tests/schema/test_definition.py, test_compiler.py, and
-    test_drift.py.
-    """
-    path = tmp_path / "contract.db"
-    store = SQLiteStore(path)
-    with store.transaction():
-        setup_store(store)
-    return path
-
-
-@pytest.fixture
-def in_memory_conn():
-    """Create an in-memory SQLite connection with the 4-table integrity schema.
-
-    Used by tests/load/test_integrity.py. Each test gets a fresh connection.
-    """
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        """
-        CREATE TABLE players (id INTEGER PRIMARY KEY, team INTEGER NOT NULL);
-        CREATE TABLE teams   (id INTEGER PRIMARY KEY);
-        CREATE TABLE fixtures(id INTEGER PRIMARY KEY);
-        CREATE TABLE player_histories (
-            element_id INTEGER NOT NULL,
-            fixture    INTEGER NOT NULL,
-            round      INTEGER NOT NULL
-        );
-        """
-    )
-    conn.commit()
-    yield conn
-    conn.close()
+def pytest_pyfunc_call(pyfuncitem):
+    if pyfuncitem.get_closest_marker("asyncio") is None:
+        return None
+    testfunction = pyfuncitem.obj
+    if not inspect.iscoroutinefunction(testfunction):
+        return None
+    kwargs = {
+        name: pyfuncitem.funcargs[name]
+        for name in pyfuncitem._fixtureinfo.argnames
+    }
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(testfunction(**kwargs))
+    finally:
+        loop.close()
+    return True

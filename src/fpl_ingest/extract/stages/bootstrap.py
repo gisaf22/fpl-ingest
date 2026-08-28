@@ -1,173 +1,287 @@
-"""Core (bootstrap-static) ingest pipeline stage.
+"""Core (bootstrap-static) raw-capture pipeline stage.
 
-Fetches bootstrap-static from the FPL API and upserts players, teams,
-events, and element types into SQLite. This is always the first stage
-and its output (CoreData) is passed to downstream stages.
+Fetches the FPL bootstrap-static endpoint and writes the response verbatim
+through ``LocalRawWriter`` — payload bytes, per-object metadata sidecar, and
+the run manifest — into the same manifest the rest of the run shares. It
+performs the minimal structural checks the raw boundary calls for (strategy
+doc B.2) and nothing more.
 
-This module orchestrates: fetch → validate → store. It does not contain
-HTTP or SQL logic directly.
+This stage no longer writes SQLite. ``process_core_payload``,
+``ingest_players``, ``ingest_teams``, ``ingest_events``,
+``ingest_element_types``, and ``_assert_store_validation_consistency`` were
+removed deliberately (strategy doc B.1): flatten-and-upsert is warehouse work,
+and the decision was taken not to dual-write during the migration. The
+``players``, ``teams``, ``events``, and ``element_types`` tables are gone from
+the schema contract and are no longer created.
+
+What the stage still does beyond capture is hand two in-memory values to the
+stages that have not been migrated yet: the gameweek events (as
+``GameweekInfo``, holding only the fields gameweek selection needs) and the
+element ids. ``gameweeks.py`` and ``element_summary.py`` take those as
+arguments — they never read them back out of SQLite — so the handoff keeps
+working exactly as before without any table behind it. It disappears when those
+two stages are redirected to raw capture.
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
-from fpl_ingest.extract.http.client import AsyncFPLClient, write_json_cache
+from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
+from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
-from fpl_ingest.transform.models import (
-    ElementTypeModel,
-    EventModel,
-    PlayerModel,
-    TeamModel,
+from fpl_ingest.orchestration.stage_result import (
+    StageLineage,
+    StageMetadata,
+    StageOutcome,
+    StageResult,
 )
-from fpl_ingest.orchestration.stage_result import StageLineage, StageMetadata, StageOutcome, StageResult
-from fpl_ingest.load.store import SQLiteStore
-from fpl_ingest.transform.transforms import flatten_event, validate_models
 
 logger = logging.getLogger(__name__)
 
+RAW_SOURCE = "fpl"
+RAW_ENDPOINT = "bootstrap-static"
+
+#: Top-level keys a bootstrap-static payload must carry (strategy doc B.2).
+_REQUIRED_TOP_LEVEL_KEYS = ("elements", "teams", "events", "element_types")
+
+#: Identifying fields a sampled element record must carry (strategy doc B.2).
+_SAMPLED_ELEMENT_FIELDS = ("id", "team", "now_cost")
+
+#: The stage writes one raw object and no tables. ``raw_artifacts`` is filled
+#: in per run with the actual payload key, so the metadata default is empty.
 CORE_STAGE = StageMetadata(
     name="core",
-    raw_artifacts=("bootstrap.json",),
-    output_tables=("players", "teams", "events", "element_types"),
+    raw_artifacts=(),
+    output_tables=(),
 )
 
 
-class CoreData(NamedTuple):
-    """Validated domain objects extracted from bootstrap-static."""
+class GameweekInfo(NamedTuple):
+    """The subset of a bootstrap-static event needed for gameweek selection.
 
-    players: list[PlayerModel]
-    teams: list[TeamModel]
-    events: list[EventModel]
-    element_types: list[ElementTypeModel]
+    Not a validated model and not persisted — just the three fields
+    ``gameweeks.py``'s ``_select_gameweeks_to_fetch`` reads off each event.
+    """
+
+    id: int
+    finished: bool
+    is_current: bool
+
+
+class CoreData(NamedTuple):
+    """The in-memory handoff to the stages not yet redirected to raw capture.
+
+    Not a persisted shape and not a validated view of bootstrap-static — only
+    the two things downstream stages take as arguments.
+    """
+
+    events: list[GameweekInfo]
+    player_ids: list[int]
 
 
 async def ingest_core_data(
     client: AsyncFPLClient,
-    store: SQLiteStore,
-    cache_dir: Path,
+    raw_writer: LocalRawWriter,
     *,
     execution_state: PipelineExecutionState | None = None,
 ) -> StageOutcome[CoreData]:
-    """Fetch bootstrap-static and upsert players, teams, events, and element types.
+    """Fetch bootstrap-static and capture the response verbatim into raw storage.
 
     Args:
-        client: Async FPL client for the bootstrap fetch.
-        store: Active SQLiteStore for upsert operations.
-        cache_dir: Directory to write the raw bootstrap.json cache file.
+        client: Async FPL client for the HTTP fetch.
+        raw_writer: Writer for this run; also accumulates the run manifest.
+            The same writer the other capture stages use — one manifest per
+            run covers every endpoint it touches.
+        execution_state: Fail-fast sentinel. When a previous stage has already
+            failed, the capture is skipped rather than written.
 
     Returns:
-        StageOutcome with CoreData output, metrics, and lineage.
+        StageOutcome whose result counts captured objects, not rows — this
+        stage no longer produces rows. A shape-validation failure reports
+        ``skipped=1`` so ``classify_run`` marks the run FAILED_PARTIAL; the
+        payload is written regardless. The output carries the downstream
+        handoff, empty when nothing was captured.
     """
+    if execution_state is not None and execution_state.is_failed:
+        logger.info("Fail-fast tripped; skipping bootstrap-static capture")
+        return StageOutcome(
+            result=StageResult(stage="core"), output=CoreData(events=[], player_ids=[])
+        )
+
     logger.info("Fetching bootstrap-static...")
-    bootstrap = await client.get_bootstrap()
     try:
-        write_json_cache(cache_dir / "bootstrap.json", bootstrap, execution_state=execution_state)
-    except OSError as exc:
-        logger.warning("Could not write raw cache to %s: %s", cache_dir / "bootstrap.json", exc)
+        raw = await client.get_bootstrap_raw()
+    except FPLClientError as exc:
+        logger.error("Failed to fetch bootstrap-static: %s", exc)
+        raw_writer.record_failure(
+            RAW_ENDPOINT,
+            request_url=_ENDPOINTS["bootstrap"],
+            error_class=type(exc).__name__,
+            message=str(exc),
+        )
+        return StageOutcome(
+            result=StageResult(stage="core", errors=1),
+            output=CoreData(events=[], player_ids=[]),
+        )
 
-    return process_core_payload(store, bootstrap, artifact_path=cache_dir / "bootstrap.json")
+    shape = validate_bootstrap_shape(raw)
+    if not shape["ok"]:
+        logger.error(
+            "bootstrap-static payload failed shape validation (%s); writing it anyway",
+            ", ".join(shape["failures"]),
+        )
 
-
-def process_core_payload(
-    store: SQLiteStore,
-    bootstrap: dict,
-    *,
-    artifact_path: Path | str = "bootstrap.json",
-) -> StageOutcome[CoreData]:
-    """Validate and persist bootstrap-static payload rows."""
-    players, player_raw, player_validated, player_written = ingest_players(store, bootstrap)
-    teams, team_raw, team_validated, team_written = ingest_teams(store, bootstrap)
-    events, event_raw, event_validated, event_written = ingest_events(store, bootstrap)
-    element_types, type_raw, type_validated, type_written = ingest_element_types(store, bootstrap)
-
-    data = CoreData(
-        players=players,
-        teams=teams,
-        events=events,
-        element_types=element_types,
+    write = raw_writer.write_object(
+        RAW_ENDPOINT,
+        raw.body,
+        request_url=raw.url,
+        requested_at=raw.requested_at,
+        received_at=raw.received_at,
+        http_status=raw.status,
+        response_headers=raw.headers,
+        attempt_count=raw.attempt_count,
+        shape_validation=shape,
     )
+    logger.info(
+        "Captured bootstrap-static: %d bytes -> %s",
+        write.content_length,
+        write.payload_key,
+    )
+
+    # StageResult counts objects here, not rows: one captured object per run.
+    # Its invariants (fetched >= validated >= written, skipped == fetched -
+    # validated) mean a shape failure must be reported as validated=0/written=0
+    # even though the payload was deliberately still written to raw storage —
+    # the sidecar's shape_validation field is where that fact lives. skipped=1
+    # is what makes classify_run mark the run FAILED_PARTIAL.
+    ok = bool(shape["ok"])
     result = StageResult(
         stage="core",
-        fetched=player_raw + team_raw + event_raw + type_raw,
-        validated=player_validated + team_validated + event_validated + type_validated,
-        written=player_written + team_written + event_written + type_written,
-        skipped=(player_raw - player_validated)
-        + (team_raw - team_validated)
-        + (event_raw - event_validated)
-        + (type_raw - type_validated),
+        fetched=1,
+        validated=1 if ok else 0,
+        written=1 if ok else 0,
+        skipped=0 if ok else 1,
     )
     return StageOutcome(
         result=result,
-        output=data,
-        lineage=StageLineage.from_metadata(CORE_STAGE, raw_artifacts=(artifact_path,)),
+        output=core_handoff(raw),
+        lineage=StageLineage.from_metadata(
+            CORE_STAGE, raw_artifacts=(write.payload_key,)
+        ),
     )
 
 
-def ingest_players(
-    store: SQLiteStore, bootstrap: dict
-) -> tuple[list[PlayerModel], int, int, int]:
-    raw = bootstrap.get("elements", [])
-    # Players require .prepare() to flatten nested stats fields into a single dict.
-    players, _validation_skipped = validate_models(PlayerModel, [PlayerModel.prepare(p) for p in raw])
-    written, store_skipped = store.upsert_models("players", PlayerModel, [m.model_dump() for m in players])
-    _assert_store_validation_consistency("players", store_skipped)
-    logger.debug("Players extracted: raw=%d validated=%d written=%d", len(raw), len(players), written)
-    return players, len(raw), len(players), written
+def core_handoff(raw: RawResponse) -> CoreData:
+    """Extract the downstream handoff from a captured bootstrap payload.
+
+    Deliberately tolerant: a payload that failed shape validation still yields
+    whatever it does carry, and an unusable one yields empty lists rather than
+    raising. Nothing here is persisted, so a bad extraction costs a degraded
+    downstream stage, not corrupt data.
+    """
+    payload = raw.json()
+    if not isinstance(payload, dict):
+        return CoreData(events=[], player_ids=[])
+
+    raw_events = payload.get("events") or []
+    events: list[GameweekInfo] = []
+    if isinstance(raw_events, list):
+        for e in raw_events:
+            if not isinstance(e, dict):
+                continue
+            if not isinstance(e.get("id"), int):
+                continue
+            if not isinstance(e.get("finished"), bool) or not isinstance(e.get("is_current"), bool):
+                continue
+            events.append(GameweekInfo(id=e["id"], finished=e["finished"], is_current=e["is_current"]))
+
+    raw_elements = payload.get("elements") or []
+    player_ids = [
+        element["id"]
+        for element in raw_elements
+        if isinstance(element, dict) and isinstance(element.get("id"), int)
+    ] if isinstance(raw_elements, list) else []
+
+    return CoreData(events=events, player_ids=player_ids)
 
 
-def ingest_teams(
-    store: SQLiteStore, bootstrap: dict
-) -> tuple[list[TeamModel], int, int, int]:
-    raw = bootstrap.get("teams", [])
-    # Teams map directly to the model with no preprocessing needed.
-    teams, _validation_skipped = validate_models(TeamModel, raw)
-    written, store_skipped = store.upsert_models("teams", TeamModel, [m.model_dump() for m in teams])
-    _assert_store_validation_consistency("teams", store_skipped)
-    logger.debug("Teams extracted: raw=%d validated=%d written=%d", len(raw), len(teams), written)
-    return teams, len(raw), len(teams), written
+def validate_bootstrap_shape(raw: RawResponse) -> dict[str, Any]:
+    """Return the raw-boundary structural verdict for a bootstrap-static response.
 
+    Checks exactly what strategy doc B.2 permits at this boundary and stops:
+    the status is 2xx, the body parses as JSON, the top level is an object, the
+    required top-level keys are present, and a sampled element record carries
+    its identifying fields. Nothing about types, ranges, or cross-record
+    consistency — that is warehouse work.
 
-def ingest_events(
-    store: SQLiteStore, bootstrap: dict
-) -> tuple[list[EventModel], int, int, int]:
-    raw_events = bootstrap.get("events", [])
-    # Events embed chip_plays as a nested list; flatten_event hoists them to top-level fields.
-    raw = [flatten_event(e) for e in raw_events]
-    events, _validation_skipped = validate_models(EventModel, raw)
-    written, store_skipped = store.upsert_models("events", EventModel, [m.model_dump() for m in events])
-    _assert_store_validation_consistency("events", store_skipped)
-    logger.debug("Events extracted: raw=%d validated=%d written=%d", len(raw_events), len(events), written)
-    return events, len(raw_events), len(events), written
+    Args:
+        raw: The captured response.
 
+    Returns:
+        A JSON-serialisable dict for the sidecar's ``shape_validation`` field:
+        ``ok``, the list of ``checks`` run, and any ``failures``.
+    """
+    checks: list[str] = []
+    failures: list[str] = []
 
-def ingest_element_types(
-    store: SQLiteStore, bootstrap: dict
-) -> tuple[list[ElementTypeModel], int, int, int]:
-    raw = bootstrap.get("element_types", [])
-    # Element types require .prepare() to normalise singular_name_short and plural name fields.
-    element_types, _validation_skipped = validate_models(
-        ElementTypeModel, [ElementTypeModel.prepare(et) for et in raw]
-    )
-    written, store_skipped = store.upsert_models(
-        "element_types", ElementTypeModel, [m.model_dump() for m in element_types]
-    )
-    _assert_store_validation_consistency("element_types", store_skipped)
-    logger.debug(
-        "Element types extracted: raw=%d validated=%d written=%d",
-        len(raw),
-        len(element_types),
-        written,
-    )
-    return element_types, len(raw), len(element_types), written
+    checks.append("http_status_2xx")
+    if not 200 <= raw.status < 300:
+        failures.append(f"http_status_2xx: got {raw.status}")
+        return _verdict(checks, failures, record_count=None)
 
+    checks.append("body_parses_as_json")
+    payload = raw.json()
+    if payload is None:
+        failures.append("body_parses_as_json: body is not valid JSON")
+        return _verdict(checks, failures, record_count=None)
 
-def _assert_store_validation_consistency(table_name: str, store_skipped: int) -> None:
-    """Validated stage rows must not fail schema validation inside the store."""
-    if store_skipped:
-        raise RuntimeError(
-            f"Store validation mismatch for {table_name}: "
-            f"{store_skipped} prevalidated rows were rejected during persistence"
+    checks.append("top_level_is_object")
+    if not isinstance(payload, dict):
+        failures.append(f"top_level_is_object: got {type(payload).__name__}")
+        return _verdict(checks, failures, record_count=None)
+
+    checks.append("required_top_level_keys_present")
+    missing_keys = [key for key in _REQUIRED_TOP_LEVEL_KEYS if key not in payload]
+    if missing_keys:
+        failures.append(
+            "required_top_level_keys_present: missing " + ", ".join(missing_keys)
         )
+
+    elements = payload.get("elements")
+    if not isinstance(elements, list):
+        # Without an elements list there is no record to sample; the missing-key
+        # or type problem is already reported above.
+        return _verdict(checks, failures, record_count=None)
+
+    checks.append("sampled_record_has_identifying_fields")
+    if elements:
+        sample = elements[0]
+        if not isinstance(sample, dict):
+            failures.append(
+                "sampled_record_has_identifying_fields: record is "
+                f"{type(sample).__name__}"
+            )
+        else:
+            missing = [f for f in _SAMPLED_ELEMENT_FIELDS if f not in sample]
+            if missing:
+                failures.append(
+                    "sampled_record_has_identifying_fields: missing "
+                    + ", ".join(missing)
+                )
+
+    return _verdict(checks, failures, record_count=len(elements))
+
+
+def _verdict(
+    checks: list[str], failures: list[str], *, record_count: int | None
+) -> dict[str, Any]:
+    """Assemble the sidecar-shaped validation result."""
+    return {
+        "ok": not failures,
+        "checks": checks,
+        "failures": failures,
+        "record_count": record_count,
+    }

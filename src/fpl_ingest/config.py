@@ -14,7 +14,6 @@ from pathlib import Path
 
 DEFAULT_STALE_AFTER_HOURS: float = 26.0
 
-_DEFAULT_DB_PATH = Path.home() / ".fpl" / "fpl.db"
 _DEFAULT_RAW_DIR = Path.home() / ".fpl" / "raw"
 _CONFIG_FILE = Path.home() / ".fpl" / "config.yaml"
 
@@ -25,8 +24,9 @@ _KV_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*):\s*(.+)$")
 class IngestConfig:
     """Resolved runtime settings for a single ingest invocation."""
 
-    db_path: Path   # SQLite database file path
-    raw_dir: Path   # Directory for raw JSON cache files from the API
+    raw_dir: Path            # Directory for raw JSON cache files from the API
+    storage_backend: str     # "local" or "s3" — selects the RawStorageBackend
+    s3_bucket: str | None    # Destination bucket when storage_backend == "s3"
 
 
 def load_fpl_config() -> dict:
@@ -71,27 +71,31 @@ def _resolve_path(
     return default.expanduser().resolve()
 
 
-def resolve_db_path(explicit: str | None = None) -> Path:
-    """Return the absolute path to fpl.db following the priority chain."""
-    return _resolve_path(explicit, "FPL_DB_PATH", "db_path", _DEFAULT_DB_PATH)
-
-
-def resolve_db_path_with_source(explicit: str | None = None) -> tuple[Path, str]:
-    """Return the resolved database path plus the source used to resolve it."""
-    if explicit is not None:
-        return Path(explicit).expanduser().resolve(), "flag"
-    env_val = os.environ.get("FPL_DB_PATH")
-    if env_val:
-        return Path(env_val).expanduser().resolve(), "env"
-    cfg = load_fpl_config()
-    if "db_path" in cfg:
-        return Path(cfg["db_path"]).expanduser().resolve(), "config"
-    return _DEFAULT_DB_PATH.expanduser().resolve(), "default"
-
-
 def resolve_raw_dir(explicit: str | None = None) -> Path:
     """Return the absolute path to the raw cache dir following the priority chain."""
     return _resolve_path(explicit, "FPL_RAW_DIR", "raw_dir", _DEFAULT_RAW_DIR)
+
+
+def resolve_storage_backend() -> str:
+    """Return the storage backend name ("local" or "s3") via env/config/default.
+
+    Local disk stays the default so nothing changes for existing local dev
+    workflows; CI opts in to S3 by setting ``FPL_STORAGE_BACKEND=s3``.
+    """
+    env_val = os.environ.get("FPL_STORAGE_BACKEND")
+    if env_val:
+        return env_val
+    cfg = load_fpl_config()
+    return cfg.get("storage_backend", "local")
+
+
+def resolve_s3_bucket() -> str | None:
+    """Return the destination S3 bucket name via env/config, or None."""
+    env_val = os.environ.get("FPL_S3_BUCKET")
+    if env_val:
+        return env_val
+    cfg = load_fpl_config()
+    return cfg.get("s3_bucket")
 
 
 def default_config() -> IngestConfig:
@@ -102,21 +106,19 @@ def default_config() -> IngestConfig:
         workflows.
     """
     return IngestConfig(
-        db_path=resolve_db_path(),
         raw_dir=resolve_raw_dir(),
+        storage_backend=resolve_storage_backend(),
+        s3_bucket=resolve_s3_bucket(),
     )
 
 
 def resolve_config(
     *,
-    db_path: Path | None = None,
     raw_dir: Path | None = None,
 ) -> IngestConfig:
     """Merge CLI path overrides onto the shared resolution chain.
 
     Args:
-        db_path: Explicit database path from CLI, or None to resolve via the
-            env/config/default chain.
         raw_dir: Explicit raw-cache directory from CLI, or None to resolve via
             the env/config/default chain.
 
@@ -125,6 +127,7 @@ def resolve_config(
         resolution.
     """
     return IngestConfig(
-        db_path=resolve_db_path(str(db_path) if db_path is not None else None),
         raw_dir=resolve_raw_dir(str(raw_dir) if raw_dir is not None else None),
+        storage_backend=resolve_storage_backend(),
+        s3_bucket=resolve_s3_bucket(),
     )

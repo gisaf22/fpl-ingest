@@ -1,86 +1,78 @@
 """Human-readable output formatters for the fpl-ingest CLI.
 
-Converts structured data from the store, schema contract, and smoke test
-into terminal-safe strings. Each formatter is a pure function: no I/O,
-no logging, no side effects. All CLI output paths pass through this module
-so formatting changes stay localised here.
+Converts structured data from the store and smoke test into terminal-safe
+strings. Each formatter is a pure function: no I/O, no logging, no side
+effects. All CLI output paths pass through this module so formatting changes
+stay localised here.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import TYPE_CHECKING
-
-from fpl_ingest.config import DEFAULT_STALE_AFTER_HOURS
-from fpl_ingest.schema.definition import ValidationResult
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fpl_ingest.schema.validation import SmokeTestResult
 
 
-def _humanize_age(dt: datetime) -> str:
-    """Return a human-readable age string relative to now."""
-    delta = datetime.now(timezone.utc) - dt
-    seconds = int(delta.total_seconds())
-    if seconds < 60:
-        return "just now"
-    if seconds < 3600:
-        m = seconds // 60
-        return f"{m} minute{'s' if m != 1 else ''} ago"
-    if seconds < 86400:
-        h = seconds // 3600
-        return f"{h} hour{'s' if h != 1 else ''} ago"
-    d = seconds // 86400
-    return f"{d} day{'s' if d != 1 else ''} ago"
+def format_run_detail(manifest: Mapping[str, Any]) -> str:
+    """Format a single run manifest as a human-readable summary."""
+    lines = [
+        f"run_id:      {manifest.get('run_id')}",
+        f"status:      {manifest.get('status')}",
+        f"started_at:  {manifest.get('started_at')}",
+        f"ended_at:    {manifest.get('ended_at')}",
+        f"duration:    {manifest.get('duration_seconds')}s"
+        if manifest.get("duration_seconds") is not None
+        else "duration:    (in progress)",
+        f"git_sha:     {manifest.get('git_sha') or '(unknown)'}",
+    ]
+
+    objects = manifest.get("objects") or {}
+    if objects:
+        lines.append("")
+        lines.append("endpoints:")
+        for endpoint, counts in sorted(objects.items()):
+            counts = counts or {}
+            lines.append(
+                f"  {endpoint}: written={counts.get('written', 0)} "
+                f"failed={counts.get('failed', 0)} bytes={counts.get('bytes', 0)}"
+            )
+
+    finality = manifest.get("finality")
+    if finality:
+        settled = sum(1 for info in finality.values() if info.get("bonus_added"))
+        lines.append("")
+        lines.append(f"finality:    {settled}/{len(finality)} gameweeks settled")
+
+    failures = manifest.get("failures") or []
+    if failures:
+        lines.append("")
+        lines.append("failures:")
+        for failure in failures:
+            lines.append(
+                f"  {failure.get('endpoint')}: {failure.get('error_class')} — {failure.get('message')}"
+            )
+
+    return "\n".join(lines)
 
 
-def format_run_metrics(run: Mapping[str, object]) -> str:
-    return (
-        f"fetched={run['fetched']} validated={run['validated']} written={run['written']} "
-        f"skipped={run['skipped']} errors={run['errors']}"
-    )
-
-
-def format_status_output(
-    *,
-    runs: Sequence[Mapping[str, object]],
-    last_successful_run_at: str | None,
-) -> str:
-    """Format the status table with a freshness line and a stale/healthy summary."""
-    if not runs:
+def format_run_list(manifests: Sequence[Mapping[str, Any]]) -> str:
+    """Format a list of run manifests (newest first) as a compact table."""
+    if not manifests:
         return "No runs recorded"
 
-    # Staleness line
-    if last_successful_run_at:
-        try:
-            last_dt = datetime.fromisoformat(last_successful_run_at)
-            age_str = _humanize_age(last_dt)
-            age_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
-            freshness_line = f"Last successful run: {last_successful_run_at} ({age_str})"
-            is_stale = age_hours > DEFAULT_STALE_AFTER_HOURS
-        except (ValueError, TypeError):
-            freshness_line = f"Last successful run: {last_successful_run_at}"
-            is_stale = False
-    else:
-        freshness_line = "Last successful run: never"
-        is_stale = True
-
-    # Runs table
-    headers = ("started_at", "stage", "status", "fetched", "validated", "written", "skipped", "errors")
+    headers = ("run_id", "status", "started_at", "duration_s", "endpoints", "failures")
     rows_data = [
         (
-            str(r.get("started_at", "")),
-            str(r.get("stage", "")),
-            str(r.get("status") or ""),
-            str(r.get("fetched", 0)),
-            str(r.get("validated", 0)),
-            str(r.get("written", 0)),
-            str(r.get("skipped", 0)),
-            str(r.get("errors", 0)),
+            str(m.get("run_id", "")),
+            str(m.get("status", "")),
+            str(m.get("started_at", "")),
+            str(m.get("duration_seconds") if m.get("duration_seconds") is not None else "-"),
+            str(len(m.get("objects") or {})),
+            str(len(m.get("failures") or [])),
         )
-        for r in runs
+        for m in manifests
     ]
     col_widths = [
         max(len(h), *(len(row[i]) for row in rows_data))
@@ -93,106 +85,7 @@ def format_status_output(
         sep.join(cell.ljust(col_widths[i]) for i, cell in enumerate(row))
         for row in rows_data
     ]
-
-    if is_stale:
-        age_label = _humanize_age(datetime.fromisoformat(last_successful_run_at)) if last_successful_run_at else "never"
-        summary = f"WARNING: last successful run was {age_label}"
-    else:
-        summary = "System healthy"
-
-    lines = [freshness_line, ""] + table_lines + ["", summary]
-    return "\n".join(lines)
-
-
-def format_schema_output(
-    *,
-    db_path: Path,
-    db_source: str,
-    table_count: int,
-    result: ValidationResult | None = None,
-    destination: Path | None = None,
-) -> str:
-    """Format schema export confirmation (destination set) or validation report (result set)."""
-    lines = [
-        "Public SQLite schema",
-        f"db:       {db_path} (source: {db_source})",
-        f"tables:   {table_count} public tables",
-        "",
-    ]
-    if destination is not None:
-        lines.extend([f"schema:   {destination}", "Export complete."])
-        return "\n".join(lines)
-
-    assert result is not None
-    if result.missing_tables:
-        lines.append("Missing tables:")
-        lines.extend(f"  - {table_name}" for table_name in result.missing_tables)
-
-    if result.missing_columns:
-        lines.append("Missing columns:")
-        for table_name, columns in sorted(result.missing_columns.items()):
-            lines.append(f"  - {table_name}: {', '.join(columns)}")
-
-    if result.extra_columns:
-        lines.append("Drift columns:")
-        for table_name, columns in sorted(result.extra_columns.items()):
-            lines.append(f"  - {table_name}: {', '.join(columns)}")
-
-    if result.type_mismatches:
-        lines.append("Type mismatches:")
-        for table_name, mismatches in sorted(result.type_mismatches.items()):
-            rendered = ", ".join(
-                f"{mismatch.column} expected {mismatch.expected} got {mismatch.actual}"
-                for mismatch in mismatches
-            )
-            lines.append(f"  - {table_name}: {rendered}")
-
-    if result.nullability_mismatches:
-        lines.append("Nullability mismatches:")
-        for table_name, constraint_mismatches in sorted(result.nullability_mismatches.items()):
-            rendered = ", ".join(
-                f"{mismatch.name} expected {mismatch.expected} got {mismatch.actual}"
-                for mismatch in constraint_mismatches
-            )
-            lines.append(f"  - {table_name}: {rendered}")
-
-    if result.primary_key_mismatches:
-        lines.append("Primary key mismatches:")
-        for table_name, mismatch in sorted(result.primary_key_mismatches.items()):
-            lines.append(f"  - {table_name}: expected {mismatch.expected} got {mismatch.actual}")
-
-    if result.unique_constraint_mismatches:
-        lines.append("Unique constraint mismatches:")
-        for table_name, mismatch in sorted(result.unique_constraint_mismatches.items()):
-            lines.append(f"  - {table_name}: expected {mismatch.expected} got {mismatch.actual}")
-
-    if result.index_mismatches:
-        lines.append("Index mismatches:")
-        for table_name, mismatch in sorted(result.index_mismatches.items()):
-            lines.append(f"  - {table_name}: expected {mismatch.expected} got {mismatch.actual}")
-
-    if result.status == "valid":
-        lines.extend(
-            [
-                f"Status: valid (schema v{result.schema_version})",
-                "Validation passed. The live database matches the public schema.",
-            ]
-        )
-    elif result.status == "drift":
-        lines.extend(
-            [
-                f"Status: valid with drift (schema v{result.schema_version})",
-                "Validation passed with drift. Review extra columns and decide whether the schema should be updated.",
-            ]
-        )
-    else:
-        lines.extend(
-            [
-                f"Status: invalid (schema v{result.schema_version})",
-                "Validation failed. The live database is missing required public schema elements.",
-            ]
-        )
-    return "\n".join(lines)
+    return "\n".join(table_lines)
 
 
 def format_smoke_test_success(result: SmokeTestResult) -> str:

@@ -1,0 +1,29 @@
+{
+  "status": [
+    {
+      "bonus_added": true,
+      "date": "2026-08-21",
+      "event": 1,
+      "points": "r"
+    },
+    {
+      "bonus_added": true,
+      "date": "2026-08-22",
+      "event": 1,
+      "points": "r"
+    },
+    {
+      "bonus_added": true,
+      "date": "2026-08-23",
+      "event": 1,
+      "points": "r"
+    },
+    {
+      "bonus_added": true,
+      "date": "2026-08-24",
+      "event": 1,
+      "points": "r"
+    }
+  ],
+  "leagues": "Updated"
+}

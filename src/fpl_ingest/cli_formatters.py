@@ -9,13 +9,13 @@ stay localised here.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fpl_ingest.schema.validation import SmokeTestResult
 
 
-def format_run_detail(manifest: Mapping[str, object]) -> str:
+def format_run_detail(manifest: Mapping[str, Any]) -> str:
     """Format a single run manifest as a human-readable summary."""
     lines = [
         f"run_id:      {manifest.get('run_id')}",
@@ -57,7 +57,7 @@ def format_run_detail(manifest: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def format_run_list(manifests: Sequence[Mapping[str, object]]) -> str:
+def format_run_list(manifests: Sequence[Mapping[str, Any]]) -> str:
     """Format a list of run manifests (newest first) as a compact table."""
     if not manifests:
         return "No runs recorded"

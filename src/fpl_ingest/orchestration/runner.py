@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Awaitable, Iterable
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, TypeVar
@@ -274,7 +274,7 @@ def _record_stage(
     return result
 
 
-async def _measure_stage(awaitable) -> tuple[_StageOutput, datetime, datetime, float]:
+async def _measure_stage(awaitable: Awaitable[_StageOutput]) -> tuple[_StageOutput, datetime, datetime, float]:
     stage_started_at = datetime.now(timezone.utc)
     stage_started = perf_counter()
     result = await awaitable
@@ -284,12 +284,11 @@ async def _measure_stage(awaitable) -> tuple[_StageOutput, datetime, datetime, f
 
 async def _execute_stage(
     *,
-    awaitable,
+    awaitable: Awaitable[StageOutcome[_StageOutput]],
     stage_results: list[StageResult],
     logger: logging.Logger,
     strict: bool,
-) -> _StageOutput:
-    outcome: StageOutcome[Any]
+) -> _StageOutput | None:
     outcome, stage_started_at, stage_ended_at, duration_seconds = await _measure_stage(awaitable)
 
     _record_stage(

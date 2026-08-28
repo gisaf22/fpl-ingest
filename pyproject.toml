@@ -48,10 +48,18 @@ Repository = "https://github.com/gisaf22/fpl-ingest"
 Issues = "https://github.com/gisaf22/fpl-ingest/issues"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/unit", "tests/integration"]
 markers = [
+    # Tiers — applied automatically by each tier directory's conftest.
     "unit: pure unit tests — in-memory fixtures, no DB, no network",
-    "integration: tests exercising the orchestration pipeline end-to-end against tmp_path fixtures",
-    "smoke: end-to-end tests with real API — requires TEAM_ID env var",
+    "integration: real internal components wired together; the FPL API is faked, not called",
+    "e2e: hits the real FPL API — opt-in only, run with `pytest tests/e2e`",
+    # Data shape
+    "dgw: double-gameweek payload shape",
+    "bgw: blank-gameweek payload shape",
+    "edge_case: degenerate or boundary payload/state",
+    # Cross-cutting
+    "regression: pins a specific past bug — the docstring must name it",
     "perf: wall-clock performance benchmarks — not run by default",
+    "asyncio: run async tests in an event loop",
 ]

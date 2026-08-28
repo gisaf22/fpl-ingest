@@ -19,17 +19,35 @@ cached file.
 
 ``_fetch_player_histories`` keeps its concurrency and strict-mode
 cancellation semantics exactly — only what it fetches, and what it does with
-each response, changed. The dead ``force`` parameter (strategy doc §4.2:
-never read in the function body, so its effect was always "fetch every
-player, every run") is not ported through the redirect — this stage
-unconditionally fetches every player on every run, which was already the
-real behaviour.
+each response, changed.
+
+Finality-aware skipping (matching ``gameweeks.py``'s pattern): a player whose
+``element-summary`` has already been captured is skipped once the latest
+gameweek is settled, on the theory that ``history`` (the only field with no
+equivalent elsewhere) cannot change further once the gameweek it reports has
+settled. This is existence-based, not content-based — it checks whether a
+capture directory exists, exactly like ``gameweeks._has_event_live_capture``,
+and deliberately does not read any payload back (``RawStorageBackend`` is
+write-only by design; see its docstring). The embedded ``fixtures`` block can
+go stale between settlements as a result (a mid-week reschedule wouldn't be
+reflected until the next gameweek settles and the player is refetched), but
+every field in it (``is_home``, ``difficulty``, ``event_name``) is derivable
+from the global ``fixtures`` endpoint and ``bootstrap-static``, both captured
+every run regardless — so nothing is actually lost.
+
+A gameweek still in progress must always trigger a fetch, existence or not: a
+player captured mid-gameweek has a ``history`` missing that gameweek's row,
+and once the gameweek settles there is no later trigger to go back and get
+it. Settlement state is read off the *current* gameweek (from ``events``,
+the same ``GameweekInfo`` list ``gameweeks.py`` uses) against the same
+``event_finality`` map produced by the event-status stage.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any
 
 from fpl_ingest.extract.http.client import (
@@ -39,6 +57,8 @@ from fpl_ingest.extract.http.client import (
     cancel_pending_tasks,
 )
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.stages.bootstrap import GameweekInfo
+from fpl_ingest.extract.stages.event_status import Finality
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.stage_result import StageLineage, StageMetadata, StageOutcome, StageResult
 
@@ -73,21 +93,30 @@ def raw_endpoint(player_id: int) -> str:
 async def ingest_player_histories(
     client: AsyncFPLClient,
     raw_writer: LocalRawWriter,
+    raw_dir: Path,
     player_ids: list[int],
+    events: list[GameweekInfo],
     *,
+    event_finality: Finality | None,
     strict: bool = False,
     execution_state: PipelineExecutionState | None = None,
 ) -> StageOutcome[None]:
-    """Fetch element-summary for every player and capture each response verbatim.
+    """Fetch element-summary for every player that needs it and capture verbatim.
 
     Args:
         client: Async FPL client for the HTTP fetches.
         raw_writer: Writer for this run; also accumulates the run manifest.
             The same writer the other capture stages use — one manifest per
             run covers every endpoint and every player it touches.
-        player_ids: FPL element IDs to fetch this run — every player, every
-            run (strategy doc §4.2: the old ``force`` parameter was already
-            dead, so this was always the real behaviour).
+        raw_dir: Local raw-capture root; used to check whether a player has
+            ever been captured before (§below).
+        player_ids: FPL element IDs known this run (from the core stage).
+        events: GameweekInfo list from the core stage; used to find the
+            current gameweek's settlement state.
+        event_finality: The per-event finality map from this run's
+            event-status capture, or ``None`` when that capture failed or did
+            not validate. ``None`` means "nothing is known settled" and must
+            never cause under-fetching.
         strict: If True, the first failed fetch cancels the rest of the batch.
         execution_state: Fail-fast sentinel.
 
@@ -108,10 +137,26 @@ async def ingest_player_histories(
             lineage=StageLineage.from_metadata(PLAYER_HISTORIES_STAGE),
         )
 
-    logger.info("Collecting element-summary for %d players...", len(player_ids))
+    player_ids_to_fetch = _select_players_to_fetch(
+        raw_dir, player_ids, events, event_finality=event_finality
+    )
+    logger.info(
+        "element-summary: %d players fetched, %d skipped (already captured, latest gameweek settled)",
+        len(player_ids_to_fetch),
+        len(player_ids) - len(player_ids_to_fetch),
+    )
+
+    if not player_ids_to_fetch:
+        logger.info("All players already captured for the settled gameweek.")
+        return StageOutcome(
+            result=StageResult(stage="player_histories"),
+            lineage=StageLineage.from_metadata(PLAYER_HISTORIES_STAGE),
+        )
+
+    logger.info("Collecting element-summary for %d players...", len(player_ids_to_fetch))
 
     fetched, error_count = await _fetch_player_histories(
-        client, player_ids, raw_writer, strict=strict
+        client, player_ids_to_fetch, raw_writer, strict=strict
     )
 
     if strict and error_count > 0:
@@ -263,6 +308,71 @@ def _verdict(
         "failures": failures,
         "record_count": record_count,
     }
+
+
+def _select_players_to_fetch(
+    raw_dir: Path,
+    player_ids: list[int],
+    events: list[GameweekInfo],
+    *,
+    event_finality: Finality | None,
+) -> list[int]:
+    """Determine which player IDs need an element-summary fetch this run.
+
+    ============================  ===============  ======
+    latest gameweek               capture exists?   action
+    ============================  ===============  ======
+    settled                       yes               skip
+    settled                       no                fetch — new player / backfill
+    provisional / unknown         either             fetch — history incomplete
+    ============================  ===============  ======
+
+    "Latest gameweek settled" is a single season-wide fact, not a per-player
+    one: it is the current gameweek's finality, read the same way
+    ``gameweeks._needs_fetch`` reads it. A gameweek still in progress means
+    every player's ``history`` is missing that gameweek's row, so existence
+    alone must not skip anyone until it settles.
+    """
+    if _latest_gameweek_settled(events, event_finality) is not True:
+        return list(player_ids)
+
+    return [
+        player_id
+        for player_id in player_ids
+        if not _has_element_summary_capture(raw_dir, player_id)
+    ]
+
+
+def _latest_gameweek_settled(
+    events: list[GameweekInfo], event_finality: Finality | None
+) -> bool | None:
+    """Whether the current gameweek is fully settled.
+
+    Returns ``None`` (treated as "not settled", i.e. fetch everything) when
+    that cannot be determined: no finality map, or no current gameweek found
+    in ``events`` yet (e.g. pre-season). Mirrors the fail-safe rule in
+    ``gameweeks._needs_fetch`` — an unknown state must never cause
+    under-fetching.
+    """
+    if event_finality is None:
+        return None
+
+    current_id = next((e.id for e in events if e.is_current), None)
+    if current_id is None:
+        return None
+
+    info = event_finality.get(current_id)
+    if info is None:
+        # No entry means event-status's current-window array has rolled past
+        # this gameweek — the normal state for one settled well in the past.
+        return True
+
+    return bool(info.get("bonus_added"))
+
+
+def _has_element_summary_capture(raw_dir: Path, player_id: int) -> bool:
+    """Whether this player's element-summary endpoint has ever been captured."""
+    return (raw_dir / RAW_SOURCE / raw_endpoint(player_id)).is_dir()
 
 
 async def _fetch_player_histories(

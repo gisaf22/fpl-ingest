@@ -13,7 +13,7 @@ from fpl_ingest.schema.validation import SmokeTestFailure, run_smoke_test
 
 pytestmark = pytest.mark.unit
 
-FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "smoke"
+FIXTURES_DIR = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "smoke"
 
 
 def _load_fixture(name: str):

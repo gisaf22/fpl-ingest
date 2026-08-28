@@ -292,10 +292,12 @@ def _select_gameweeks_to_fetch(
 ) -> list[int]:
     """Determine which gameweek IDs need to be fetched.
 
-    A finished gameweek is fetched unless ``event_finality`` reports it
-    settled (``points == "r"`` and ``bonus_added``) AND it has already been
-    captured at least once — a settled gameweek that was somehow never
-    fetched is still fetched, never silently skipped.
+    Candidates are every finished gameweek plus the current gameweek (which
+    may or may not also be finished — FPL keeps a gameweek "current" for a
+    while after it finishes, until the next one's deadline). Each candidate
+    is then decided by :func:`_needs_fetch` — being "current" no longer
+    forces a fetch on its own; a current gameweek that is also finished,
+    settled, and already captured is skipped like any other.
     """
     finished_ids = [e.id for e in events if e.finished]
     current_id = next((e.id for e in events if e.is_current), None)
@@ -304,30 +306,43 @@ def _select_gameweeks_to_fetch(
         len(finished_ids), current_id,
     )
 
-    known_settled = _known_settled_gameweeks(event_finality)
-    to_fetch = [
-        gw
-        for gw in finished_ids
-        if gw not in known_settled or not _has_event_live_capture(raw_dir, gw)
-    ]
+    candidate_ids = list(finished_ids)
+    if current_id is not None and current_id not in candidate_ids:
+        candidate_ids.append(current_id)
 
-    # Always include the current gameweek if it isn't already selected.
-    if current_id and current_id not in to_fetch:
-        return to_fetch + [current_id]
-    return to_fetch
+    return [gw for gw in candidate_ids if _needs_fetch(raw_dir, gw, event_finality)]
 
 
-def _known_settled_gameweeks(event_finality: Finality | None) -> set[int]:
-    """Return the event ids event-status reports as fully settled.
+def _needs_fetch(raw_dir: Path, gameweek_id: int, event_finality: Finality | None) -> bool:
+    """Decide whether one gameweek must be fetched this run.
 
-    ``event_finality`` is None when this run's event-status capture failed or
-    did not validate; an empty set here means "nothing is known settled," so
-    every finished gameweek is fetched — the fail-safe strategy doc 4 calls
-    for rather than silently under-fetching on a missing finality signal.
+    ============================  ===============  ======
+    event-status says             capture exists?   action
+    ============================  ===============  ======
+    settled                       either            skip
+    provisional (live)            either            fetch
+    absent, event-status ok       yes               skip — settled, rolled out of window
+    absent, event-status ok       no                fetch — backfill / never captured
+    event-status stage failed     either            fetch — unknown state, fail safe
+    ============================  ===============  ======
+
+    ``event_finality is None`` means the event-status stage itself failed or
+    did not validate — "nothing is known," never "everything is settled."
+    That is distinct from ``event_finality`` being a dict that simply has no
+    entry for this gameweek, which means event-status succeeded but this
+    gameweek's match dates have rolled out of its current-window ``status``
+    array — the normal, expected state for a gameweek settled well in the
+    past. An absent key is therefore treated the same as "settled": trust the
+    existing capture if there is one, otherwise fetch to backfill.
     """
-    if not event_finality:
-        return set()
-    return {event for event, info in event_finality.items() if info.get("bonus_added")}
+    if event_finality is None:
+        return True
+
+    info = event_finality.get(gameweek_id)
+    if info is not None and not info.get("bonus_added"):
+        return True
+
+    return not _has_event_live_capture(raw_dir, gameweek_id)
 
 
 def _has_event_live_capture(raw_dir: Path, gameweek_id: int) -> bool:

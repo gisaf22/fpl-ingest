@@ -1,4 +1,7 @@
-"""Tests for the CLI entry point and async pipeline stage integration."""
+"""CLI tests that drive the real pipeline against tmp_path.
+
+Split out of the pre-migration ``tests/test_cli.py``; bodies unchanged.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +10,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-pytestmark = pytest.mark.unit
 
 from fpl_ingest.cli import (
     DEFAULT_RATE,
@@ -22,120 +23,16 @@ from fpl_ingest.orchestration.stage_result import StageOutcome, StageResult
 from fpl_ingest.orchestration.runner import _exit_code, _log_fail_fast_failure, _resolve_applied_rate
 from fpl_ingest.orchestration.run_status import classify_run
 from fpl_ingest.extract.stages.bootstrap import CoreData
-from tests.factories import event_row, player_row, team_row
-
-MINIMAL_BOOTSTRAP = {
-    "events": [],
-    "elements": [
-        player_row(id=1, team=11, element_type=3, now_cost=130),
-        player_row(id=2, first_name="Erling", second_name="Haaland", web_name="Haaland",
-                   team=13, team_code=43, element_type=4, now_cost=145, code=223094,
-                   form_rank=2, form_rank_type=1, points_per_game_rank=2,
-                   points_per_game_rank_type=1, influence_rank=4, influence_rank_type=2,
-                   creativity_rank=80, creativity_rank_type=20,
-                   threat_rank=1, threat_rank_type=1,
-                   ict_index_rank=3, ict_index_rank_type=2),
-    ],
-    "teams": [
-        team_row(id=11, name="Liverpool", short_name="LIV", code=14),
-        team_row(id=13, name="Man City", short_name="MCI", code=43, position=2),
-    ],
-    "element_types": [],
-    "phases": [],
-}
-
-PLAYER_HISTORY_1 = {
-    "history": [{"element": 1, "round": 1, "fixture": 11, "minutes": 90, "total_points": 2}],
-    "fixtures": [],
-    "history_past": [],
-}
-PLAYER_HISTORY_2 = {
-    "history": [{"element": 2, "round": 1, "fixture": 22, "minutes": 90, "total_points": 5}],
-    "fixtures": [],
-    "history_past": [],
-}
-
-
-def _element_summary_payload_paths(raw: Path, pid: int) -> list[Path]:
-    return sorted((raw / "fpl" / "element-summary" / str(pid)).rglob("payload.json"))
-
-VALID_BOOTSTRAP = {
-    "events": [],
-    "elements": [player_row(id=1, web_name="Salah", team=11, element_type=3, now_cost=130)],
-    "teams": [],
-    "element_types": [],
-}
-
-
-
-def _raw_response(url: str, payload):
-    """A RawResponse a capture stage can write, for client stubs."""
-    from datetime import datetime, timezone
-
-    from fpl_ingest.extract.http.client import RawResponse
-
-    now = datetime.now(timezone.utc)
-    return RawResponse(
-        url=url,
-        status=200,
-        headers={"content-type": "application/json"},
-        body=json.dumps(payload).encode("utf-8"),
-        requested_at=now,
-        received_at=now,
-    )
-
-
-def _raw_fixtures_response(payload=()):
-    return _raw_response("https://fantasy.premierleague.com/api/fixtures/", list(payload))
-
-
-def _raw_event_status_response(payload=None):
-    return _raw_response(
-        "https://fantasy.premierleague.com/api/event-status/",
-        payload if payload is not None else {"status": [], "leagues": ""},
-    )
-
-
-def _raw_bootstrap_response(payload=None):
-    return _raw_response(
-        "https://fantasy.premierleague.com/api/bootstrap-static/",
-        MINIMAL_BOOTSTRAP if payload is None else payload,
-    )
-
-
-def _make_async_client(bootstrap=MINIMAL_BOOTSTRAP, history_side_effect=None):
-    client = AsyncMock()
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=None)
-    client.get_bootstrap = AsyncMock(return_value=bootstrap)
-    client.get_bootstrap_raw = AsyncMock(return_value=_raw_bootstrap_response(bootstrap))
-    client.get_fixtures = AsyncMock(return_value=[])
-    client.get_fixtures_raw = AsyncMock(return_value=_raw_fixtures_response())
-    client.get_event_status_raw = AsyncMock(return_value=_raw_event_status_response())
-    client.get_gw = AsyncMock(return_value=None)
-
-    async def _fetch_raw(pid):
-        if history_side_effect is not None:
-            payload = await history_side_effect(pid)
-        else:
-            payload = PLAYER_HISTORY_1 if pid == 1 else PLAYER_HISTORY_2
-        return _raw_response(
-            f"https://fantasy.premierleague.com/api/element-summary/{pid}/", payload
-        )
-
-    client.get_element_summary_raw = AsyncMock(side_effect=_fetch_raw)
-    return client
-
-
-def _run(argv: list[str], mock_client, tmp_path) -> Path:
-    raw = tmp_path / "raw"
-    with patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=mock_client):
-        try:
-            main(["--raw-dir", str(raw)] + argv)
-        except SystemExit as exc:
-            if exc.code != 0:
-                raise
-    return raw
+from tests.support.cli_fakes import (
+    FakeClient,
+    MINIMAL_BOOTSTRAP,
+    PLAYER_HISTORY_1,
+    PLAYER_HISTORY_2,
+    VALID_BOOTSTRAP,
+    _element_summary_payload_paths,
+    _make_async_client,
+    _run,
+)
 
 
 class TestConcurrentPlayerFetch:
@@ -187,36 +84,6 @@ class TestConcurrentPlayerFetch:
                 main(["--raw-dir", str(raw), "--strict"])
 
         assert exc.value.code == 1
-
-
-class FakeClient:
-    """Minimal async-context-manager client that tracks whether it was closed."""
-
-    def __init__(self):
-        self.closed = False
-        _empty_bootstrap = {
-            "events": [], "elements": [], "teams": [], "element_types": [], "phases": [],
-        }
-        self.get_bootstrap = AsyncMock(return_value=_empty_bootstrap)
-        self.get_bootstrap_raw = AsyncMock(
-            return_value=_raw_bootstrap_response(_empty_bootstrap)
-        )
-        self.get_fixtures = AsyncMock(return_value=[])
-        self.get_fixtures_raw = AsyncMock(return_value=_raw_fixtures_response())
-        self.get_event_status_raw = AsyncMock(return_value=_raw_event_status_response())
-        self.get_gw = AsyncMock(return_value=None)
-        self.get_element_summary_raw = AsyncMock(
-            side_effect=lambda pid: _raw_response(
-                f"https://fantasy.premierleague.com/api/element-summary/{pid}/",
-                {"history": [], "fixtures": [], "history_past": []},
-            )
-        )
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        self.closed = True
 
 
 class TestCliLifecycle:
@@ -447,89 +314,3 @@ class TestRateLimiting:
         # Observe the effective rate on the actual limiter instance, not the constructor arg.
         assert applied_rates[0] == MAX_RATE, \
             f"effective rate {applied_rates[0]} must equal MAX_RATE {MAX_RATE} when --rate 99 is passed"
-
-
-class TestRunSuccessSemantics:
-
-    def test_exit_code_success_requires_zero_errors_and_zero_skipped(self):
-        logger = MagicMock()
-
-        exit_code = _exit_code(
-            logger,
-            [StageResult(stage="core", fetched=1, validated=1, written=1, skipped=0, errors=0)],
-        )
-
-        assert exit_code == 0
-
-    def test_exit_code_fails_when_skipped_rows_exist_even_without_errors(self):
-        logger = MagicMock()
-
-        exit_code = _exit_code(
-            logger,
-            [StageResult(stage="core", fetched=3, validated=1, written=1, skipped=2, errors=0)],
-        )
-
-        assert exit_code == 1
-        assert logger.info.call_args_list[0].args[0] == "[run] status=%s total_fetched=%d total_validated=%d total_written=%d total_skipped=%d total_errors=%d"
-        assert logger.info.call_args_list[0].args[1:] == (RUN_STATUS_FAILED_PARTIAL, 3, 1, 1, 2, 0)
-
-    def test_exit_code_fails_when_errors_exist(self):
-        logger = MagicMock()
-
-        exit_code = _exit_code(
-            logger,
-            [StageResult(stage="core", fetched=1, validated=1, written=1, skipped=0, errors=1)],
-        )
-
-        assert exit_code == 1
-        assert "run failed" in logger.warning.call_args.args[0]
-
-    @pytest.mark.parametrize("strict", [True, False])
-    def test_exits_non_zero_when_stage_reports_skipped_rows(self, tmp_path, strict):
-        raw = tmp_path / "raw"
-        client = _make_async_client()
-        core_data = CoreData(events=[], player_ids=[])
-        core_stage = StageResult(stage="core", fetched=1, validated=0, written=0, skipped=1, errors=0)
-        argv = ["--raw-dir", str(raw)]
-        if strict:
-            argv.append("--strict")
-
-        with (
-            patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=client),
-            patch("fpl_ingest.orchestration.runner.ingest_core_data", new=AsyncMock(return_value=StageOutcome(result=core_stage, output=core_data))),
-            patch("fpl_ingest.orchestration.runner.ingest_fixtures", new=AsyncMock(return_value=StageOutcome(result=StageResult(stage="fixtures")))),
-            patch("fpl_ingest.orchestration.runner.ingest_gameweeks", new=AsyncMock(return_value=StageOutcome(result=StageResult(stage="gameweeks")))),
-            patch("fpl_ingest.orchestration.runner.ingest_player_histories", new=AsyncMock(return_value=StageOutcome(result=StageResult(stage="player_histories")))),
-        ):
-            with pytest.raises(SystemExit) as exc:
-                main(argv)
-
-        assert exc.value.code == 1
-
-    def test_fail_fast_logging_includes_mode_reason_and_stage(self):
-        logger = MagicMock()
-
-        _log_fail_fast_failure(logger, StageResult(stage="core", fetched=4, validated=3, written=3, skipped=1, errors=0))
-
-        error_message = logger.error.call_args_list[0].args[0]
-        assert "Run failed fast:" in error_message
-        assert "failure_reason=%s" in error_message
-        assert "failed_stage=%s" in error_message
-        assert logger.error.call_args_list[0].args[1:] == ("skipped_records", "core", 4, 3, 3, 1, 0)
-        assert "run failed" in logger.warning.call_args.args[0]
-
-    def test_failed_run_exit_code_is_nonzero(self):
-        logger = MagicMock()
-
-        exit_code = _exit_code(
-            logger,
-            [StageResult(stage="core", fetched=1, validated=1, written=1, skipped=0, errors=1)],
-        )
-
-        assert exit_code == 1
-
-    def test_final_run_status_classification(self):
-        assert classify_run(errors=0, skipped=0, strict_mode=False) == RUN_STATUS_SUCCESS
-        assert classify_run(errors=1, skipped=0, strict_mode=False) == RUN_STATUS_FAILED
-        assert classify_run(errors=0, skipped=1, strict_mode=False) == RUN_STATUS_FAILED_PARTIAL
-        assert classify_run(errors=0, skipped=1, strict_mode=True) == RUN_STATUS_FAILED

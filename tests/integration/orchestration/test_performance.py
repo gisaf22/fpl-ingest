@@ -59,7 +59,9 @@ class TestConcurrentFetchThroughput:
         writer = _writer(tmp_path)
 
         async def _run():
-            return await ingest_player_histories(client, writer, player_ids)
+            return await ingest_player_histories(
+                client, writer, tmp_path / "raw", player_ids, [], event_finality=None
+            )
 
         start = time.perf_counter()
         result = asyncio.run(_run()).result
@@ -72,10 +74,13 @@ class TestConcurrentFetchThroughput:
 
 
 class TestCaptureWriteThroughput:
-    """Every run captures every player fresh — nothing suppresses a fetch."""
+    """An unknown finality state (no signal from event-status) must not
+    suppress a fetch — the fail-safe case from the finality-aware skip rule.
+    """
 
-    def test_100_players_are_captured_every_run(self, tmp_path):
-        """Pre-existing raw captures must NOT suppress network fetches."""
+    def test_100_players_are_captured_when_finality_is_unknown(self, tmp_path):
+        """Pre-existing raw captures must NOT suppress network fetches when
+        ``event_finality`` is ``None`` — the same fail-safe gameweeks.py uses."""
         raw_dir = tmp_path / "raw"
         raw_dir.mkdir(parents=True)
         player_ids = list(range(1, 101))
@@ -85,7 +90,9 @@ class TestCaptureWriteThroughput:
         writer = _writer(tmp_path)
 
         async def _run():
-            return await ingest_player_histories(client, writer, player_ids)
+            return await ingest_player_histories(
+                client, writer, raw_dir, player_ids, [], event_finality=None
+            )
 
         start = time.perf_counter()
         result = asyncio.run(_run()).result

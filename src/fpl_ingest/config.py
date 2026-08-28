@@ -24,7 +24,9 @@ _KV_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*):\s*(.+)$")
 class IngestConfig:
     """Resolved runtime settings for a single ingest invocation."""
 
-    raw_dir: Path   # Directory for raw JSON cache files from the API
+    raw_dir: Path            # Directory for raw JSON cache files from the API
+    storage_backend: str     # "local" or "s3" — selects the RawStorageBackend
+    s3_bucket: str | None    # Destination bucket when storage_backend == "s3"
 
 
 def load_fpl_config() -> dict:
@@ -74,6 +76,28 @@ def resolve_raw_dir(explicit: str | None = None) -> Path:
     return _resolve_path(explicit, "FPL_RAW_DIR", "raw_dir", _DEFAULT_RAW_DIR)
 
 
+def resolve_storage_backend() -> str:
+    """Return the storage backend name ("local" or "s3") via env/config/default.
+
+    Local disk stays the default so nothing changes for existing local dev
+    workflows; CI opts in to S3 by setting ``FPL_STORAGE_BACKEND=s3``.
+    """
+    env_val = os.environ.get("FPL_STORAGE_BACKEND")
+    if env_val:
+        return env_val
+    cfg = load_fpl_config()
+    return cfg.get("storage_backend", "local")
+
+
+def resolve_s3_bucket() -> str | None:
+    """Return the destination S3 bucket name via env/config, or None."""
+    env_val = os.environ.get("FPL_S3_BUCKET")
+    if env_val:
+        return env_val
+    cfg = load_fpl_config()
+    return cfg.get("s3_bucket")
+
+
 def default_config() -> IngestConfig:
     """Build config from environment variables, falling back to defaults.
 
@@ -83,6 +107,8 @@ def default_config() -> IngestConfig:
     """
     return IngestConfig(
         raw_dir=resolve_raw_dir(),
+        storage_backend=resolve_storage_backend(),
+        s3_bucket=resolve_s3_bucket(),
     )
 
 
@@ -102,4 +128,6 @@ def resolve_config(
     """
     return IngestConfig(
         raw_dir=resolve_raw_dir(str(raw_dir) if raw_dir is not None else None),
+        storage_backend=resolve_storage_backend(),
+        s3_bucket=resolve_s3_bucket(),
     )

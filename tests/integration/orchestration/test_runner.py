@@ -38,7 +38,7 @@ def _make_args(**overrides) -> SimpleNamespace:
 
 
 def _make_config(tmp_path: Path) -> SimpleNamespace:
-    return SimpleNamespace(raw_dir=tmp_path / "raw")
+    return SimpleNamespace(raw_dir=tmp_path / "raw", storage_backend="local", s3_bucket=None)
 
 
 def _silent_logger() -> logging.Logger:

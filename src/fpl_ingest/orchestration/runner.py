@@ -40,12 +40,30 @@ from fpl_ingest.extract.stages.fixtures import RAW_SOURCE, ingest_fixtures
 from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
 from fpl_ingest.extract.stages.element_summary import ingest_player_histories
 from fpl_ingest.extract.http.client import AsyncFPLClient
-from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
 from fpl_ingest.extract.http.rate_config import MAX_RATE, normalize_rate
 from fpl_ingest.extract.http.rate_limiter import TokenBucketLimiter
 
 _MAX_CONCURRENT_REQUESTS = 10
 _StageOutput = TypeVar("_StageOutput")
+
+
+def _build_storage_backend(config: Any) -> RawStorageBackend | None:
+    """Select the raw-capture backend from config.storage_backend.
+
+    Returns None for the "local" backend so ``LocalRawWriter`` falls back to
+    its own ``LocalFilesystemBackend`` default; only "s3" needs a backend
+    built here, since it's the one requiring extra config (the bucket name).
+    """
+    if config.storage_backend == "local":
+        return None
+    if config.storage_backend == "s3":
+        if not config.s3_bucket:
+            raise RuntimeError("FPL_STORAGE_BACKEND=s3 requires FPL_S3_BUCKET to be set")
+        from fpl_ingest.extract.http.s3_backend import S3Backend
+
+        return S3Backend(config.s3_bucket)
+    raise RuntimeError(f"unknown storage backend: {config.storage_backend!r}")
 
 
 class StrictRunFailure(RuntimeError):
@@ -320,7 +338,9 @@ async def _run_core_stage(
 
 async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     """Execute the full ingest pipeline. Returns 0 only on a fully clean run."""
-    config.raw_dir.mkdir(parents=True, exist_ok=True)
+    storage_backend = _build_storage_backend(config)
+    if storage_backend is None:
+        config.raw_dir.mkdir(parents=True, exist_ok=True)
 
     execution_state = PipelineExecutionState()
     run_start = datetime.now(timezone.utc)
@@ -330,7 +350,9 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     # One raw writer — and therefore one manifest — per fpl-ingest run. It is
     # finalized on every exit path below so a run always leaves a terminal
     # manifest behind, matching the status the runner reports.
-    raw_writer = LocalRawWriter(config.raw_dir, RAW_SOURCE, started_at=run_start)
+    raw_writer = LocalRawWriter(
+        config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend
+    )
 
     applied_rate = _resolve_applied_rate(logger, args.rate)
     rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)

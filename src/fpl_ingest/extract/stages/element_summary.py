@@ -140,11 +140,18 @@ async def ingest_player_histories(
     player_ids_to_fetch = _select_players_to_fetch(
         raw_dir, player_ids, events, event_finality=event_finality
     )
-    logger.info(
-        "element-summary: %d players fetched, %d skipped (already captured, latest gameweek settled)",
-        len(player_ids_to_fetch),
-        len(player_ids) - len(player_ids_to_fetch),
-    )
+    skipped_count = len(player_ids) - len(player_ids_to_fetch)
+    if _latest_gameweek_settled(events, event_finality) is not True:
+        logger.info(
+            "element-summary: gameweek not yet settled, fetching all %d players",
+            len(player_ids_to_fetch),
+        )
+    else:
+        logger.info(
+            "element-summary: %d players fetched, %d skipped (already captured, latest gameweek settled)",
+            len(player_ids_to_fetch),
+            skipped_count,
+        )
 
     if not player_ids_to_fetch:
         logger.info("All players already captured for the settled gameweek.")

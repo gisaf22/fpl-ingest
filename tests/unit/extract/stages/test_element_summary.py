@@ -586,6 +586,24 @@ class TestErrorHandling:
         assert not (tmp_path / "raw" / "fpl").exists()
 
     @pytest.mark.asyncio
+    async def test_not_settled_gameweek_logs_fetching_all_not_already_captured(self, tmp_path, caplog):
+        """Regression: the not-settled branch must not claim players were
+        skipped because the gameweek settled — it fetched everyone precisely
+        because it isn't settled yet."""
+        writer = _writer(tmp_path)
+        responses = {1: _raw(_payload(1), player_id=1)}
+
+        with caplog.at_level("INFO", logger=element_summary_stage.__name__):
+            await ingest_player_histories(
+                _client(responses), writer, tmp_path / "raw", [1],
+                [_event(1, finished=False)], event_finality=_provisional(1),
+            )
+
+        messages = [r.message for r in caplog.records]
+        assert any("gameweek not yet settled, fetching all 1 players" in m for m in messages)
+        assert not any("already captured, latest gameweek settled" in m for m in messages)
+
+    @pytest.mark.asyncio
     async def test_no_player_ids_captures_nothing(self, tmp_path):
         client = _client({})
 

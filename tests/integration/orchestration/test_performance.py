@@ -60,7 +60,7 @@ class TestConcurrentFetchThroughput:
 
         async def _run():
             return await ingest_player_histories(
-                client, writer, tmp_path / "raw", player_ids, [], event_finality=None
+                client, writer, player_ids, [], event_finality=None
             )
 
         start = time.perf_counter()
@@ -91,7 +91,7 @@ class TestCaptureWriteThroughput:
 
         async def _run():
             return await ingest_player_histories(
-                client, writer, raw_dir, player_ids, [], event_finality=None
+                client, writer, player_ids, [], event_finality=None
             )
 
         start = time.perf_counter()

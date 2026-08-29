@@ -25,8 +25,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from fpl_ingest.extract.http.client import RawResponse
-from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.http.local_writer import LocalFilesystemBackend, LocalRawWriter
 from fpl_ingest.extract.http.raw_keys import iso_utc
+from fpl_ingest.extract.http.s3_backend import S3Backend
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.extract.stages import element_summary as element_summary_stage
 from fpl_ingest.extract.stages import event_status as event_status_stage
@@ -111,6 +112,25 @@ def _client(responses: dict[int, RawResponse | Exception]) -> MagicMock:
 
 def _writer(tmp_path: Path) -> LocalRawWriter:
     return LocalRawWriter(tmp_path / "raw", "fpl", run_id="20260824T080000Z-abc123")
+
+
+class _FakeS3Client:
+    """Minimal in-memory stand-in for a boto3 S3 client, only ``list_objects_v2``
+    (what ``S3Backend.exists_prefix`` calls) is exercised here."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def list_objects_v2(self, *, Bucket: str, Prefix: str, MaxKeys: int = 1000) -> dict:
+        matches = [key for key in self.objects if key.startswith(Prefix)][:MaxKeys]
+        return {"Contents": [{"Key": key} for key in matches]} if matches else {}
+
+
+def _backend(tmp_path: Path) -> LocalFilesystemBackend:
+    """A backend over ``tmp_path`` matching ``_select_players_to_fetch``'s
+    ``backend`` parameter, so existing directory-based capture fixtures keep
+    working unchanged."""
+    return LocalFilesystemBackend(tmp_path)
 
 
 def _read(root: Path, key: str) -> dict:
@@ -243,7 +263,7 @@ class TestShapeValidation:
         raw = _raw(player_id=1, body=b"<html>502 Bad Gateway</html>")
 
         outcome = await ingest_player_histories(
-            _client({1: raw}), writer, tmp_path / "raw", [1], [], event_finality=None
+            _client({1: raw}), writer, [1], [], event_finality=None
         )
 
         payload_path = (
@@ -283,33 +303,33 @@ class TestSelectionLogic:
         (tmp_path / "fpl" / "element-summary" / "1").mkdir(parents=True)
 
         assert _select_players_to_fetch(
-            tmp_path, [1], [_event(1, finished=True)], event_finality=_settled(1)
+            _backend(tmp_path), [1], [_event(1, finished=True)], event_finality=_settled(1)
         ) == []
 
     def test_settled_but_never_captured_player_is_fetched(self, tmp_path):
         assert _select_players_to_fetch(
-            tmp_path, [1], [_event(1, finished=True)], event_finality=_settled(1)
+            _backend(tmp_path), [1], [_event(1, finished=True)], event_finality=_settled(1)
         ) == [1]
 
     def test_provisional_gameweek_refetches_even_if_already_captured(self, tmp_path):
         (tmp_path / "fpl" / "element-summary" / "1").mkdir(parents=True)
 
         assert _select_players_to_fetch(
-            tmp_path, [1], [_event(1, finished=False)], event_finality=_provisional(1)
+            _backend(tmp_path), [1], [_event(1, finished=False)], event_finality=_provisional(1)
         ) == [1]
 
     def test_unknown_finality_fetches_everyone(self, tmp_path):
         (tmp_path / "fpl" / "element-summary" / "1").mkdir(parents=True)
 
         assert _select_players_to_fetch(
-            tmp_path, [1, 2], [_event(1, finished=True)], event_finality=None
+            _backend(tmp_path), [1, 2], [_event(1, finished=True)], event_finality=None
         ) == [1, 2]
 
     def test_mixed_capture_state_only_fetches_the_uncaptured(self, tmp_path):
         (tmp_path / "fpl" / "element-summary" / "1").mkdir(parents=True)
 
         assert _select_players_to_fetch(
-            tmp_path, [1, 2], [_event(1, finished=True)], event_finality=_settled(1)
+            _backend(tmp_path), [1, 2], [_event(1, finished=True)], event_finality=_settled(1)
         ) == [2]
 
     @pytest.mark.asyncio
@@ -321,7 +341,6 @@ class TestSelectionLogic:
         outcome = await ingest_player_histories(
             client,
             _writer(tmp_path),
-            raw_dir,
             [1],
             [_event(1, finished=True)],
             event_finality=_settled(1),
@@ -343,7 +362,7 @@ class TestSelectionLogic:
             {player_id: _raw(body=real_payload, player_id=player_id)}
         )
         first_outcome = await ingest_player_histories(
-            first_run_client, writer, raw_dir, [player_id], events,
+            first_run_client, writer, [player_id], events,
             event_finality=_provisional(1),
         )
         first_run_client.get_element_summary_raw.assert_called_once()
@@ -354,7 +373,7 @@ class TestSelectionLogic:
 
         second_run_client = _client({})
         second_outcome = await ingest_player_histories(
-            second_run_client, _writer(tmp_path), raw_dir, [player_id], events,
+            second_run_client, _writer(tmp_path), [player_id], events,
             event_finality=settled_finality,
         )
 
@@ -376,7 +395,7 @@ class TestSelectionLogic:
         assert empty_finality == {}
 
         assert _select_players_to_fetch(
-            tmp_path, [1], [_event(1, finished=True)], event_finality=empty_finality
+            _backend(tmp_path), [1], [_event(1, finished=True)], event_finality=empty_finality
         ) == [1]
 
     @pytest.mark.regression
@@ -396,9 +415,31 @@ class TestSelectionLogic:
         finality_missing_current_gameweek = _settled(2)  # non-empty, but no entry for event 1
 
         assert _select_players_to_fetch(
-            tmp_path, [1], [_event(1, finished=True)],
+            _backend(tmp_path), [1], [_event(1, finished=True)],
             event_finality=finality_missing_current_gameweek,
         ) == []
+
+    @pytest.mark.regression
+    def test_s3_backed_aged_out_player_is_recognized_as_already_captured(self):
+        """Pins the storage-backend-bypass bug shared with
+        ``gameweeks._has_event_live_capture``: ``_has_element_summary_capture``
+        used to do a raw ``Path.is_dir()`` check against the local filesystem,
+        no matter which backend the run was actually configured to use.
+        Against S3 that check was always False, so a player genuinely
+        captured in S3, once the current gameweek's finality entry rolls out
+        of event-status's window, could never be recognized as already
+        captured. Also pins the prefix boundary: player 1's capture must not
+        be read as satisfying player 11's — S3 prefix matching is
+        string-based, not path-segment-based, so an unguarded prefix check
+        would incorrectly treat ``element-summary/1`` as a match for a key
+        under ``element-summary/11``."""
+        s3_client = _FakeS3Client()
+        s3_client.objects["raw/fpl/element-summary/1/2026-08-10/20260810T080000Z-aaaaaa/payload.json"] = b"{}"
+        backend = S3Backend("fpl-data-safari", client=s3_client)
+
+        assert _select_players_to_fetch(
+            backend, [1, 11], [_event(1, finished=True)], event_finality=_settled(2)
+        ) == [11]
 
     @pytest.mark.parametrize(
         "event_finality",
@@ -414,7 +455,7 @@ class TestSelectionLogic:
         new_player_id = 2
 
         result = _select_players_to_fetch(
-            tmp_path, [1, new_player_id], [_event(1, finished=True)], event_finality=event_finality
+            _backend(tmp_path), [1, new_player_id], [_event(1, finished=True)], event_finality=event_finality
         )
 
         assert new_player_id in result
@@ -429,7 +470,7 @@ class TestFetchAndCapture:
         responses = {1: _raw(_payload(1), player_id=1), 2: _raw(_payload(2), player_id=2)}
 
         outcome = await ingest_player_histories(
-            _client(responses), writer, tmp_path / "raw", [1, 2], [], event_finality=None
+            _client(responses), writer, [1, 2], [], event_finality=None
         )
 
         root = tmp_path / "raw"
@@ -452,7 +493,7 @@ class TestFetchAndCapture:
         raw = _raw(_payload(7), player_id=7, attempt_count=3)
 
         await ingest_player_histories(
-            _client({7: raw}), writer, tmp_path / "raw", [7], [], event_finality=None
+            _client({7: raw}), writer, [7], [], event_finality=None
         )
 
         sidecar = _read(
@@ -476,7 +517,7 @@ class TestFetchAndCapture:
         responses = {pid: _raw(_payload(pid), player_id=pid) for pid in (1, 2, 3)}
 
         outcome = await ingest_player_histories(
-            _client(responses), writer, tmp_path / "raw", [1, 2, 3], [], event_finality=None
+            _client(responses), writer, [1, 2, 3], [], event_finality=None
         )
 
         status = classify_run_from_results([outcome.result], strict_mode=False)
@@ -498,7 +539,7 @@ class TestFetchAndCapture:
         responses = {pid: _raw(_payload(pid), player_id=pid) for pid in (1, 2)}
 
         outcome = await ingest_player_histories(
-            _client(responses), writer, tmp_path / "raw", [1, 2], [], event_finality=None
+            _client(responses), writer, [1, 2], [], event_finality=None
         )
 
         assert outcome.lineage is not None
@@ -523,7 +564,7 @@ class TestErrorHandling:
         }
 
         outcome = await ingest_player_histories(
-            _client(responses), writer, tmp_path / "raw", [1, 2, 3], [], event_finality=None
+            _client(responses), writer, [1, 2, 3], [], event_finality=None
         )
 
         assert outcome.result.fetched == 3
@@ -539,7 +580,7 @@ class TestErrorHandling:
         responses: dict = {1: FPLClientError("network down"), 2: _raw(_payload(2), player_id=2)}
 
         outcome = await ingest_player_histories(
-            _client(responses), writer, tmp_path / "raw", [1, 2], [], event_finality=None, strict=False
+            _client(responses), writer, [1, 2], [], event_finality=None, strict=False
         )
 
         assert outcome.result.errors == 1
@@ -560,7 +601,7 @@ class TestErrorHandling:
         responses: dict = {1: FPLClientError("network down"), 2: _raw(_payload(2), player_id=2)}
 
         outcome = await ingest_player_histories(
-            _client(responses), writer, tmp_path / "raw", [1, 2], [],
+            _client(responses), writer, [1, 2], [],
             event_finality=None, strict=True, execution_state=state
         )
 
@@ -578,7 +619,7 @@ class TestErrorHandling:
         writer = _writer(tmp_path)
 
         outcome = await ingest_player_histories(
-            client, writer, tmp_path / "raw", [1], [], event_finality=None, execution_state=state
+            client, writer, [1], [], event_finality=None, execution_state=state
         )
 
         client.get_element_summary_raw.assert_not_called()
@@ -595,7 +636,7 @@ class TestErrorHandling:
 
         with caplog.at_level("INFO", logger=element_summary_stage.__name__):
             await ingest_player_histories(
-                _client(responses), writer, tmp_path / "raw", [1],
+                _client(responses), writer, [1],
                 [_event(1, finished=False)], event_finality=_provisional(1),
             )
 
@@ -608,7 +649,7 @@ class TestErrorHandling:
         client = _client({})
 
         outcome = await ingest_player_histories(
-            client, _writer(tmp_path), tmp_path / "raw", [], [], event_finality=None
+            client, _writer(tmp_path), [], [], event_finality=None
         )
 
         client.get_element_summary_raw.assert_not_called()

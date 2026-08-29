@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import Any
 
 from fpl_ingest.extract.http.client import (
@@ -40,7 +39,7 @@ from fpl_ingest.extract.http.client import (
     RawResponse,
     cancel_pending_tasks,
 )
-from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
 from fpl_ingest.extract.stages.bootstrap import GameweekInfo
 from fpl_ingest.extract.stages.event_status import Finality
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
@@ -82,7 +81,6 @@ class _StrictFetchFailure(RuntimeError):
 async def ingest_gameweeks(
     client: AsyncFPLClient,
     raw_writer: LocalRawWriter,
-    raw_dir: Path,
     events: list[GameweekInfo],
     *,
     event_finality: Finality | None,
@@ -95,9 +93,10 @@ async def ingest_gameweeks(
         client: Async FPL client for the HTTP fetches.
         raw_writer: Writer for this run; also accumulates the run manifest.
             The same writer the other capture stages use — one manifest per
-            run covers every endpoint and every gameweek it touches.
-        raw_dir: Local raw-capture root; used to check whether a gameweek has
-            ever been captured before (§below).
+            run covers every endpoint and every gameweek it touches. Its
+            ``backend`` is also queried to check whether a gameweek has ever
+            been captured before (§below) — always the actual active backend
+            (local filesystem or S3), never a hardcoded local path.
         events: GameweekInfo list from the core stage.
         event_finality: The per-event finality map from this run's
             event-status capture (``event_status.ingest_event_status``), or
@@ -120,7 +119,7 @@ async def ingest_gameweeks(
         return StageOutcome(result=StageResult(stage="gameweeks"))
 
     gameweek_ids_to_fetch = _select_gameweeks_to_fetch(
-        raw_dir, events, event_finality=event_finality
+        raw_writer.backend, events, event_finality=event_finality
     )
 
     if not gameweek_ids_to_fetch:
@@ -285,7 +284,7 @@ def _verdict(
 
 
 def _select_gameweeks_to_fetch(
-    raw_dir: Path,
+    backend: RawStorageBackend,
     events: list[GameweekInfo],
     *,
     event_finality: Finality | None,
@@ -310,10 +309,10 @@ def _select_gameweeks_to_fetch(
     if current_id is not None and current_id not in candidate_ids:
         candidate_ids.append(current_id)
 
-    return [gw for gw in candidate_ids if _needs_fetch(raw_dir, gw, event_finality)]
+    return [gw for gw in candidate_ids if _needs_fetch(backend, gw, event_finality)]
 
 
-def _needs_fetch(raw_dir: Path, gameweek_id: int, event_finality: Finality | None) -> bool:
+def _needs_fetch(backend: RawStorageBackend, gameweek_id: int, event_finality: Finality | None) -> bool:
     """Decide whether one gameweek must be fetched this run.
 
     ============================  ===============  ======
@@ -342,12 +341,18 @@ def _needs_fetch(raw_dir: Path, gameweek_id: int, event_finality: Finality | Non
     if info is not None and not info.get("bonus_added"):
         return True
 
-    return not _has_event_live_capture(raw_dir, gameweek_id)
+    return not _has_event_live_capture(backend, gameweek_id)
 
 
-def _has_event_live_capture(raw_dir: Path, gameweek_id: int) -> bool:
-    """Whether this gameweek's live endpoint has ever been captured to raw storage."""
-    return (raw_dir / RAW_SOURCE / raw_endpoint(gameweek_id)).is_dir()
+def _has_event_live_capture(backend: RawStorageBackend, gameweek_id: int) -> bool:
+    """Whether this gameweek's live endpoint has ever been captured to raw storage.
+
+    Queries the actual active backend (local filesystem or S3) rather than a
+    hardcoded local path — the finality map alone cannot answer this, and
+    checking the wrong storage means a settled-but-aged-out gameweek can
+    never be recognised as already captured.
+    """
+    return backend.exists_prefix(f"{RAW_SOURCE}/{raw_endpoint(gameweek_id)}")
 
 
 async def _fetch_gameweeks_concurrently(

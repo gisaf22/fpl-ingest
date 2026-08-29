@@ -400,7 +400,6 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 awaitable=ingest_gameweeks(
                     client,
                     raw_writer,
-                    config.raw_dir,
                     core.events,
                     event_finality=event_finality,
                     strict=args.strict,
@@ -415,7 +414,6 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 awaitable=ingest_player_histories(
                     client,
                     raw_writer,
-                    config.raw_dir,
                     core.player_ids,
                     core.events,
                     event_finality=event_finality,

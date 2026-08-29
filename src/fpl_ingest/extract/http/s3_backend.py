@@ -62,6 +62,22 @@ class S3Backend:
         """Return the ``s3://`` URI a key resolves to."""
         return f"s3://{self.bucket}/{_KEY_PREFIX}{key}"
 
+    def exists_prefix(self, prefix: str) -> bool:
+        """Return whether any object exists under ``s3://bucket/raw/{prefix}/``.
+
+        A trailing ``/`` is enforced on the queried prefix so that, e.g.,
+        ``element-summary/1`` cannot match a key actually written under
+        ``element-summary/10`` — S3 prefix matching is a plain string
+        comparison, not a path-segment one.
+        """
+        full_prefix = _KEY_PREFIX + prefix
+        if not full_prefix.endswith("/"):
+            full_prefix += "/"
+        response = self._client.list_objects_v2(
+            Bucket=self.bucket, Prefix=full_prefix, MaxKeys=1
+        )
+        return bool(response.get("Contents"))
+
     def _object_exists(self, full_key: str) -> bool:
         try:
             self._client.head_object(Bucket=self.bucket, Key=full_key)

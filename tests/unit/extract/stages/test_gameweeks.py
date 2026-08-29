@@ -27,8 +27,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from fpl_ingest.extract.http.client import RawResponse
-from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.http.local_writer import LocalFilesystemBackend, LocalRawWriter
 from fpl_ingest.extract.http.raw_keys import iso_utc
+from fpl_ingest.extract.http.s3_backend import S3Backend
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.extract.stages import gameweeks as gameweeks_stage
 from fpl_ingest.extract.stages.gameweeks import (
@@ -104,6 +105,25 @@ def _client(responses: dict[int, RawResponse | Exception]) -> MagicMock:
 
 def _writer(tmp_path: Path) -> LocalRawWriter:
     return LocalRawWriter(tmp_path / "raw", "fpl", run_id="20260824T080000Z-abc123")
+
+
+class _FakeS3Client:
+    """Minimal in-memory stand-in for a boto3 S3 client, only ``list_objects_v2``
+    (what ``S3Backend.exists_prefix`` calls) is exercised here."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def list_objects_v2(self, *, Bucket: str, Prefix: str, MaxKeys: int = 1000) -> dict:
+        matches = [key for key in self.objects if key.startswith(Prefix)][:MaxKeys]
+        return {"Contents": [{"Key": key} for key in matches]} if matches else {}
+
+
+def _backend(tmp_path: Path) -> LocalFilesystemBackend:
+    """A backend over ``tmp_path`` matching ``_select_gameweeks_to_fetch``'s
+    ``backend`` parameter, so existing directory-based capture fixtures keep
+    working unchanged."""
+    return LocalFilesystemBackend(tmp_path)
 
 
 def _read(root: Path, key: str) -> dict:
@@ -211,7 +231,7 @@ class TestShapeValidation:
         raw = _raw(gw=1, body=b"<html>502 Bad Gateway</html>")
 
         outcome = await ingest_gameweeks(
-            _client({1: raw}), writer, raw_dir, [_event(1, finished=True)], event_finality=None
+            _client({1: raw}), writer, [_event(1, finished=True)], event_finality=None
         )
 
         payload_path = (
@@ -239,21 +259,21 @@ class TestSelectionLogic:
     def test_never_captured_gameweek_is_fetched_even_if_reported_settled(self, tmp_path):
         """A settled gameweek that was somehow never captured must still be fetched."""
         assert _select_gameweeks_to_fetch(
-            tmp_path, [_event(1, finished=True)], event_finality=_settled(1)
+            _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(1)
         ) == [1]
 
     def test_captured_but_provisional_gameweek_is_refetched(self, tmp_path):
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, [_event(1, finished=True)], event_finality=_provisional(1)
+            _backend(tmp_path), [_event(1, finished=True)], event_finality=_provisional(1)
         ) == [1]
 
     def test_captured_and_settled_gameweek_is_skipped(self, tmp_path):
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, [_event(1, finished=True)], event_finality=_settled(1)
+            _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(1)
         ) == []
 
     def test_missing_finality_signal_fetches_all_uncertain_gameweeks(self, tmp_path):
@@ -265,7 +285,7 @@ class TestSelectionLogic:
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
 
         assert _select_gameweeks_to_fetch(
-            tmp_path,
+            _backend(tmp_path),
             [_event(1, finished=True), _event(2, finished=True)],
             event_finality=None,
         ) == [1, 2]
@@ -275,14 +295,14 @@ class TestSelectionLogic:
         events = [_event(1, finished=True), _event(2, finished=False, is_current=True)]
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, events, event_finality=_settled(1)
+            _backend(tmp_path), events, event_finality=_settled(1)
         ) == [2]
 
     def test_current_gameweek_is_not_duplicated_when_already_selected(self, tmp_path):
         events = [_event(1, finished=True, is_current=True)]
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, events, event_finality=None
+            _backend(tmp_path), events, event_finality=None
         ) == [1]
 
     # ------------------------------------------------------------------
@@ -306,7 +326,7 @@ class TestSelectionLogic:
         events = [_event(1, finished=True, is_current=True)]
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, events, event_finality=_settled(1)
+            _backend(tmp_path), events, event_finality=_settled(1)
         ) == []
 
     def test_finished_gameweek_absent_from_finality_but_captured_is_skipped(self, tmp_path):
@@ -316,14 +336,14 @@ class TestSelectionLogic:
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
 
         assert _select_gameweeks_to_fetch(
-            tmp_path, [_event(1, finished=True)], event_finality=_settled(2)
+            _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(2)
         ) == []
 
     def test_finished_gameweek_absent_from_finality_and_uncaptured_is_fetched(self, tmp_path):
         """RECONSTRUCTED. Same absent-from-the-map case as above, but with no
         capture on disk: fetch it to backfill rather than assume it is done."""
         assert _select_gameweeks_to_fetch(
-            tmp_path, [_event(1, finished=True)], event_finality=_settled(2)
+            _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(2)
         ) == [1]
 
     def test_two_consecutive_runs_settled_current_gameweek_not_refetched(self, tmp_path):
@@ -334,13 +354,30 @@ class TestSelectionLogic:
         events = [_event(1, finished=True, is_current=True)]
         finality = _settled(1)
 
-        run_1 = _select_gameweeks_to_fetch(tmp_path, events, event_finality=finality)
+        run_1 = _select_gameweeks_to_fetch(_backend(tmp_path), events, event_finality=finality)
         assert run_1 == [1]
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
 
-        run_2 = _select_gameweeks_to_fetch(tmp_path, events, event_finality=finality)
+        run_2 = _select_gameweeks_to_fetch(_backend(tmp_path), events, event_finality=finality)
         assert run_2 == []
 
+    @pytest.mark.regression
+    def test_s3_backed_aged_out_gameweek_is_recognized_as_already_captured(self):
+        """Pins the storage-backend-bypass bug: ``_has_event_live_capture`` used
+        to do a raw ``Path.is_dir()`` check against the local filesystem, no
+        matter which backend the run was actually configured to use. Against
+        S3 that check was always False, so a gameweek whose finality entry has
+        rolled out of event-status's current window (the normal state for a
+        gameweek settled well in the past) was refetched on every run forever
+        — it could never be recognized as already captured. This must be
+        decided by querying the actual active backend."""
+        s3_client = _FakeS3Client()
+        s3_client.objects["raw/fpl/event-live/01/2026-08-10/20260810T080000Z-aaaaaa/payload.json"] = b"{}"
+        backend = S3Backend("fpl-data-safari", client=s3_client)
+
+        assert _select_gameweeks_to_fetch(
+            backend, [_event(1, finished=True)], event_finality=_settled(2)
+        ) == []
 
     @pytest.mark.asyncio
     async def test_a_settled_and_already_captured_gameweek_is_never_fetched(self, tmp_path):
@@ -351,7 +388,6 @@ class TestSelectionLogic:
         outcome = await ingest_gameweeks(
             client,
             _writer(tmp_path),
-            raw_dir,
             [_event(1, finished=True)],
             event_finality=_settled(1),
         )
@@ -373,7 +409,6 @@ class TestFetchAndCapture:
         outcome = await ingest_gameweeks(
             _client(responses),
             writer,
-            raw_dir,
             [_event(1, finished=True), _event(2, finished=True)],
             event_finality=None,
         )
@@ -399,7 +434,7 @@ class TestFetchAndCapture:
         raw = _raw(_payload([1]), gw=7, attempt_count=3)
 
         await ingest_gameweeks(
-            _client({7: raw}), writer, raw_dir, [_event(7, finished=True)], event_finality=None
+            _client({7: raw}), writer, [_event(7, finished=True)], event_finality=None
         )
 
         sidecar = _read(
@@ -427,7 +462,6 @@ class TestFetchAndCapture:
         outcome = await ingest_gameweeks(
             _client(responses),
             writer,
-            raw_dir,
             [_event(gw, finished=True) for gw in (1, 2, 3)],
             event_finality=None,
         )
@@ -451,7 +485,6 @@ class TestFetchAndCapture:
         outcome = await ingest_gameweeks(
             _client(responses),
             writer,
-            raw_dir,
             [_event(1, finished=True), _event(2, finished=True)],
             event_finality=None,
         )
@@ -483,7 +516,6 @@ class TestErrorHandling:
         outcome = await ingest_gameweeks(
             _client(responses),
             writer,
-            raw_dir,
             [_event(gw, finished=True) for gw in (1, 2, 3)],
             event_finality=None,
         )
@@ -511,7 +543,6 @@ class TestErrorHandling:
         outcome = await ingest_gameweeks(
             _client(responses),
             writer,
-            raw_dir,
             [_event(1, finished=True), _event(2, finished=True)],
             event_finality=None,
             strict=False,
@@ -539,7 +570,6 @@ class TestErrorHandling:
         outcome = await ingest_gameweeks(
             _client(responses),
             writer,
-            raw_dir,
             [_event(1, finished=True), _event(2, finished=True)],
             event_finality=None,
             strict=True,
@@ -562,7 +592,7 @@ class TestErrorHandling:
         writer = _writer(tmp_path)
 
         outcome = await ingest_gameweeks(
-            client, writer, raw_dir, [_event(1, finished=True)], event_finality=None, execution_state=state
+            client, writer, [_event(1, finished=True)], event_finality=None, execution_state=state
         )
 
         client.get_gameweek_live_raw.assert_not_called()
@@ -575,7 +605,7 @@ class TestErrorHandling:
         raw_dir.mkdir()
         client = _client({})
 
-        outcome = await ingest_gameweeks(client, _writer(tmp_path), raw_dir, [], event_finality=None)
+        outcome = await ingest_gameweeks(client, _writer(tmp_path), [], event_finality=None)
 
         client.get_gameweek_live_raw.assert_not_called()
         assert outcome.result.fetched == 0

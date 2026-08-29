@@ -39,10 +39,10 @@ def _writer(tmp_path: Path) -> LocalRawWriter:
 
 
 async def _run_player_histories(
-    client, writer: LocalRawWriter, raw_dir: Path, state: PipelineExecutionState
+    client, writer: LocalRawWriter, state: PipelineExecutionState
 ) -> object:
     return await ingest_player_histories(
-        client, writer, raw_dir, [1, 2], [], event_finality=None, strict=True, execution_state=state,
+        client, writer, [1, 2], [], event_finality=None, strict=True, execution_state=state,
     )
 
 
@@ -53,7 +53,7 @@ def test_strict_abort_blocks_writes_and_leaves_no_partial_data(tmp_path: Path) -
     async def _run() -> None:
         client = SimpleNamespace(get_element_summary_raw=_fail_on_first)
         state = PipelineExecutionState()
-        result = (await _run_player_histories(client, writer, tmp_path / "raw", state)).result
+        result = (await _run_player_histories(client, writer, state)).result
 
         assert result.errors == 1
         assert result.validated == 0

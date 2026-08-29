@@ -96,6 +96,23 @@ def test_multi_segment_endpoint_keeps_id_before_extraction_date(writer: LocalRaw
     )
 
 
+def test_exists_prefix_true_after_a_capture_under_a_different_date_and_run(tmp_path: Path, writer: LocalRawWriter):
+    _write_bootstrap(writer)
+
+    assert writer.backend.exists_prefix("fpl/bootstrap-static") is True
+
+
+def test_exists_prefix_false_when_nothing_was_ever_captured(writer: LocalRawWriter):
+    assert writer.backend.exists_prefix("fpl/bootstrap-static") is False
+
+
+def test_writer_backend_property_is_the_backend_it_writes_through(tmp_path: Path):
+    backend = LocalFilesystemBackend(tmp_path)
+    writer = LocalRawWriter(tmp_path, "fpl", run_id=RUN_ID, started_at=RUN_START, backend=backend)
+
+    assert writer.backend is backend
+
+
 def test_understat_match_info_writes_payload_and_source_html(tmp_path: Path):
     writer = LocalRawWriter(tmp_path, "understat", run_id=RUN_ID, started_at=RUN_START)
     html = b"<html>var match_info = JSON.parse('{}')</html>"

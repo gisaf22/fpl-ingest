@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import Any
 
 from fpl_ingest.extract.http.client import (
@@ -56,7 +55,7 @@ from fpl_ingest.extract.http.client import (
     RawResponse,
     cancel_pending_tasks,
 )
-from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
 from fpl_ingest.extract.stages.bootstrap import GameweekInfo
 from fpl_ingest.extract.stages.event_status import Finality
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
@@ -93,7 +92,6 @@ def raw_endpoint(player_id: int) -> str:
 async def ingest_player_histories(
     client: AsyncFPLClient,
     raw_writer: LocalRawWriter,
-    raw_dir: Path,
     player_ids: list[int],
     events: list[GameweekInfo],
     *,
@@ -107,9 +105,10 @@ async def ingest_player_histories(
         client: Async FPL client for the HTTP fetches.
         raw_writer: Writer for this run; also accumulates the run manifest.
             The same writer the other capture stages use — one manifest per
-            run covers every endpoint and every player it touches.
-        raw_dir: Local raw-capture root; used to check whether a player has
-            ever been captured before (§below).
+            run covers every endpoint and every player it touches. Its
+            ``backend`` is also queried to check whether a player has ever
+            been captured before (§below) — always the actual active backend
+            (local filesystem or S3), never a hardcoded local path.
         player_ids: FPL element IDs known this run (from the core stage).
         events: GameweekInfo list from the core stage; used to find the
             current gameweek's settlement state.
@@ -138,7 +137,7 @@ async def ingest_player_histories(
         )
 
     player_ids_to_fetch = _select_players_to_fetch(
-        raw_dir, player_ids, events, event_finality=event_finality
+        raw_writer.backend, player_ids, events, event_finality=event_finality
     )
     skipped_count = len(player_ids) - len(player_ids_to_fetch)
     if _latest_gameweek_settled(events, event_finality) is not True:
@@ -318,7 +317,7 @@ def _verdict(
 
 
 def _select_players_to_fetch(
-    raw_dir: Path,
+    backend: RawStorageBackend,
     player_ids: list[int],
     events: list[GameweekInfo],
     *,
@@ -346,7 +345,7 @@ def _select_players_to_fetch(
     return [
         player_id
         for player_id in player_ids
-        if not _has_element_summary_capture(raw_dir, player_id)
+        if not _has_element_summary_capture(backend, player_id)
     ]
 
 
@@ -388,9 +387,14 @@ def _latest_gameweek_settled(
     return bool(info.get("bonus_added"))
 
 
-def _has_element_summary_capture(raw_dir: Path, player_id: int) -> bool:
-    """Whether this player's element-summary endpoint has ever been captured."""
-    return (raw_dir / RAW_SOURCE / raw_endpoint(player_id)).is_dir()
+def _has_element_summary_capture(backend: RawStorageBackend, player_id: int) -> bool:
+    """Whether this player's element-summary endpoint has ever been captured.
+
+    Queries the actual active backend (local filesystem or S3) rather than a
+    hardcoded local path — see ``gameweeks._has_event_live_capture``, which
+    shares this exact pattern and the bug it was fixed alongside.
+    """
+    return backend.exists_prefix(f"{RAW_SOURCE}/{raw_endpoint(player_id)}")
 
 
 async def _fetch_player_histories(

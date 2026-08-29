@@ -70,10 +70,12 @@ class RawObjectExistsError(FileExistsError):
 
 
 class RawStorageBackend(Protocol):
-    """Minimal put-only storage surface the writer depends on.
+    """Minimal storage surface the writer and selection logic depend on.
 
-    Deliberately narrow: an S3 backend later needs the same two methods and no
-    more. Ingestion never reads back what it wrote.
+    Deliberately narrow: writes never read back what they wrote, and the only
+    read this surface offers is ``exists_prefix``, an existence check used by
+    stages that decide whether a gameweek or player has already been
+    captured. An S3 backend needs the same methods and no more.
     """
 
     def put_bytes(self, key: str, data: bytes, *, overwrite: bool = False) -> str:
@@ -81,6 +83,9 @@ class RawStorageBackend(Protocol):
 
     def location(self, key: str) -> str:
         """Return the human-readable location a key resolves to."""
+
+    def exists_prefix(self, prefix: str) -> bool:
+        """Return whether any object has ever been written under ``prefix``."""
 
 
 class LocalFilesystemBackend:
@@ -118,6 +123,10 @@ class LocalFilesystemBackend:
     def location(self, key: str) -> str:
         """Return the absolute local path a key resolves to."""
         return str(self._path_for(key))
+
+    def exists_prefix(self, prefix: str) -> bool:
+        """Return whether ``root/prefix`` exists as a directory."""
+        return self._path_for(prefix).is_dir()
 
     def _write_tmp(self, tmp: Path, data: bytes) -> None:
         """Write and flush the temporary file. Overridden in tests to fail."""
@@ -200,6 +209,17 @@ class LocalRawWriter:
         self._objects: dict[str, dict[str, int]] = {}
         self._failures: list[dict[str, Any]] = []
         self._finalized = False
+
+    @property
+    def backend(self) -> RawStorageBackend:
+        """The storage backend this run writes through.
+
+        Exposed so stages that need to check whether something has already
+        been captured (e.g. ``gameweeks._has_event_live_capture``) query the
+        same backend the run is actually writing to, rather than assuming a
+        local filesystem.
+        """
+        return self._backend
 
     # -- object writes ------------------------------------------------------
 

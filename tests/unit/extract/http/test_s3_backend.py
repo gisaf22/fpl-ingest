@@ -40,6 +40,10 @@ class FakeS3Client:
         self.put_calls.append((Bucket, Key, Body))
         self.objects[Key] = Body
 
+    def list_objects_v2(self, *, Bucket: str, Prefix: str, MaxKeys: int = 1000) -> dict:
+        matches = [key for key in self.objects if key.startswith(Prefix)][:MaxKeys]
+        return {"Contents": [{"Key": key} for key in matches]} if matches else {}
+
 
 @pytest.fixture
 def client() -> FakeS3Client:
@@ -82,3 +86,34 @@ def test_no_overwrite_write_does_not_call_head_object_twice_incorrectly(
     key = "fpl/event-status/2026-08-24/run-1/payload.json"
     backend.put_bytes(key, b"data")
     assert len(client.put_calls) == 1
+
+
+def test_exists_prefix_true_after_a_capture_under_a_different_date_and_run(
+    backend: S3Backend,
+) -> None:
+    """The regression scenario: a gameweek captured to S3 by an earlier run,
+    under a date/run_id this run knows nothing about, must still be found by
+    its endpoint prefix alone."""
+    backend.put_bytes(
+        "fpl/event-live/01/2026-08-10/20260810T080000Z-aaaaaa/payload.json", b"{}"
+    )
+
+    assert backend.exists_prefix("fpl/event-live/01") is True
+
+
+def test_exists_prefix_false_when_nothing_was_ever_captured(backend: S3Backend) -> None:
+    assert backend.exists_prefix("fpl/event-live/01") is False
+
+
+def test_exists_prefix_does_not_match_a_longer_sibling_id(
+    backend: S3Backend,
+) -> None:
+    """``element-summary/1`` must not be satisfied by a capture under
+    ``element-summary/10`` — S3 prefix matching is string-based, not
+    path-segment-based, so the boundary must be enforced explicitly."""
+    backend.put_bytes(
+        "fpl/element-summary/10/2026-08-24/run-1/payload.json", b"{}"
+    )
+
+    assert backend.exists_prefix("fpl/element-summary/1") is False
+    assert backend.exists_prefix("fpl/element-summary/10") is True

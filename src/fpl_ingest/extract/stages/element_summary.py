@@ -35,6 +35,18 @@ every field in it (``is_home``, ``difficulty``, ``event_name``) is derivable
 from the global ``fixtures`` endpoint and ``bootstrap-static``, both captured
 every run regardless — so nothing is actually lost.
 
+Existence alone is not enough at the moment a gameweek settles, though.
+``influence``/``creativity``/``threat``/``ict_index`` are only populated by
+FPL *at* ratification, so a player captured while the gameweek was still
+provisional carries zeroes in all four, and existence-based skipping would
+freeze those zeroes permanently. The run that first observes the current
+gameweek as settled therefore forces a re-fetch of *every* player, not just
+the never-captured ones, and only then records a ``_settlement`` marker for
+that gameweek; from the next run on, normal existence-based skipping resumes
+and holds. The marker is the sole piece of cross-run state here, and it is
+written only when the forced re-fetch fully succeeded, so a partial failure
+retries on the following run instead of stranding stale captures.
+
 A gameweek still in progress must always trigger a fetch, existence or not: a
 player captured mid-gameweek has a ``history`` missing that gameweek's row,
 and once the gameweek settles there is no later trigger to go back and get
@@ -46,7 +58,9 @@ the same ``GameweekInfo`` list ``gameweeks.py`` uses) against the same
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fpl_ingest.extract.http.client import (
@@ -56,6 +70,11 @@ from fpl_ingest.extract.http.client import (
     cancel_pending_tasks,
 )
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
+from fpl_ingest.extract.http.raw_keys import (
+    SETTLEMENT_PREFIX,
+    iso_utc,
+    settlement_marker_key,
+)
 from fpl_ingest.extract.stages.bootstrap import GameweekInfo
 from fpl_ingest.extract.stages.event_status import Finality
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
@@ -136,13 +155,28 @@ async def ingest_player_histories(
             lineage=StageLineage.from_metadata(PLAYER_HISTORIES_STAGE),
         )
 
+    settlement_event_id = _settlement_refetch_event(
+        raw_writer.backend, events, event_finality
+    )
     player_ids_to_fetch = _select_players_to_fetch(
-        raw_writer.backend, player_ids, events, event_finality=event_finality
+        raw_writer.backend,
+        player_ids,
+        events,
+        event_finality=event_finality,
+        force_all=settlement_event_id is not None,
     )
     skipped_count = len(player_ids) - len(player_ids_to_fetch)
     if _latest_gameweek_settled(events, event_finality) is not True:
         logger.info(
             "element-summary: gameweek not yet settled, fetching all %d players",
+            len(player_ids_to_fetch),
+        )
+    elif settlement_event_id is not None:
+        logger.info(
+            "element-summary: gameweek %d newly settled, forcing a re-fetch of all %d "
+            "players so ratification-only fields (influence/creativity/threat/ict_index) "
+            "are captured",
+            settlement_event_id,
             len(player_ids_to_fetch),
         )
     else:
@@ -220,6 +254,23 @@ async def ingest_player_histories(
     # run FAILED_PARTIAL, and it does so without discounting the players that
     # captured cleanly.
     fetched_count = len(fetched)
+    if settlement_event_id is not None:
+        if error_count == 0 and validated == len(player_ids_to_fetch):
+            _record_settlement_refetch(raw_writer, settlement_event_id, validated)
+            logger.info(
+                "element-summary: settlement re-fetch for gameweek %d complete (%d players)",
+                settlement_event_id,
+                validated,
+            )
+        else:
+            logger.warning(
+                "element-summary: settlement re-fetch for gameweek %d incomplete "
+                "(%d/%d captured cleanly, %d errors); marker withheld so the next run retries",
+                settlement_event_id,
+                validated,
+                len(player_ids_to_fetch),
+                error_count,
+            )
     return StageOutcome(
         result=StageResult(
             stage="player_histories",
@@ -322,16 +373,23 @@ def _select_players_to_fetch(
     events: list[GameweekInfo],
     *,
     event_finality: Finality | None,
+    force_all: bool = False,
 ) -> list[int]:
     """Determine which player IDs need an element-summary fetch this run.
 
     ============================  ===============  ======
     latest gameweek               capture exists?   action
     ============================  ===============  ======
+    settled, settlement run       either            fetch — forced re-fetch
     settled                       yes               skip
     settled                       no                fetch — new player / backfill
     provisional / unknown         either             fetch — history incomplete
     ============================  ===============  ======
+
+    ``force_all`` is the settlement-transition case, decided by
+    :func:`_settlement_refetch_event`: the ratification-only fields make an
+    existing capture wrong rather than merely old, so every player is
+    re-fetched exactly once regardless of what exists.
 
     "Latest gameweek settled" is a single season-wide fact, not a per-player
     one: it is the current gameweek's finality, read the same way
@@ -339,7 +397,7 @@ def _select_players_to_fetch(
     every player's ``history`` is missing that gameweek's row, so existence
     alone must not skip anyone until it settles.
     """
-    if _latest_gameweek_settled(events, event_finality) is not True:
+    if force_all or _latest_gameweek_settled(events, event_finality) is not True:
         return list(player_ids)
 
     return [
@@ -385,6 +443,63 @@ def _latest_gameweek_settled(
         return True
 
     return bool(info.get("bonus_added"))
+
+
+def _settlement_refetch_event(
+    backend: RawStorageBackend,
+    events: list[GameweekInfo],
+    event_finality: Finality | None,
+) -> int | None:
+    """Return the gameweek whose settlement still owes a forced full re-fetch.
+
+    ``None`` — the common case — means no forced re-fetch is due: either the
+    current gameweek is not settled (or settlement is unknown), in which case
+    everyone is fetched anyway, or it is settled and this run is not the
+    transition, in which case existence-based skipping applies.
+
+    The transition is detected against a durable per-gameweek marker rather
+    than against the previous run's finality, which nothing persists. Existence
+    of the marker is the entire signal, so this needs no read surface beyond
+    ``exists_prefix`` (see ``RawStorageBackend``'s docstring).
+    """
+    if _latest_gameweek_settled(events, event_finality) is not True:
+        return None
+
+    current_id = next((e.id for e in events if e.is_current), None)
+    if current_id is None:  # pragma: no cover - implied by the check above
+        return None
+
+    if backend.exists_prefix(_settlement_marker_prefix(current_id)):
+        return None
+
+    return current_id
+
+
+def _settlement_marker_prefix(event_id: int) -> str:
+    """Return the prefix ``exists_prefix`` is asked about for one gameweek."""
+    return f"{RAW_SOURCE}/{SETTLEMENT_PREFIX}/element-summary/{event_id}"
+
+
+def _record_settlement_refetch(
+    raw_writer: LocalRawWriter, event_id: int, player_count: int
+) -> None:
+    """Mark this gameweek's forced post-settlement re-fetch as done.
+
+    Called only once every selected player captured cleanly, so a partial
+    failure leaves the marker absent and the next run retries the forced
+    re-fetch rather than freezing the players that did not make it.
+    """
+    marker = {
+        "event": event_id,
+        "endpoint": "element-summary",
+        "run_id": raw_writer.run_id,
+        "recorded_at": iso_utc(datetime.now(timezone.utc)),
+        "players_refetched": player_count,
+    }
+    raw_writer.backend.put_bytes(
+        settlement_marker_key(RAW_SOURCE, "element-summary", event_id),
+        json.dumps(marker, sort_keys=True).encode("utf-8"),
+    )
 
 
 def _has_element_summary_capture(backend: RawStorageBackend, player_id: int) -> bool:

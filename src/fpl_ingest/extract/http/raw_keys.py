@@ -21,9 +21,11 @@ from datetime import datetime, timezone
 RAW_CONTRACT_VERSION = "1.0.0"
 
 MANIFEST_PREFIX = "_manifests"
+SETTLEMENT_PREFIX = "_settlement"
 PAYLOAD_STEM = "payload"
 METADATA_FILENAME = "metadata.json"
 MANIFEST_FILENAME = "manifest.json"
+SETTLEMENT_MARKER_FILENAME = "marker.json"
 
 _RUN_ID_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
 _RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}$")
@@ -85,6 +87,27 @@ def manifest_key(source: str, extraction_date: str, run_id: str) -> str:
     validate_extraction_date(extraction_date)
     validate_run_id(run_id)
     return f"{source}/{MANIFEST_PREFIX}/{extraction_date}/{run_id}/{MANIFEST_FILENAME}"
+
+
+def settlement_marker_key(source: str, endpoint: str, event_id: int) -> str:
+    """Return the key for one endpoint's settlement-refetch marker.
+
+    ``_settlement`` is a reserved sibling of the endpoint prefixes, exactly as
+    ``_manifests`` is: ``validate_endpoint`` rejects any segment that does not
+    start with an alphanumeric, so no real endpoint can ever collide with it.
+
+    The marker records that a stage has already completed its one forced
+    re-fetch of ``endpoint`` for the gameweek that settled — the only piece of
+    cross-run state this pipeline keeps, and it is deliberately expressed as
+    an object whose mere existence is the whole signal, so the write-only
+    ``RawStorageBackend`` surface (``put_bytes`` + ``exists_prefix``) is
+    enough to maintain it.
+    """
+    validate_source(source)
+    validate_endpoint(endpoint)
+    if event_id < 0:
+        raise RawKeyError(f"invalid event_id: {event_id!r}")
+    return f"{source}/{SETTLEMENT_PREFIX}/{endpoint}/{event_id}/{SETTLEMENT_MARKER_FILENAME}"
 
 
 def payload_filename(extension: str = "json") -> str:

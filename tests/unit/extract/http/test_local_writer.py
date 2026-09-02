@@ -161,6 +161,20 @@ def test_manifest_key_is_sibling_of_endpoint_prefixes(tmp_path: Path, writer: Lo
     assert (tmp_path / manifest.manifest_key).is_file()
 
 
+def test_settlement_marker_key_is_sibling_of_endpoint_prefixes():
+    """``_settlement`` sits beside ``_manifests``, and no real endpoint can
+    collide with either: ``validate_endpoint`` requires every segment to start
+    with an alphanumeric, so a leading underscore is unreachable."""
+    from fpl_ingest.extract.http.raw_keys import RawKeyError, settlement_marker_key, validate_endpoint
+
+    assert (
+        settlement_marker_key("fpl", "element-summary", 2)
+        == "fpl/_settlement/element-summary/2/marker.json"
+    )
+    with pytest.raises(RawKeyError):
+        validate_endpoint("_settlement/element-summary")
+
+
 def test_extraction_date_comes_from_run_start_not_write_time(tmp_path: Path):
     start = datetime(2026, 8, 24, 23, 59, 50, tzinfo=timezone.utc)
     writer = LocalRawWriter(tmp_path, "fpl", started_at=start)

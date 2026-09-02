@@ -114,6 +114,12 @@ def _writer(tmp_path: Path) -> LocalRawWriter:
     return LocalRawWriter(tmp_path / "raw", "fpl", run_id="20260824T080000Z-abc123")
 
 
+def _writer_with_run_id(tmp_path: Path, run_id: str) -> LocalRawWriter:
+    """A writer for a *later* run over the same raw root — distinct run id, so
+    its objects land beside the earlier run's rather than colliding."""
+    return LocalRawWriter(tmp_path / "raw", "fpl", run_id=run_id)
+
+
 class _FakeS3Client:
     """Minimal in-memory stand-in for a boto3 S3 client, only ``list_objects_v2``
     (what ``S3Backend.exists_prefix`` calls) is exercised here."""
@@ -131,6 +137,13 @@ def _backend(tmp_path: Path) -> LocalFilesystemBackend:
     ``backend`` parameter, so existing directory-based capture fixtures keep
     working unchanged."""
     return LocalFilesystemBackend(tmp_path)
+
+
+def _mark_settled(root: Path, event_id: int) -> None:
+    """Record the settlement marker for ``event_id``, as a completed forced
+    post-settlement re-fetch would leave behind — i.e. put the run under test
+    *past* the settlement transition."""
+    (root / "fpl" / "_settlement" / "element-summary" / str(event_id)).mkdir(parents=True)
 
 
 def _read(root: Path, key: str) -> dict:
@@ -334,8 +347,11 @@ class TestSelectionLogic:
 
     @pytest.mark.asyncio
     async def test_settled_and_captured_player_is_not_fetched(self, tmp_path):
+        """Post-transition skipping: the gameweek settled, its forced re-fetch
+        already happened (marker present), so existence alone skips."""
         raw_dir = tmp_path / "raw"
         (raw_dir / "fpl" / "element-summary" / "1").mkdir(parents=True)
+        _mark_settled(raw_dir, 1)
 
         client = _client({})
         outcome = await ingest_player_histories(
@@ -350,9 +366,18 @@ class TestSelectionLogic:
         assert outcome.result.fetched == 0
 
     @pytest.mark.asyncio
-    async def test_second_run_after_settlement_refetches_no_players(self, tmp_path):
-        """A run captures a player; a later run, once the gameweek settles, must not refetch it."""
-        raw_dir = tmp_path / "raw"
+    async def test_settlement_run_refetches_then_later_runs_do_not(self, tmp_path):
+        """The full lifecycle across three runs.
+
+        A run captures a player while the gameweek is provisional; the run
+        that first sees it settled must re-fetch that player even though a
+        capture exists (the ratification-only fields in the first capture are
+        wrong, not merely old); every run after that skips it again,
+        permanently.
+
+        This previously asserted that the *second* run refetched nothing,
+        which is precisely the bug: it froze the provisional capture forever.
+        """
         writer = _writer(tmp_path)
         player_id = 1
         real_payload = payload_bytes("element_summary_settled_capture")
@@ -371,14 +396,29 @@ class TestSelectionLogic:
         settled_finality = _finality_from_fixture("event_status_settled")
         assert settled_finality[1]["bonus_added"] is True
 
-        second_run_client = _client({})
-        second_outcome = await ingest_player_histories(
-            second_run_client, _writer(tmp_path), [player_id], events,
+        settlement_client = _client(
+            {player_id: _raw(body=real_payload, player_id=player_id)}
+        )
+        settlement_outcome = await ingest_player_histories(
+            settlement_client,
+            _writer_with_run_id(tmp_path, "20260824T090000Z-abc124"),
+            [player_id], events,
             event_finality=settled_finality,
         )
 
-        second_run_client.get_element_summary_raw.assert_not_called()
-        assert second_outcome.result.fetched == 0
+        settlement_client.get_element_summary_raw.assert_called_once()
+        assert settlement_outcome.result.fetched == 1
+
+        later_client = _client({})
+        later_outcome = await ingest_player_histories(
+            later_client,
+            _writer_with_run_id(tmp_path, "20260824T100000Z-abc125"),
+            [player_id], events,
+            event_finality=settled_finality,
+        )
+
+        later_client.get_element_summary_raw.assert_not_called()
+        assert later_outcome.result.fetched == 0
 
     @pytest.mark.regression
     def test_empty_finality_map_does_not_skip_every_player(self, tmp_path):
@@ -459,6 +499,177 @@ class TestSelectionLogic:
         )
 
         assert new_player_id in result
+
+
+class TestSettlementTransition:
+    """The one forced full re-fetch when a gameweek's settlement is first seen.
+
+    Existence-based skipping is correct only *after* that re-fetch has
+    happened. FPL populates ``influence``/``creativity``/``threat``/
+    ``ict_index`` at ratification, so a capture taken while the gameweek was
+    provisional carries zeroes in all four; skipping on existence alone froze
+    those zeroes permanently (confirmed on GW2: 312 of 629 players). The
+    transition run must therefore refetch everyone once, and only then record
+    the marker that returns the stage to normal skipping.
+    """
+
+    def test_transition_run_fetches_every_player_despite_existing_captures(self, tmp_path):
+        """The core fix: exists_prefix would skip both players, the transition overrides it."""
+        for player_id in (1, 2):
+            (tmp_path / "fpl" / "element-summary" / str(player_id)).mkdir(parents=True)
+        events = [_event(1, finished=True)]
+        backend = _backend(tmp_path)
+
+        assert element_summary_stage._settlement_refetch_event(
+            backend, events, _settled(1)
+        ) == 1
+        assert _select_players_to_fetch(
+            backend, [1, 2], events, event_finality=_settled(1), force_all=True
+        ) == [1, 2]
+
+    def test_marker_present_returns_the_stage_to_existence_based_skipping(self, tmp_path):
+        (tmp_path / "fpl" / "element-summary" / "1").mkdir(parents=True)
+        _mark_settled(tmp_path, 1)
+        events = [_event(1, finished=True)]
+        backend = _backend(tmp_path)
+
+        assert element_summary_stage._settlement_refetch_event(
+            backend, events, _settled(1)
+        ) is None
+        assert _select_players_to_fetch(
+            backend, [1], events, event_finality=_settled(1)
+        ) == []
+
+    @pytest.mark.parametrize(
+        "event_finality, reason",
+        [
+            pytest.param(_provisional(1), "provisional", id="unsettled_gameweek"),
+            pytest.param(None, "unknown", id="unknown_finality"),
+        ],
+    )
+    def test_no_forced_refetch_while_unsettled_or_unknown(self, tmp_path, event_finality, reason):
+        """Pre-transition behavior is untouched: everyone is fetched anyway, and
+        no marker is owed — recording one here would consume the transition."""
+        (tmp_path / "fpl" / "element-summary" / "1").mkdir(parents=True)
+
+        assert element_summary_stage._settlement_refetch_event(
+            _backend(tmp_path), [_event(1, finished=False)], event_finality
+        ) is None
+
+    def test_transition_is_detected_per_gameweek(self, tmp_path):
+        """GW1's marker must not suppress GW2's forced re-fetch."""
+        _mark_settled(tmp_path, 1)
+
+        assert element_summary_stage._settlement_refetch_event(
+            _backend(tmp_path), [_event(2, finished=True)], _settled(2)
+        ) == 2
+
+    @pytest.mark.asyncio
+    async def test_successful_transition_run_records_the_marker(self, tmp_path):
+        raw_dir = tmp_path / "raw"
+        (raw_dir / "fpl" / "element-summary" / "1").mkdir(parents=True)
+        writer = _writer(tmp_path)
+        client = _client({1: _raw(_payload(1), player_id=1)})
+
+        outcome = await ingest_player_histories(
+            client, writer, [1], [_event(1, finished=True)], event_finality=_settled(1)
+        )
+
+        client.get_element_summary_raw.assert_called_once()
+        assert outcome.result.fetched == 1
+        marker = _read(raw_dir, "fpl/_settlement/element-summary/1/marker.json")
+        assert marker["event"] == 1
+        assert marker["players_refetched"] == 1
+        assert marker["run_id"] == writer.run_id
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_withholds_the_marker_so_the_next_run_retries(self, tmp_path):
+        """A transition run that could not capture everyone must not consume the
+        transition — otherwise the players it missed stay stale forever, which
+        is the very failure mode this whole change exists to close."""
+        raw_dir = tmp_path / "raw"
+        for player_id in (1, 2):
+            (raw_dir / "fpl" / "element-summary" / str(player_id)).mkdir(parents=True)
+        client = _client({1: _raw(_payload(1), player_id=1), 2: FPLClientError("boom")})
+
+        await ingest_player_histories(
+            client, _writer(tmp_path), [1, 2], [_event(1, finished=True)],
+            event_finality=_settled(1),
+        )
+
+        assert not (raw_dir / "fpl" / "_settlement").exists()
+        assert element_summary_stage._settlement_refetch_event(
+            LocalFilesystemBackend(raw_dir), [_event(1, finished=True)], _settled(1)
+        ) == 1
+
+    def test_s3_backed_transition_forces_a_refetch(self):
+        """The marker check goes through the active backend, like every other
+        existence check here — an S3 run must not read a local directory."""
+        s3_client = _FakeS3Client()
+        s3_client.objects[
+            "raw/fpl/element-summary/1/2026-09-01/20260901T071823Z-aaaaaa/payload.json"
+        ] = b"{}"
+        backend = S3Backend("fpl-data-safari", client=s3_client)
+        events = [_event(2, finished=True)]
+
+        assert element_summary_stage._settlement_refetch_event(
+            backend, events, _settled(2)
+        ) == 2
+
+        s3_client.objects["raw/fpl/_settlement/element-summary/2/marker.json"] = b"{}"
+
+        assert element_summary_stage._settlement_refetch_event(
+            backend, events, _settled(2)
+        ) is None
+
+    @pytest.mark.regression
+    @pytest.mark.asyncio
+    async def test_gw2_provisional_capture_is_replaced_at_ratification(self, tmp_path):
+        """GW2 regression, on the real captures that exposed the bug.
+
+        Element 426's pre-ratification capture carries ``"0.0"`` for all four
+        ratification-only fields while ``bonus``/``bps`` already match their
+        final values — so nothing about the payload itself reveals it as
+        stale, which is exactly why existence-based skipping could not catch
+        it. The settlement run must refetch and capture the ratified payload.
+        """
+        raw_dir = tmp_path / "raw"
+        player_id = 426
+        events = [_event(2, finished=True)]
+        provisional = payload_bytes("element_summary_gw2_provisional")
+        ratified = payload_bytes("element_summary_gw2_ratified")
+
+        provisional_row = json.loads(provisional)["history"][0]
+        ratified_row = json.loads(ratified)["history"][0]
+        assert [provisional_row[f] for f in ("influence", "creativity", "threat", "ict_index")] == [
+            "0.0", "0.0", "0.0", "0.0",
+        ]
+        assert (provisional_row["bonus"], provisional_row["bps"]) == (
+            ratified_row["bonus"], ratified_row["bps"],
+        )
+
+        await ingest_player_histories(
+            _client({player_id: _raw(body=provisional, player_id=player_id)}),
+            _writer(tmp_path), [player_id], events,
+            event_finality=_provisional(2),
+        )
+
+        settlement_client = _client({player_id: _raw(body=ratified, player_id=player_id)})
+        settlement_outcome = await ingest_player_histories(
+            settlement_client,
+            _writer_with_run_id(tmp_path, "20260901T191323Z-3fef14"),
+            [player_id], events,
+            event_finality=_settled(2),
+        )
+
+        settlement_client.get_element_summary_raw.assert_called_once_with(player_id)
+        assert settlement_outcome.result.fetched == 1
+
+        (payload_key,) = settlement_outcome.lineage.raw_artifacts
+        assert payload_key.startswith(f"fpl/element-summary/{player_id}/")
+        assert payload_key.endswith("20260901T191323Z-3fef14/payload.json")
+        captured = _read(raw_dir, payload_key)
+        assert captured["history"][0]["ict_index"] == "26.1"
 
 
 class TestFetchAndCapture:

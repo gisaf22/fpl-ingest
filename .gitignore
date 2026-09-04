@@ -29,3 +29,28 @@ wheels/
 AI_PROMPT_TEMPLATE.md
 AI_RULES.md
 .aider*
+
+# Local scratch analysis output — not for commit
+.local/
+
+# Credentials — never commit.
+# Deliberately NOT a blanket `*.json`: this repo's test fixtures are committed
+# JSON payloads (tests/fixtures/**/payload.json), so a broad rule would ignore
+# real source files. These are the credential-shaped names instead.
+s3-permissions.json
+*-permissions.json
+*-credentials.json
+*-secrets.json
+aws-*.json
+service-account*.json
+credentials.json
+.env
+.env.*
+!.env.example
+.aws/
+.netrc
+.pgpass
+*.pem
+*.p12
+*.pfx
+id_rsa*

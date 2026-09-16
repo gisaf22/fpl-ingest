@@ -90,6 +90,14 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
             help="Abort the run if any stage reports skipped rows or fetch errors.",
         )
         target.add_argument(
+            "--skip-player-histories", action="store_true", default=default,
+            help=(
+                "Skip the element-summary capture stage entirely; every other "
+                "stage runs normally. For schedules that fire often enough that "
+                "re-capturing every player is waste."
+            ),
+        )
+        target.add_argument(
             "--verbose", "-v", action="store_true", default=default,
             help="Enable debug logging.",
         )

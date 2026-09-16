@@ -212,3 +212,27 @@ class TestManifestProvenance:
         manifest = json.loads(manifests[0].read_text())
         assert manifest["config"]["rate"] == 5.0
         assert manifest["config"]["strict"] is False
+
+    def test_manifest_records_skip_player_histories_absent_from_args(self, tmp_path):
+        """The namespace these tests build has no such attribute at all, which
+        is exactly the case the getattr default in `_effective_run_config` and
+        `run_pipeline` exists to survive."""
+        import json
+
+        args = _make_args(rate=5.0, strict=False)
+        assert not hasattr(args, "skip_player_histories")
+        _run_pipeline(args, tmp_path)
+        manifests = sorted((tmp_path / "raw" / "fpl" / "_manifests").rglob("manifest.json"))
+        manifest = json.loads(manifests[0].read_text())
+        assert manifest["config"]["skip_player_histories"] is False
+
+    def test_manifest_records_skip_player_histories_when_set(self, tmp_path):
+        """Every run is self-describing about whether it ran in reduced-capture
+        mode, so the raw tree explains its own object count after the fact."""
+        import json
+
+        args = _make_args(rate=5.0, strict=False, skip_player_histories=True)
+        _run_pipeline(args, tmp_path)
+        manifests = sorted((tmp_path / "raw" / "fpl" / "_manifests").rglob("manifest.json"))
+        manifest = json.loads(manifests[0].read_text())
+        assert manifest["config"]["skip_player_histories"] is True

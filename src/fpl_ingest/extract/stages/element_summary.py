@@ -181,6 +181,13 @@ async def ingest_player_histories(
         return StageOutcome(result=StageResult(stage="player_histories"))
 
     if not player_ids:
+        # Reached only when execution_state is not tripped (the fail-fast
+        # check above already returns for a hard core-stage failure), so an
+        # empty list here is a genuine "core reported zero players" result,
+        # not a silent stand-in for an upstream outage. Still worth a log
+        # line of its own rather than a bare zero-count return, since this
+        # was previously indistinguishable from a fail-fast skip in the logs.
+        logger.info("element-summary: no players known this run; nothing to fetch")
         return StageOutcome(
             result=StageResult(stage="player_histories"),
             lineage=StageLineage.from_metadata(PLAYER_HISTORIES_STAGE),

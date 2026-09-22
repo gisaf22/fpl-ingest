@@ -236,3 +236,111 @@ class TestManifestProvenance:
         manifests = sorted((tmp_path / "raw" / "fpl" / "_manifests").rglob("manifest.json"))
         manifest = json.loads(manifests[0].read_text())
         assert manifest["config"]["skip_player_histories"] is True
+
+
+class TestCentralizedFailFastTrigger:
+    """``_execute_stage``'s own ``errors > 0 -> execution_state.fail()`` net.
+
+    Unlike bootstrap/gameweeks/element_summary, ``event_status.py`` and
+    ``fixtures.py`` never call ``execution_state.fail()`` themselves on a
+    hard fetch failure — before this fix, that meant a hard failure in
+    either of them silently left ``execution_state.is_failed`` False for
+    every downstream stage, non-strict runs included. ``_execute_stage`` now
+    closes that gap for every stage that routes through it, regardless of
+    whether that stage's own author remembered a manual call.
+
+    The soft-failure tests pin the regression this fix must specifically
+    avoid: a shape-validation failure reports ``skipped=1, errors=0`` (see
+    e.g. ``test_event_status.py::test_shape_failure_still_writes_the_payload_and_yields_no_finality``)
+    and must keep NOT tripping fail-fast — only ``errors > 0`` should.
+    """
+
+    pytestmark = pytest.mark.integration
+
+    def test_event_status_hard_failure_trips_fail_fast(self, tmp_path):
+        event_status_mock = AsyncMock(
+            return_value=StageOutcome(result=_errored("event_status"), output=None)
+        )
+        with (
+            patch("fpl_ingest.orchestration.runner.AsyncFPLClient", _mock_async_fpl_client()),
+            patch("fpl_ingest.orchestration.runner.ingest_event_status", event_status_mock),
+            patch("fpl_ingest.orchestration.runner.ingest_core_data",
+                  AsyncMock(return_value=StageOutcome(result=_clean("core"), output=_EMPTY_CORE))),
+            patch("fpl_ingest.orchestration.runner.ingest_fixtures",
+                  AsyncMock(return_value=StageOutcome(result=_clean("fixtures")))),
+            patch("fpl_ingest.orchestration.runner.ingest_gameweeks",
+                  AsyncMock(return_value=StageOutcome(result=_clean("gameweeks")))),
+            patch("fpl_ingest.orchestration.runner.ingest_player_histories",
+                  AsyncMock(return_value=StageOutcome(result=_clean("player_histories")))),
+        ):
+            asyncio.run(
+                run_pipeline(args=_make_args(), config=_make_config(tmp_path), logger=_silent_logger())
+            )
+
+        execution_state = event_status_mock.call_args.kwargs["execution_state"]
+        assert execution_state.is_failed is True
+
+    def test_event_status_shape_validation_soft_failure_does_not_trip_fail_fast(self, tmp_path):
+        event_status_mock = AsyncMock(
+            return_value=StageOutcome(result=_skipped("event_status"), output=None)
+        )
+        with (
+            patch("fpl_ingest.orchestration.runner.AsyncFPLClient", _mock_async_fpl_client()),
+            patch("fpl_ingest.orchestration.runner.ingest_event_status", event_status_mock),
+            patch("fpl_ingest.orchestration.runner.ingest_core_data",
+                  AsyncMock(return_value=StageOutcome(result=_clean("core"), output=_EMPTY_CORE))),
+            patch("fpl_ingest.orchestration.runner.ingest_fixtures",
+                  AsyncMock(return_value=StageOutcome(result=_clean("fixtures")))),
+            patch("fpl_ingest.orchestration.runner.ingest_gameweeks",
+                  AsyncMock(return_value=StageOutcome(result=_clean("gameweeks")))),
+            patch("fpl_ingest.orchestration.runner.ingest_player_histories",
+                  AsyncMock(return_value=StageOutcome(result=_clean("player_histories")))),
+        ):
+            asyncio.run(
+                run_pipeline(args=_make_args(), config=_make_config(tmp_path), logger=_silent_logger())
+            )
+
+        execution_state = event_status_mock.call_args.kwargs["execution_state"]
+        assert execution_state.is_failed is False
+
+    def test_fixtures_hard_failure_trips_fail_fast(self, tmp_path):
+        fixtures_mock = AsyncMock(return_value=StageOutcome(result=_errored("fixtures")))
+        with (
+            patch("fpl_ingest.orchestration.runner.AsyncFPLClient", _mock_async_fpl_client()),
+            patch("fpl_ingest.orchestration.runner.ingest_event_status",
+                  AsyncMock(return_value=StageOutcome(result=_clean("event_status"), output={}))),
+            patch("fpl_ingest.orchestration.runner.ingest_core_data",
+                  AsyncMock(return_value=StageOutcome(result=_clean("core"), output=_EMPTY_CORE))),
+            patch("fpl_ingest.orchestration.runner.ingest_fixtures", fixtures_mock),
+            patch("fpl_ingest.orchestration.runner.ingest_gameweeks",
+                  AsyncMock(return_value=StageOutcome(result=_clean("gameweeks")))),
+            patch("fpl_ingest.orchestration.runner.ingest_player_histories",
+                  AsyncMock(return_value=StageOutcome(result=_clean("player_histories")))),
+        ):
+            asyncio.run(
+                run_pipeline(args=_make_args(), config=_make_config(tmp_path), logger=_silent_logger())
+            )
+
+        execution_state = fixtures_mock.call_args.kwargs["execution_state"]
+        assert execution_state.is_failed is True
+
+    def test_fixtures_shape_validation_soft_failure_does_not_trip_fail_fast(self, tmp_path):
+        fixtures_mock = AsyncMock(return_value=StageOutcome(result=_skipped("fixtures")))
+        with (
+            patch("fpl_ingest.orchestration.runner.AsyncFPLClient", _mock_async_fpl_client()),
+            patch("fpl_ingest.orchestration.runner.ingest_event_status",
+                  AsyncMock(return_value=StageOutcome(result=_clean("event_status"), output={}))),
+            patch("fpl_ingest.orchestration.runner.ingest_core_data",
+                  AsyncMock(return_value=StageOutcome(result=_clean("core"), output=_EMPTY_CORE))),
+            patch("fpl_ingest.orchestration.runner.ingest_fixtures", fixtures_mock),
+            patch("fpl_ingest.orchestration.runner.ingest_gameweeks",
+                  AsyncMock(return_value=StageOutcome(result=_clean("gameweeks")))),
+            patch("fpl_ingest.orchestration.runner.ingest_player_histories",
+                  AsyncMock(return_value=StageOutcome(result=_clean("player_histories")))),
+        ):
+            asyncio.run(
+                run_pipeline(args=_make_args(), config=_make_config(tmp_path), logger=_silent_logger())
+            )
+
+        execution_state = fixtures_mock.call_args.kwargs["execution_state"]
+        assert execution_state.is_failed is False

@@ -354,6 +354,27 @@ class TestErrorHandling:
         assert manifest["failures"][0]["error_class"] == "FPLClientError"
 
     @pytest.mark.asyncio
+    async def test_fetch_failure_trips_fail_fast_for_downstream_stages(self, tmp_path):
+        """A hard bootstrap failure must be distinguishable, downstream, from a
+        genuine empty-bootstrap success — both produce the same empty CoreData,
+        so the shared execution_state sentinel is the only signal available.
+        ``ingest_gameweeks``/``ingest_player_histories`` already check
+        ``execution_state.is_failed`` and log distinctly when it's set; this
+        pins that the core stage actually sets it on this path."""
+        from fpl_ingest.orchestration.execution_state import PipelineExecutionState
+
+        state = PipelineExecutionState()
+        writer = _writer(tmp_path)
+
+        outcome = await ingest_core_data(
+            _client(error=FPLClientError("unreachable")), writer, execution_state=state
+        )
+
+        assert outcome.result.errors == 1
+        assert outcome.output == ([], [])
+        assert state.is_failed is True
+
+    @pytest.mark.asyncio
     async def test_fail_fast_skips_the_capture_entirely(self, tmp_path):
         from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 

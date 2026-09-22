@@ -122,6 +122,15 @@ async def ingest_core_data(
             error_class=type(exc).__name__,
             message=str(exc),
         )
+        # Trip fail-fast so downstream stages can tell "core hard-failed" apart
+        # from "core succeeded with an empty events/player_ids handoff." Both
+        # produce the same CoreData(events=[], player_ids=[]) below, and
+        # without this, ingest_gameweeks/ingest_player_histories would treat
+        # an upstream outage identically to a genuine nothing-new run — they
+        # already check execution_state.is_failed and log "Fail-fast tripped"
+        # when it's set, this just makes sure it gets set on this path too.
+        if execution_state is not None:
+            execution_state.fail()
         return StageOutcome(
             result=StageResult(stage="core", errors=1),
             output=CoreData(events=[], player_ids=[]),

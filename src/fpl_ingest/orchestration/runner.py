@@ -289,6 +289,7 @@ async def _execute_stage(
     stage_results: list[StageResult],
     logger: logging.Logger,
     strict: bool,
+    execution_state: PipelineExecutionState | None = None,
 ) -> _StageOutput | None:
     outcome, stage_started_at, stage_ended_at, duration_seconds = await _measure_stage(awaitable)
 
@@ -301,6 +302,14 @@ async def _execute_stage(
         ended_at=stage_ended_at,
         duration_seconds=duration_seconds,
     )
+    # Centralized fail-fast trigger: catches any stage's hard failure
+    # (errors > 0) even if that stage's own author didn't wire up a manual
+    # execution_state.fail() call. Keyed on errors specifically, not the
+    # broader StageResult.is_clean, so shape-validation soft-failures
+    # (skipped > 0, errors == 0) keep NOT tripping fail-fast — that
+    # distinction is deliberate (see bootstrap.py/fixtures.py/event_status.py).
+    if execution_state is not None and outcome.result.errors > 0:
+        execution_state.fail()
     return outcome.output
 
 
@@ -331,6 +340,11 @@ async def _run_core_stage(
         ended_at=stage_ended_at,
         duration_seconds=duration_seconds,
     )
+    # Same centralized trigger as _execute_stage; the core stage bypasses
+    # that helper (it must raise, not return None, on a missing output) but
+    # needs the identical errors > 0 -> fail() safety net.
+    if outcome.result.errors > 0:
+        execution_state.fail()
     if outcome.output is None:
         raise RuntimeError("Core stage completed without CoreData output")
     return outcome.output
@@ -380,6 +394,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 stage_results=stage_results,
                 logger=logger,
                 strict=args.strict,
+                execution_state=execution_state,
             )
 
             core: CoreData = await _run_core_stage(
@@ -400,6 +415,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 stage_results=stage_results,
                 logger=logger,
                 strict=args.strict,
+                execution_state=execution_state,
             )
 
             await _execute_stage(
@@ -414,6 +430,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 stage_results=stage_results,
                 logger=logger,
                 strict=args.strict,
+                execution_state=execution_state,
             )
 
             await _execute_stage(
@@ -430,6 +447,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 stage_results=stage_results,
                 logger=logger,
                 strict=args.strict,
+                execution_state=execution_state,
             )
         exit_code = _exit_code(logger, stage_results)
         _finalize_raw_manifest(

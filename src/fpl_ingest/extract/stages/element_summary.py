@@ -44,7 +44,11 @@ the never-captured ones, and only then records a ``_settlement`` marker for
 that gameweek; from the next run on, normal existence-based skipping resumes
 and holds. The marker is the sole piece of cross-run state here, and it is
 written only when the forced re-fetch fully succeeded, so a partial failure
-retries on the following run instead of stranding stale captures. It is
+retries on the following run instead of stranding stale captures. "Fully
+succeeded" also means the re-fetched rows for that gameweek carry published
+ICT (``readiness.ict_ready``): ratification is read off event-status, and if
+FPL ever reported it before populating ICT, a marker written then would freeze
+the very zeroes the re-fetch exists to replace. It is
 separate from ``gameweeks.py``'s own ``_settlement/event-live/{gw}`` marker on
 purpose: each marker only ever vouches for its own stage's capture, so one
 stage succeeding while the other fails in the same run leaves exactly the
@@ -63,6 +67,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -80,6 +85,7 @@ from fpl_ingest.extract.http.raw_keys import (
 )
 from fpl_ingest.extract.stages.bootstrap import GameweekInfo
 from fpl_ingest.extract.stages.event_status import Finality
+from fpl_ingest.extract.stages.readiness import ICT_NOT_READY_REASON, ict_ready
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.stage_result import StageLineage, StageMetadata, StageOutcome, StageResult
 
@@ -265,7 +271,17 @@ async def ingest_player_histories(
     # captured cleanly.
     fetched_count = len(fetched)
     if settlement_event_id is not None:
-        if error_count == 0 and validated == len(player_ids_to_fetch):
+        complete = error_count == 0 and validated == len(player_ids_to_fetch)
+        if complete and not ict_ready(_history_rows(fetched.values(), settlement_event_id)):
+            logger.warning(
+                "element-summary: settlement re-fetch for gameweek %d captured but ICT not "
+                "yet populated; marker withheld so the next run retries",
+                settlement_event_id,
+            )
+            raw_writer.record_marker_withheld(
+                "element-summary", event=settlement_event_id, reason=ICT_NOT_READY_REASON
+            )
+        elif complete:
             _record_settlement_refetch(raw_writer, settlement_event_id, validated)
             logger.info(
                 "element-summary: settlement re-fetch for gameweek %d complete (%d players)",
@@ -486,6 +502,22 @@ def _settlement_refetch_event(
         return None
 
     return current_id
+
+
+def _history_rows(responses: Iterable[RawResponse], event_id: int) -> list[Any]:
+    """Return every captured ``history`` row for gameweek ``event_id``, for :func:`ict_ready`.
+
+    ``responses`` is the whole forced re-fetch — every player — so this is the
+    full set of that gameweek's rows, evaluated from the in-memory responses
+    rather than read back from storage.
+    """
+    rows: list[Any] = []
+    for raw in responses:
+        payload = raw.json()
+        history = payload.get("history") if isinstance(payload, dict) else None
+        if isinstance(history, list):
+            rows.extend(h for h in history if isinstance(h, dict) and h.get("round") == event_id)
+    return rows
 
 
 def _settlement_marker_prefix(event_id: int) -> str:

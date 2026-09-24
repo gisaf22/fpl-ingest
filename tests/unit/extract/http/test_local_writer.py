@@ -391,6 +391,28 @@ def test_finality_block_is_passed_through_untouched(writer: LocalRawWriter):
     assert manifest["finality"] == finality
 
 
+def test_markers_withheld_is_omitted_until_something_is_withheld(writer: LocalRawWriter):
+    assert "markers_withheld" not in writer.finalize("SUCCESS").manifest
+
+
+def test_markers_withheld_records_each_gameweek_and_reaches_the_terminal_manifest(
+    tmp_path: Path, writer: LocalRawWriter
+):
+    writer.record_marker_withheld("event-live", event=3, reason="ict_not_ready")
+    writer.record_marker_withheld("element-summary", event=3, reason="ict_not_ready")
+
+    in_progress = _read_json(tmp_path / "fpl/_manifests/2026-08-24" / RUN_ID / "manifest.json")
+    manifest = writer.finalize("SUCCESS").manifest
+
+    expected = [
+        {"endpoint": "event-live", "event": 3, "reason": "ict_not_ready"},
+        {"endpoint": "element-summary", "event": 3, "reason": "ict_not_ready"},
+    ]
+    assert in_progress["markers_withheld"] == expected
+    assert manifest["markers_withheld"] == expected
+    assert manifest["totals"]["failed"] == 0
+
+
 def test_writer_rejects_use_after_finalize(writer: LocalRawWriter):
     writer.finalize("SUCCESS")
     with pytest.raises(RuntimeError, match="already been finalized"):

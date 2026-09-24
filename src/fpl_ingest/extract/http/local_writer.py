@@ -209,6 +209,7 @@ class LocalRawWriter:
         self._backend: RawStorageBackend = backend or LocalFilesystemBackend(root_dir)
         self._objects: dict[str, dict[str, int]] = {}
         self._failures: list[dict[str, Any]] = []
+        self._markers_withheld: list[dict[str, Any]] = []
         self._finalized = False
 
     @property
@@ -349,6 +350,20 @@ class LocalRawWriter:
         )
         self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
+    def record_marker_withheld(self, endpoint: str, *, event: int, reason: str) -> None:
+        """Record that a stage captured ``event`` but withheld its settlement marker.
+
+        The capture itself was written and counted as usual; this only explains
+        in the manifest why the next run will fetch that gameweek again.
+        ``endpoint`` is the marker's endpoint segment (``event-live`` or
+        ``element-summary``), not a per-object endpoint. The manifest key
+        ``markers_withheld`` is emitted only when something was withheld.
+        """
+        self._assert_open()
+        raw_keys.validate_endpoint(endpoint)
+        self._markers_withheld.append({"endpoint": endpoint, "event": event, "reason": reason})
+        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+
     # -- manifest -----------------------------------------------------------
 
     def finalize(
@@ -483,6 +498,8 @@ class LocalRawWriter:
         }
         if finality is not None:
             manifest["finality"] = finality
+        if self._markers_withheld:
+            manifest["markers_withheld"] = list(self._markers_withheld)
         return manifest
 
     def _totals(self) -> dict[str, int]:

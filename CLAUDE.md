@@ -47,8 +47,8 @@ hardcoded local path instead of the active backend was a real bug (commit `8f6b7
 
 | Endpoint | Policy |
 |---|---|
-| `event-live/{gw:02d}` | Fetch once per gameweek, after it is ratified (bonus added) and only while its `_settlement/event-live/{gw}` marker is absent; the marker is written only after a clean, shape-valid capture. Provisional gameweeks are not fetched; unknown finality fetches nothing |
-| `element-summary/{player}` | Skip once settled and captured; the settlement transition forces one full refetch, gated by its own `_settlement/element-summary/{gw}` marker (commit `412516c`) |
+| `event-live/{gw:02d}` | Fetch once per gameweek, after it is ratified (bonus added) and only while its `_settlement/event-live/{gw}` marker is absent; the marker is written only after a clean, shape-valid capture whose played rows carry published ICT (`readiness.ict_ready`). Provisional gameweeks are not fetched; unknown finality fetches nothing |
+| `element-summary/{player}` | Skip once settled and captured; the settlement transition forces one full refetch, gated by its own `_settlement/element-summary/{gw}` marker (commit `412516c`), written only once that gameweek's re-fetched rows carry published ICT (`readiness.ict_ready`) |
 | `bootstrap-static` | Always refetch every run |
 | `fixtures` | Always refetch every run |
 | `event-status` | Always refetch every run — it is the finality signal |

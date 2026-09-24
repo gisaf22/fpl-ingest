@@ -33,6 +33,7 @@ from fpl_ingest.extract.http.raw_keys import iso_utc
 from fpl_ingest.extract.http.s3_backend import S3Backend
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.extract.stages import gameweeks as gameweeks_stage
+from fpl_ingest.extract.stages.readiness import ICT_FIELDS, ICT_NOT_READY_REASON
 from fpl_ingest.extract.stages.gameweeks import (
     _record_ratified_capture,
     _select_gameweeks_to_fetch,
@@ -60,7 +61,14 @@ def _payload(player_ids: list[int]) -> dict:
         "elements": [
             {
                 "id": player_id,
-                "stats": {"minutes": 90, "total_points": player_id},
+                "stats": {
+                    "minutes": 90,
+                    "total_points": player_id,
+                    "influence": "20.6",
+                    "creativity": "3.2",
+                    "threat": "6.0",
+                    "ict_index": "3.0",
+                },
                 "explain": [],
             }
             for player_id in player_ids
@@ -801,3 +809,166 @@ class TestStageContract:
 
     def test_stage_declares_no_output_tables(self):
         assert gameweeks_stage.GAMEWEEKS_STAGE.output_tables == ()
+
+
+# ---------------------------------------------------------------------------
+# ICT readiness guard
+# ---------------------------------------------------------------------------
+
+_ICT = ("20.6", "3.2", "6.0", "3.0")
+_ZERO_ICT = ("0.0", "0.0", "0.0", "0.0")
+
+
+def _stats(minutes: object, ict: tuple[str, ...] | None = _ICT) -> dict:
+    """One live element's ``stats``; ``ict=None`` omits all four ICT keys."""
+    stats: dict = {"minutes": minutes, "total_points": 1}
+    if ict is not None:
+        stats.update(zip(ICT_FIELDS, ict))
+    return stats
+
+
+def _live(*stats: dict) -> dict:
+    return {
+        "elements": [
+            {"id": player_id, "stats": s, "explain": []}
+            for player_id, s in enumerate(stats, start=1)
+        ]
+    }
+
+
+class TestIctReadinessGuard:
+    """The ratification marker is withheld until the capture carries published
+    ICT: a marker written while FPL still reports 0.0 would freeze it, since a
+    marked gameweek is never fetched again. The capture is written regardless,
+    and the run does not fail."""
+
+    async def _capture(self, tmp_path: Path, payload: dict, gw: int = 3):
+        writer = _writer(tmp_path)
+        outcome = await ingest_gameweeks(
+            _client({gw: _raw(payload, gw=gw)}),
+            writer,
+            [_event(gw, finished=True)],
+            event_finality=_settled(gw),
+        )
+        return writer, outcome
+
+    def _marked(self, tmp_path: Path, gw: int = 3) -> bool:
+        return (tmp_path / "raw" / _MARKER_KEY.format(gw=gw)).exists()
+
+    @pytest.mark.asyncio
+    async def test_played_players_with_all_zero_ict_withhold_the_marker(self, tmp_path):
+        writer, outcome = await self._capture(
+            tmp_path, _live(_stats(90, _ZERO_ICT), _stats(45, _ZERO_ICT))
+        )
+
+        assert not self._marked(tmp_path)
+        (payload_key,) = outcome.lineage.raw_artifacts
+        assert (tmp_path / "raw" / payload_key).exists()
+        assert outcome.result.written == 1
+        assert outcome.result.skipped == 0
+        assert outcome.result.errors == 0
+        assert classify_run_from_results([outcome.result], strict_mode=False) == RUN_STATUS_SUCCESS
+        assert writer.manifest_snapshot["markers_withheld"] == [
+            {"endpoint": "event-live", "event": 3, "reason": ICT_NOT_READY_REASON}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_populated_ict_writes_the_marker(self, tmp_path):
+        writer, _ = await self._capture(tmp_path, _live(_stats(90), _stats(0, _ZERO_ICT)))
+
+        assert self._marked(tmp_path)
+        assert "markers_withheld" not in writer.manifest_snapshot
+
+    @pytest.mark.asyncio
+    async def test_nobody_played_writes_the_marker(self, tmp_path):
+        await self._capture(tmp_path, _live(_stats(0, _ZERO_ICT), _stats(0, _ZERO_ICT)))
+
+        assert self._marked(tmp_path)
+
+    @pytest.mark.parametrize(
+        "ict, marked",
+        [
+            pytest.param(("5.6", "0.0", "0.0", "0.0"), True, id="string_5.6_is_nonzero"),
+            pytest.param(("0.0", "0.0", "0.0", "0.6"), True, id="ict_index_alone_counts"),
+            pytest.param(_ZERO_ICT, False, id="string_0.0_is_zero"),
+            pytest.param(("0", "0", "0", "0"), False, id="string_0_is_zero"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_string_ict_values_are_parsed(self, tmp_path, ict, marked):
+        await self._capture(tmp_path, _live(_stats(90, ict)))
+
+        assert self._marked(tmp_path) is marked
+
+    @pytest.mark.asyncio
+    async def test_missing_ict_field_withholds_the_marker(self, tmp_path):
+        """Missing is not-ready, not zero — even when another row is populated."""
+        partial = _stats(90)
+        del partial["threat"]
+
+        await self._capture(tmp_path, _live(_stats(90), partial))
+
+        assert not self._marked(tmp_path)
+
+    @pytest.mark.parametrize(
+        "ict",
+        [
+            pytest.param(("n/a", "3.2", "6.0", "3.0"), id="unparseable_string"),
+            pytest.param((None, "3.2", "6.0", "3.0"), id="null"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_unparseable_ict_withholds_the_marker(self, tmp_path, ict):
+        await self._capture(tmp_path, _live(_stats(90), _stats(90, ict)))
+
+        assert not self._marked(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_old_minimal_played_shape_is_captured_but_not_marked(self, tmp_path):
+        """Regression: the pre-guard fixtures modeled a played player with no
+        ICT keys at all. That payload is still captured, but never marked."""
+        _, outcome = await self._capture(
+            tmp_path, {"elements": [{"id": 1, "stats": {"minutes": 90, "total_points": 1}, "explain": []}]}
+        )
+
+        assert outcome.result.written == 1
+        assert not self._marked(tmp_path)
+
+    @pytest.mark.parametrize(
+        "stats",
+        [
+            pytest.param({}, id="missing_minutes"),
+            pytest.param(_stats("ninety"), id="unparseable_minutes"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_unreadable_minutes_withholds_the_marker(self, tmp_path, stats):
+        await self._capture(tmp_path, _live(_stats(90), stats))
+
+        assert not self._marked(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_a_zero_ict_cameo_among_populated_rows_still_marks(self, tmp_path):
+        """"At least one", not "all": ratified data has genuine all-zero cameos."""
+        await self._capture(tmp_path, _live(_stats(90), _stats(78), _stats(3, _ZERO_ICT)))
+
+        assert self._marked(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_withheld_gameweek_is_refetched_and_marked_once_ict_arrives(self, tmp_path):
+        first = _client({3: _raw(_live(_stats(90, _ZERO_ICT)), gw=3)})
+        await ingest_gameweeks(
+            first, _writer(tmp_path), [_event(3, finished=True)], event_finality=_settled(3)
+        )
+        assert not self._marked(tmp_path)
+
+        second = _client({3: _raw(_live(_stats(90)), gw=3)})
+        await ingest_gameweeks(
+            second,
+            LocalRawWriter(tmp_path / "raw", "fpl", run_id="20260824T190000Z-def456"),
+            [_event(3, finished=True)],
+            event_finality=_settled(3),
+        )
+
+        second.get_gameweek_live_raw.assert_awaited_once_with(3)
+        assert self._marked(tmp_path)

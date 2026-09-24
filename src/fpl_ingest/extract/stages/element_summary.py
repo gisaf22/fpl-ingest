@@ -119,7 +119,6 @@ async def ingest_player_histories(
     *,
     event_finality: Finality | None,
     strict: bool = False,
-    skip_player_histories: bool = False,
     execution_state: PipelineExecutionState | None = None,
 ) -> StageOutcome[None]:
     """Fetch element-summary for every player that needs it and capture verbatim.
@@ -140,10 +139,6 @@ async def ingest_player_histories(
             not validate. ``None`` means "nothing is known settled" and must
             never cause under-fetching.
         strict: If True, the first failed fetch cancels the rest of the batch.
-        skip_player_histories: If True, return immediately without fetching,
-            selecting, or evaluating settlement state at all. See the guard
-            below for why that return has to come before
-            ``_settlement_refetch_event``.
         execution_state: Fail-fast sentinel.
 
     Returns:
@@ -153,32 +148,6 @@ async def ingest_player_histories(
         run FAILED_PARTIAL while every other player still counts as written;
         the payload is written either way.
     """
-    if skip_player_histories:
-        # This return MUST stay above ``_settlement_refetch_event`` below.
-        #
-        # That call decides whether this run owes the one forced full
-        # re-fetch a gameweek's settlement earns, and
-        # ``_record_settlement_refetch`` writes a durable marker that
-        # retires the obligation permanently. A run that captures nothing
-        # must reach neither: claiming a settlement it never performed
-        # would freeze that gameweek's ratification-only fields
-        # (influence/creativity/threat/ict_index) at the zeroes a
-        # provisional capture carries, with no later trigger to correct
-        # them. That is the exact corruption class the settlement re-fetch
-        # exists to prevent.
-        #
-        # The result is all zeros, matching the already-captured return
-        # further down rather than reporting the untouched players as
-        # ``skipped``: ``skipped`` counts records rejected by validation,
-        # and a stage that never ran rejected nothing. ``classify_run``
-        # reads any skipped > 0 as FAILED_PARTIAL, which would exit 1 and
-        # fail every schedule that sets this flag.
-        logger.info("element-summary: capture skipped for this run (--skip-player-histories)")
-        return StageOutcome(
-            result=StageResult(stage="player_histories"),
-            lineage=StageLineage.from_metadata(PLAYER_HISTORIES_STAGE),
-        )
-
     if execution_state is not None and execution_state.is_failed:
         logger.info("Fail-fast tripped; skipping element-summary capture")
         return StageOutcome(result=StageResult(stage="player_histories"))

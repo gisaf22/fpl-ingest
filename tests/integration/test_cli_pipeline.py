@@ -163,22 +163,6 @@ class TestCliLifecycle:
         assert args.raw_dir is None
         assert args.rate == DEFAULT_RATE
 
-    def test_skip_player_histories_defaults_off(self):
-        parser = build_parser()
-        assert not parser.parse_args(["run"]).skip_player_histories
-
-    def test_skip_player_histories_parses_after_subcommand(self):
-        parser = build_parser()
-        args = parser.parse_args(["run", "--skip-player-histories"])
-        assert args.skip_player_histories is True
-
-    def test_skip_player_histories_parses_before_subcommand(self):
-        """Shares `--strict`'s SUPPRESS-default handling, so it works in either
-        position rather than being clobbered by the subparser's own default."""
-        parser = build_parser()
-        args = parser.parse_args(["--skip-player-histories", "run"])
-        assert args.skip_player_histories is True
-
     def test_raw_dir_honored_before_subcommand(self):
         parser = build_parser()
         args = parser.parse_args(["--raw-dir", "/tmp/x", "run"])

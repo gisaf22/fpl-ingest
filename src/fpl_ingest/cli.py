@@ -111,6 +111,10 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
         help="Capture bootstrap-static alone, only if a transfer deadline is within 75 minutes.",
     )
     add_shared_arguments(pre_deadline_parser, suppress_defaults=True)
+    pre_deadline_parser.add_argument(
+        "--force", action="store_true",
+        help="Skip the deadline gate and capture now; the manifest records trigger: manual.",
+    )
 
     subparsers.add_parser("smoke-test", help="Run a lightweight upstream API structural drift check.")
 

@@ -23,8 +23,14 @@ on:
   schedule:
     - cron: "*/30 9-19 * * *"
   workflow_dispatch:
-    # Manual runs are gated the same way; outside the window they write nothing.
-    #   gh workflow run scheduled_run_pre_deadline.yml
+    # Manual runs are gated the same way unless force is true; outside the
+    # window they write nothing. force=true captures now, as trigger: manual.
+    #   gh workflow run scheduled_run_pre_deadline.yml -f force=true
+    inputs:
+      force:
+        description: "Skip the deadline gate and capture now (trigger: manual)"
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -60,7 +66,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
       - name: Capture bootstrap-static if a deadline is near
-        run: uv run fpl-ingest pre-deadline
+        run: uv run fpl-ingest pre-deadline ${{ inputs.force && '--force' || '' }}
 
       - name: Email on failure
         if: failure()

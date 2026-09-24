@@ -495,6 +495,10 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
     Inside it, the same payload is written through ``capture_bootstrap_raw``
     and the manifest is stamped ``trigger: pre_deadline``. A failed fetch
     writes nothing either and returns 1, so the workflow's failure email fires.
+
+    ``--force`` (the workflow's ``force`` dispatch input) skips the gate and
+    records ``trigger: manual``, since the capture is then a person's choice,
+    not the deadline's.
     """
     storage_backend = _build_storage_backend(config)
     run_start = datetime.now(timezone.utc)
@@ -517,16 +521,19 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
         logger.warning("pre-deadline: bootstrap-static carried no events list; nothing written")
         events = []
 
+    force = bool(getattr(args, "force", False))
     now = datetime.now(timezone.utc)
     deadline = next_deadline(events, now=now)
-    if deadline is None or not in_pre_deadline_window(events, now=now):
+    if force:
+        logger.info("pre-deadline: --force given; capturing without the deadline gate")
+    elif deadline is None or not in_pre_deadline_window(events, now=now):
         logger.info(
             "pre-deadline: next deadline %s is outside the window; nothing written",
             deadline.isoformat() if deadline is not None else "unknown",
         )
         return 0
-
-    logger.info("pre-deadline: deadline %s is within the window; capturing", deadline.isoformat())
+    else:
+        logger.info("pre-deadline: deadline %s is within the window; capturing", deadline.isoformat())
     if storage_backend is None:
         config.raw_dir.mkdir(parents=True, exist_ok=True)
     raw_writer = LocalRawWriter(
@@ -539,6 +546,6 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
     _finalize_raw_manifest(
         raw_writer, logger, stage_results, strict_mode=False,
         git_sha=_current_git_sha(logger), ingest_version=INGEST_VERSION,
-        config=_effective_run_config(args), trigger=PRE_DEADLINE_TRIGGER,
+        config=_effective_run_config(args), trigger="manual" if force else PRE_DEADLINE_TRIGGER,
     )
     return exit_code

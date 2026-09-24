@@ -202,7 +202,10 @@ def run_inspect(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     """Run the ingest pipeline, or a subcommand if requested."""
-    args, _ = build_parser().parse_known_args(argv)
+    # parse_args, not parse_known_args: an unknown or removed flag must exit
+    # non-zero before any work. On 2026-09-23 a removed flag was silently
+    # ignored and a full ingest ran instead.
+    args = build_parser().parse_args(argv)
     if args.command == "smoke-test":
         sys.exit(run_smoke_test(args))
     if args.command == "inspect":

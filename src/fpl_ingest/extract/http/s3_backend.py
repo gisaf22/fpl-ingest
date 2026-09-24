@@ -13,15 +13,49 @@ logic. Credentials are never handled here: boto3 resolves them from the
 standard chain (OIDC-federated role in CI via
 ``aws-actions/configure-aws-credentials``, ``~/.aws/credentials``/
 ``AWS_PROFILE`` locally).
+
+Building the real boto3 client is guarded: it is refused unless the process
+is a GitHub Actions run with a commit SHA, or ``FPL_ALLOW_LOCAL_S3=1`` is set.
+Run 20260902T163935Z-07eb06 wrote 651 objects to the production bucket from
+outside CI, with no git SHA; the guard sits here, rather than in the CLI's
+backend selection, so any caller that builds an ``S3Backend`` is covered.
+An injected ``client`` (tests) is not guarded.
 """
 
 from __future__ import annotations
 
+import os
+import re
 from typing import Any
 
 from fpl_ingest.extract.http.local_writer import RawObjectExistsError
 
 _KEY_PREFIX = "raw/"
+
+#: Setting this to ``1`` allows S3 writes from outside CI.
+LOCAL_S3_OVERRIDE_ENV = "FPL_ALLOW_LOCAL_S3"
+
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+class S3WriteNotAllowedError(RuntimeError):
+    """Raised when an S3 backend is built outside CI without the override."""
+
+
+def _assert_s3_writes_allowed() -> None:
+    """Refuse S3 unless running in GitHub Actions with a commit SHA, or overridden."""
+    if os.environ.get(LOCAL_S3_OVERRIDE_ENV) == "1":
+        return
+    in_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+    has_sha = bool(_SHA_RE.match(os.environ.get("GITHUB_SHA", "")))
+    if in_ci and has_sha:
+        return
+    raise S3WriteNotAllowedError(
+        "Refusing to write to S3 outside CI: GITHUB_ACTIONS=true with a 40-character "
+        f"GITHUB_SHA is required. To write to S3 from this machine deliberately, set "
+        f"{LOCAL_S3_OVERRIDE_ENV}=1. For a local run, unset FPL_STORAGE_BACKEND "
+        "(the default is local storage)."
+    )
 
 
 class S3Backend:
@@ -35,7 +69,14 @@ class S3Backend:
             client: Pre-built boto3 S3 client, primarily for tests. Defaults
                 to ``boto3.client("s3")``, which resolves credentials via the
                 standard chain.
+
+        Raises:
+            S3WriteNotAllowedError: ``client`` is None and the process is
+                neither a CI run with a commit SHA nor has
+                ``FPL_ALLOW_LOCAL_S3=1`` set.
         """
+        if client is None:
+            _assert_s3_writes_allowed()
         self.bucket = bucket
         self._client = client if client is not None else _default_client()
 

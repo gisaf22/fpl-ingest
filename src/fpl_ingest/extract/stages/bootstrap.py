@@ -135,6 +135,16 @@ async def ingest_core_data(
             output=CoreData(events=[], player_ids=[]),
         )
 
+    return capture_bootstrap_raw(raw, raw_writer)
+
+
+def capture_bootstrap_raw(raw: RawResponse, raw_writer: LocalRawWriter) -> StageOutcome[CoreData]:
+    """Write an already-fetched bootstrap-static response to raw storage.
+
+    The capture half of ``ingest_core_data``, split out so the pre-deadline
+    command can decide from the payload before writing it, with the same
+    sidecar, shape validation, and result accounting as the full run.
+    """
     shape = validate_bootstrap_shape(raw)
     if not shape["ok"]:
         logger.error(

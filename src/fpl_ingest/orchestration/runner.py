@@ -34,7 +34,7 @@ from fpl_ingest.orchestration.run_status import (
     classify_run_from_results,
 )
 from fpl_ingest.orchestration.stage_result import StageOutcome, StageResult
-from fpl_ingest.extract.stages.bootstrap import CoreData, ingest_core_data
+from fpl_ingest.extract.stages.bootstrap import CoreData, capture_bootstrap_raw, ingest_core_data
 from fpl_ingest.extract.stages.event_status import Finality, ingest_event_status
 from fpl_ingest.extract.stages.fixtures import RAW_SOURCE, ingest_fixtures
 from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
@@ -43,6 +43,12 @@ from fpl_ingest.extract.http.client import AsyncFPLClient
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
 from fpl_ingest.extract.http.rate_config import MAX_RATE, normalize_rate
 from fpl_ingest.extract.http.rate_limiter import TokenBucketLimiter
+from fpl_ingest.extract.http.sync_http import FPLClientError
+from fpl_ingest.orchestration.pre_deadline import (
+    PRE_DEADLINE_TRIGGER,
+    in_pre_deadline_window,
+    next_deadline,
+)
 
 _MAX_CONCURRENT_REQUESTS = 10
 _StageOutput = TypeVar("_StageOutput")
@@ -223,6 +229,7 @@ def _finalize_raw_manifest(
     git_sha: str | None = None,
     ingest_version: str | None = None,
     config: dict[str, Any] | None = None,
+    trigger: str | None = None,
 ) -> None:
     """Stamp the run's raw manifest with the same status the runner reports.
 
@@ -244,6 +251,7 @@ def _finalize_raw_manifest(
             git_sha=git_sha,
             ingest_version=ingest_version,
             config=config,
+            trigger=trigger,
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to finalize raw manifest: %s", exc)
@@ -373,6 +381,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     event_finality: Finality | None = None
     git_sha = _current_git_sha(logger)
     run_config = _effective_run_config(args)
+    trigger = getattr(args, "trigger", None)
 
     try:
         async with AsyncFPLClient(
@@ -446,6 +455,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
         _finalize_raw_manifest(
             raw_writer, logger, stage_results, strict_mode=False, event_finality=event_finality,
             git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,
+            trigger=trigger,
         )
         return exit_code
     except StrictRunFailure as exc:
@@ -453,6 +463,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
         _finalize_raw_manifest(
             raw_writer, logger, stage_results, strict_mode=True, event_finality=event_finality,
             git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,
+            trigger=trigger,
         )
         _log_run_summary(logger, status=RUN_STATUS_FAILED, results=stage_results)
         _log_fail_fast_failure(logger, exc.result)
@@ -473,3 +484,61 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
         logger.error("Freshness metadata not updated because the run did not complete successfully.")
         _log_partial_run_warning(logger)
         return 1
+
+
+async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> int:
+    """Capture bootstrap-static alone, only when a deadline is near.
+
+    Fetches bootstrap-static and applies the gate in ``orchestration.pre_deadline``
+    to that payload. Outside the window it returns 0 having written nothing —
+    no payload and no manifest, so a no-op leaves no trace in raw storage.
+    Inside it, the same payload is written through ``capture_bootstrap_raw``
+    and the manifest is stamped ``trigger: pre_deadline``. A failed fetch
+    writes nothing either and returns 1, so the workflow's failure email fires.
+    """
+    storage_backend = _build_storage_backend(config)
+    run_start = datetime.now(timezone.utc)
+    applied_rate = _resolve_applied_rate(logger, args.rate)
+    rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)
+
+    try:
+        async with AsyncFPLClient(
+            rate_limiter=rate_limiter,
+            connector_limit=_MAX_CONCURRENT_REQUESTS,
+        ) as client:
+            raw = await client.get_bootstrap_raw()
+    except FPLClientError as exc:
+        logger.error("pre-deadline: bootstrap-static fetch failed; nothing written: %s", exc)
+        return 1
+
+    payload = raw.json()
+    events = payload.get("events") if isinstance(payload, dict) else None
+    if not isinstance(events, list):
+        logger.warning("pre-deadline: bootstrap-static carried no events list; nothing written")
+        events = []
+
+    now = datetime.now(timezone.utc)
+    deadline = next_deadline(events, now=now)
+    if deadline is None or not in_pre_deadline_window(events, now=now):
+        logger.info(
+            "pre-deadline: next deadline %s is outside the window; nothing written",
+            deadline.isoformat() if deadline is not None else "unknown",
+        )
+        return 0
+
+    logger.info("pre-deadline: deadline %s is within the window; capturing", deadline.isoformat())
+    if storage_backend is None:
+        config.raw_dir.mkdir(parents=True, exist_ok=True)
+    raw_writer = LocalRawWriter(
+        config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend
+    )
+    stage_results: list[StageResult] = []
+    outcome = capture_bootstrap_raw(raw, raw_writer)
+    _record_stage(stage_results, logger, outcome.result, strict=False)
+    exit_code = _exit_code(logger, stage_results)
+    _finalize_raw_manifest(
+        raw_writer, logger, stage_results, strict_mode=False,
+        git_sha=_current_git_sha(logger), ingest_version=INGEST_VERSION,
+        config=_effective_run_config(args), trigger=PRE_DEADLINE_TRIGGER,
+    )
+    return exit_code

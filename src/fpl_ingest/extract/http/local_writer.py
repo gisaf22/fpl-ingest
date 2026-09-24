@@ -374,6 +374,7 @@ class LocalRawWriter:
         ingest_version: str | None = None,
         config: Mapping[str, Any] | None = None,
         finality: Any | None = None,
+        trigger: str | None = None,
         ended_at: datetime | None = None,
     ) -> ManifestResult:
         """Write the terminal manifest for this run.
@@ -388,6 +389,9 @@ class LocalRawWriter:
             finality: Optional source-specific finality block. For FPL this is
                 the ``event-status`` essentials; this writer neither builds nor
                 interprets it.
+            trigger: What started the run (``scheduled``, ``manual``,
+                ``pre_deadline``). Recorded as given; None when the caller
+                did not say.
             ended_at: Run end instant; defaults to now (UTC).
 
         Returns:
@@ -400,6 +404,7 @@ class LocalRawWriter:
             ingest_version=ingest_version,
             config=config,
             finality=finality,
+            trigger=trigger,
             ended_at=ended_at or datetime.now(timezone.utc),
         )
         key = manifest_key(self.source, self.extraction_date, self.run_id)
@@ -473,6 +478,7 @@ class LocalRawWriter:
         config: Mapping[str, Any] | None,
         finality: Any | None,
         ended_at: datetime | None,
+        trigger: str | None = None,
     ) -> dict[str, Any]:
         manifest: dict[str, Any] = {
             "raw_contract_version": RAW_CONTRACT_VERSION,
@@ -495,6 +501,7 @@ class LocalRawWriter:
             "git_sha": git_sha,
             "ingest_version": ingest_version,
             "config": dict(config) if config is not None else None,
+            "trigger": trigger,
         }
         if finality is not None:
             manifest["finality"] = finality

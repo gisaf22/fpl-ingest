@@ -1,6 +1,6 @@
 """CLI entry point and command dispatcher for fpl-ingest.
 
-Exposes the ``run``, ``smoke-test``, and ``inspect`` sub-commands.
+Exposes the ``run``, ``pre-deadline``, ``smoke-test``, and ``inspect`` sub-commands.
 Each command handler resolves configuration, delegates to the appropriate
 orchestration or extract function, and exits with a meaningful code.
 This module contains no business logic — all behaviour lives in the imported
@@ -30,6 +30,7 @@ from fpl_ingest.cli_formatters import (
 from fpl_ingest.config import IngestConfig, default_config, resolve_config
 from fpl_ingest.orchestration.inspect import most_recent_run, recent_runs
 from fpl_ingest.orchestration.runner import run_pipeline as execute_pipeline
+from fpl_ingest.orchestration.runner import run_pre_deadline_capture
 from fpl_ingest.extract.http.rate_config import DEFAULT_RATE, MAX_RATE
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.schema.validation import (
@@ -100,6 +101,16 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     run_parser = subparsers.add_parser("run", help="Run a full ingestion and update the latest-state dataset.")
     add_shared_arguments(run_parser, suppress_defaults=True)
+    run_parser.add_argument(
+        "--trigger", choices=("scheduled", "manual"), default=None,
+        help="What started this run; recorded in the manifest's trigger field.",
+    )
+
+    pre_deadline_parser = subparsers.add_parser(
+        "pre-deadline",
+        help="Capture bootstrap-static alone, only if a transfer deadline is within 75 minutes.",
+    )
+    add_shared_arguments(pre_deadline_parser, suppress_defaults=True)
 
     subparsers.add_parser("smoke-test", help="Run a lightweight upstream API structural drift check.")
 
@@ -148,6 +159,12 @@ def run_pipeline(args: argparse.Namespace) -> int:
     return asyncio.run(execute_pipeline(args=args, config=config, logger=logger))
 
 
+def run_pre_deadline(args: argparse.Namespace) -> int:
+    config = resolve_config(raw_dir=args.raw_dir)
+    logger = configure_logging(args.verbose)
+    return asyncio.run(run_pre_deadline_capture(args=args, config=config, logger=logger))
+
+
 def run_smoke_test(_: argparse.Namespace | None = None) -> int:
     try:
         result = execute_smoke_test()
@@ -186,6 +203,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(run_smoke_test(args))
     if args.command == "inspect":
         sys.exit(run_inspect(args))
+    if args.command == "pre-deadline":
+        sys.exit(run_pre_deadline(args))
     sys.exit(run_pipeline(args))
 
 

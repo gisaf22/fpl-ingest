@@ -33,10 +33,10 @@ def _bootstrap_with_deadline_in(minutes: float) -> dict:
     }
 
 
-def _pre_deadline(raw: Path, client) -> int:
+def _pre_deadline(raw: Path, client, *extra: str) -> int:
     with patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=client):
         with pytest.raises(SystemExit) as exc:
-            main(["--raw-dir", str(raw), "pre-deadline"])
+            main(["--raw-dir", str(raw), "pre-deadline", *extra])
     return int(exc.value.code or 0)
 
 
@@ -86,6 +86,28 @@ class TestPreDeadlineCapture:
 
         assert _pre_deadline(raw, client) == 1
         assert not raw.exists() or not any(p.is_file() for p in raw.rglob("*"))
+
+
+class TestForce:
+    """``--force`` is what the workflow's ``force`` dispatch input maps to."""
+
+    def test_without_force_still_no_ops_outside_the_window(self, tmp_path):
+        raw = tmp_path / "raw"
+        client = _make_async_client(bootstrap=_bootstrap_with_deadline_in(180))
+
+        assert _pre_deadline(raw, client) == 0
+        assert not raw.exists() or not any(p.is_file() for p in raw.rglob("*"))
+
+    def test_force_captures_outside_the_window_as_manual(self, tmp_path):
+        raw = tmp_path / "raw"
+        client = _make_async_client(bootstrap=_bootstrap_with_deadline_in(180))
+
+        assert _pre_deadline(raw, client, "--force") == 0
+
+        assert len(sorted((raw / "fpl" / "bootstrap-static").rglob("payload.json"))) == 1
+        [manifest] = _manifests(raw)
+        assert manifest["trigger"] == "manual"
+        assert set(manifest["objects"]) == {"bootstrap-static"}
 
 
 class TestRunTrigger:

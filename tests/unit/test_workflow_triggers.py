@@ -26,5 +26,7 @@ def test_daily_workflow_passes_a_trigger():
 
 
 def test_pre_deadline_workflow_runs_the_gated_subcommand():
+    # --force is passed only when the dispatch input is true; a schedule event
+    # has no inputs, so it always runs gated.
     lines = _run_lines("scheduled_run_pre_deadline.yml")
-    assert lines == ["run: uv run fpl-ingest pre-deadline"]
+    assert lines == ["run: uv run fpl-ingest pre-deadline ${{ inputs.force && '--force' || '' }}"]

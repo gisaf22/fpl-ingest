@@ -61,8 +61,25 @@ stage's own capture succeeded," or one stage's success could vouch for the other
 
 ## Tooling
 
-Use `/opt/homebrew/bin/gh` explicitly for GitHub CLI commands. Bare `gh` on PATH resolves
-to a pyenv shim (`~/.pyenv/shims/gh`), not the real GitHub CLI.
+Bare `gh` is the real GitHub CLI (`/opt/homebrew/bin/gh`). The pyenv shim that used to
+shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
+
+---
+
+## Reading captures
+
+- **Effective capture time is `received_at` minus the CDN age.** Both are in the per-object
+  sidecar `metadata.json`: `received_at` (top level, ISO-8601 UTC) and
+  `response_headers.age` (header names are lowercased; the value is a string of seconds).
+  FPL's CDN sends `cache-control: max-age=300, stale-while-revalidate=3600`, so a response
+  is usually at most 5 minutes old but can be older. Across 178 bootstrap-static captures
+  (2026-08-29 to 2026-09-24) the median age was 101s, the maximum 426s, and 5 were over 300s.
+- **Select pre-deadline snapshots by the run manifest's `trigger == "pre_deadline"`**, not
+  by "latest capture before the deadline". A capture with `trigger: "manual"` or
+  `"scheduled"` can also precede a deadline.
+- **Manifests written before 2026-09-24 17:16 UTC (PR #15, `ccca196`) have no `trigger`
+  key**, including that morning's 07:20 daily run, and local runs without
+  `--trigger` record `null`. Treat both as unknown.
 
 ---
 

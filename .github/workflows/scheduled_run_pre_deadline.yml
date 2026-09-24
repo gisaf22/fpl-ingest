@@ -1,0 +1,78 @@
+# Scheduled FPL ingestion workflow — pre-deadline bootstrap-static capture.
+#
+# Captures bootstrap-static alone, shortly before each transfer deadline. The
+# daily workflow lands ~07:15 and ~19:15 UTC while deadlines fall between
+# 10:00 and 18:30 UTC, so its last capture before a deadline is up to ~11h
+# stale; measured over GW3-5 it missed an average of 4 availability changes
+# (status / chance_of_playing) for relevant players per deadline.
+#
+# This restores only the deadline-state capture that scheduled_run_live.yml
+# provided until 46d3c19 — no match-window pulls, no other endpoints. The
+# `pre-deadline` command fetches bootstrap-static, and writes it (payload,
+# sidecar, manifest with trigger: pre_deadline) only if the next deadline is
+# within 75 minutes (orchestration/pre_deadline.py). Otherwise it exits 0
+# having written nothing. There is no marker and no state between runs.
+#
+# Cron covers 09:00-19:30 UTC every 30 minutes: that serves any deadline
+# between 09:00 and 20:45 UTC. deadline_time is UTC, so the UK clock change
+# does not move this window; FPL's 2026-27 deadlines are 10:00-18:30 UTC.
+
+name: Scheduled Ingestion — Pre-deadline
+
+on:
+  schedule:
+    - cron: "*/30 9-19 * * *"
+  workflow_dispatch:
+    # Manual runs are gated the same way; outside the window they write nothing.
+    #   gh workflow run scheduled_run_pre_deadline.yml
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      FPL_STORAGE_BACKEND: s3
+      FPL_S3_BUCKET: ${{ vars.FPL_S3_BUCKET || 'fpl-data-safari' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::737634035092:role/github-actions-fpl-ingest
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Capture bootstrap-static if a deadline is near
+        run: uv run fpl-ingest pre-deadline
+
+      - name: Email on failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: fpl-ingest CI <${{ secrets.SMTP_USERNAME }}>
+          to: ${{ secrets.NOTIFY_EMAIL_TO }}
+          subject: "fpl-ingest: scheduled_run_pre_deadline failed"
+          body: |
+            scheduled_run_pre_deadline.yml failed on ${{ github.repository }}@${{ github.ref_name }}.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

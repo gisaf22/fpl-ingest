@@ -1,8 +1,9 @@
 # Scheduled FPL ingestion workflow — daily cadence.
 #
 # Runs the full ingestion pipeline twice a day. This is the only scheduled
-# ingestion workflow: every run executes all five stages (event-status,
-# bootstrap-static, fixtures, event-live, element-summary), and each stage's
+# full-pipeline workflow (scheduled_run_pre_deadline.yml captures only
+# bootstrap-static, near deadlines): every run executes all five stages
+# (event-status, bootstrap-static, fixtures, event-live, element-summary), and each stage's
 # own refetch policy (CLAUDE.md, "Endpoint refetch policy") decides what it
 # actually fetches. No consumer needs sub-daily capture: event-live is
 # captured once per gameweek after ratification, and ratification is
@@ -54,7 +55,8 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
       - name: Run ingestion
-        run: uv run fpl-ingest run
+        # The manifest's trigger field records whether cron or a person started the run.
+        run: uv run fpl-ingest run --trigger ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}
 
       - name: Email on failure
         if: failure()

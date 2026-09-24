@@ -210,7 +210,6 @@ def _effective_run_config(args) -> dict[str, Any]:
         "rate": args.rate,
         "strict": bool(getattr(args, "strict", False)),
         "verbose": bool(getattr(args, "verbose", False)),
-        "skip_player_histories": bool(getattr(args, "skip_player_histories", False)),
     }
 
 
@@ -374,11 +373,6 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     event_finality: Finality | None = None
     git_sha = _current_git_sha(logger)
     run_config = _effective_run_config(args)
-    # getattr, not a bare attribute: the `run` subparser declares this flag
-    # with default=SUPPRESS, so an unset flag is absent from the namespace
-    # rather than present-and-False. `_effective_run_config` reads `strict`
-    # the same way and for the same reason.
-    skip_player_histories = bool(getattr(args, "skip_player_histories", False))
 
     try:
         async with AsyncFPLClient(
@@ -441,7 +435,6 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                     core.events,
                     event_finality=event_finality,
                     strict=args.strict,
-                    skip_player_histories=skip_player_histories,
                     execution_state=execution_state,
                 ),
                 stage_results=stage_results,

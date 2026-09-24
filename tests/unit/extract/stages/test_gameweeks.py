@@ -9,11 +9,12 @@ The stage no longer writes SQLite. What it must guarantee now:
     discounting the gameweeks that captured cleanly;
   - the concurrent fetch and its strict-mode cancellation still behave as they
     did;
-  - ``_select_gameweeks_to_fetch`` decides by event-status finality, not
-    ``gw_{n}.json`` file-existence (strategy doc 4.2): a finished gameweek is
-    fetched unless event-status reports it settled AND it has already been
-    captured at least once, and a missing finality signal fails safe by
-    fetching everything uncertain rather than silently under-fetching;
+  - ``_select_gameweeks_to_fetch`` captures each gameweek once, after
+    event-status reports it ratified, gated by a per-gameweek ratification
+    marker rather than payload existence (a provisional capture exists but is
+    not the ratified payload); an unknown finality signal fetches nothing;
+  - the marker is written per gameweek, only after a clean, shape-valid
+    capture;
   - nothing in this module can upsert rows.
 """
 
@@ -33,6 +34,7 @@ from fpl_ingest.extract.http.s3_backend import S3Backend
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.extract.stages import gameweeks as gameweeks_stage
 from fpl_ingest.extract.stages.gameweeks import (
+    _record_ratified_capture,
     _select_gameweeks_to_fetch,
     ingest_gameweeks,
     raw_endpoint,
@@ -162,6 +164,14 @@ def _provisional(*event_ids: int) -> dict:
     return {event_id: {"points": "p", "bonus_added": False} for event_id in event_ids}
 
 
+_MARKER_KEY = "fpl/_settlement/event-live/{gw}/marker.json"
+
+
+def _mark(root: Path, gw: int) -> None:
+    """Record gameweek ``gw``'s ratification marker under ``root``."""
+    (root / "fpl" / "_settlement" / "event-live" / str(gw)).mkdir(parents=True)
+
+
 # ---------------------------------------------------------------------------
 # The retired SQLite path
 # ---------------------------------------------------------------------------
@@ -231,7 +241,7 @@ class TestShapeValidation:
         raw = _raw(gw=1, body=b"<html>502 Bad Gateway</html>")
 
         outcome = await ingest_gameweeks(
-            _client({1: raw}), writer, [_event(1, finished=True)], event_finality=None
+            _client({1: raw}), writer, [_event(1, finished=True)], event_finality=_settled(1)
         )
 
         payload_path = (
@@ -254,7 +264,12 @@ class TestShapeValidation:
 
 
 class TestSelectionLogic:
-    """Which records this stage decides to fetch, and which it skips."""
+    """Which records this stage decides to fetch, and which it skips.
+
+    The rule: a gameweek is fetched once, after it is ratified, while its
+    ``_settlement/event-live/{gw}`` marker is absent. Payload existence is not
+    consulted — a provisional capture exists but is not the ratified payload.
+    """
 
     def test_never_captured_gameweek_is_fetched_even_if_reported_settled(self, tmp_path):
         """A settled gameweek that was somehow never captured must still be fetched."""
@@ -262,47 +277,74 @@ class TestSelectionLogic:
             _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(1)
         ) == [1]
 
-    def test_captured_but_provisional_gameweek_is_refetched(self, tmp_path):
+    def test_captured_but_provisional_gameweek_is_not_fetched(self, tmp_path):
+        """A provisional payload is never final, so capturing it would only be
+        replaced later; the one fetch waits for ratification."""
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
 
         assert _select_gameweeks_to_fetch(
             _backend(tmp_path), [_event(1, finished=True)], event_finality=_provisional(1)
+        ) == []
+
+    @pytest.mark.regression
+    def test_provisional_capture_is_refetched_once_the_gameweek_is_ratified(self, tmp_path):
+        """Pins the frozen-provisional bug: a gameweek captured while still
+        provisional used to satisfy the settled-and-captured existence check
+        once it settled, so its ratified payload was never fetched. With no
+        ratification marker it must be fetched."""
+        (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
+
+        assert _select_gameweeks_to_fetch(
+            _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(1)
         ) == [1]
 
-    def test_captured_and_settled_gameweek_is_skipped(self, tmp_path):
-        (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
+    def test_ratified_gameweek_with_marker_is_skipped(self, tmp_path):
+        _mark(tmp_path, 1)
 
         assert _select_gameweeks_to_fetch(
             _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(1)
         ) == []
 
-    def test_missing_finality_signal_fetches_all_uncertain_gameweeks(self, tmp_path):
-        """event-status fetch failure (``event_finality=None``) must fail safe:
-        fetch every finished gameweek rather than silently skip any of them,
-        even one that was captured settled by a previous run. Holds regardless
-        of whether a gameweek has an existing capture: gameweek 1 here has
-        one, gameweek 2 does not, and both are still fetched."""
+    @pytest.mark.parametrize("finality", [None, {}], ids=["stage_failed", "empty_map"])
+    def test_unknown_finality_fetches_nothing(self, tmp_path, finality):
+        """event-status failure (``None``) or no per-date data at all (``{}``)
+        fails safe by fetching nothing: a fetch could only capture a possibly
+        provisional payload, and leaving every marker absent means the next
+        run with a known signal catches up. Holds whether or not a capture
+        exists: gameweek 1 here has one, gameweek 2 does not."""
         (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
 
         assert _select_gameweeks_to_fetch(
             _backend(tmp_path),
             [_event(1, finished=True), _event(2, finished=True)],
-            event_finality=None,
-        ) == [1, 2]
+            event_finality=finality,
+        ) == []
 
-    def test_current_unfinished_gameweek_is_always_included(self, tmp_path):
-        (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
+    def test_current_unfinished_gameweek_absent_from_finality_is_not_fetched(self, tmp_path):
+        """A current gameweek that has not started yet is absent from
+        event-status for the opposite reason an aged-out one is — it is not
+        ratified and must not be captured and marked."""
+        _mark(tmp_path, 1)
         events = [_event(1, finished=True), _event(2, finished=False, is_current=True)]
 
         assert _select_gameweeks_to_fetch(
             _backend(tmp_path), events, event_finality=_settled(1)
+        ) == []
+
+    def test_current_ratified_gameweek_is_fetched_before_bootstrap_reports_finished(self, tmp_path):
+        """Ratification is read off event-status, not ``finished``; the current
+        gameweek stays a candidate so the two flags may land in either order."""
+        events = [_event(2, finished=False, is_current=True)]
+
+        assert _select_gameweeks_to_fetch(
+            _backend(tmp_path), events, event_finality=_settled(2)
         ) == [2]
 
     def test_current_gameweek_is_not_duplicated_when_already_selected(self, tmp_path):
         events = [_event(1, finished=True, is_current=True)]
 
         assert _select_gameweeks_to_fetch(
-            _backend(tmp_path), events, event_finality=None
+            _backend(tmp_path), events, event_finality=_settled(1)
         ) == [1]
 
     # ------------------------------------------------------------------
@@ -317,12 +359,16 @@ class TestSelectionLogic:
     # pending review, not as the originals: the intent behind each name is
     # inferred, and the originals may have asserted more or differently.
     # (One exception is noted inline on the last test.)
+    #
+    # Their "already captured" setup was later switched from a payload
+    # directory to the ratification marker, when payload existence stopped
+    # being the skip signal.
     # ------------------------------------------------------------------
 
     def test_current_finished_settled_captured_gameweek_is_not_forced(self, tmp_path):
         """RECONSTRUCTED. Being the *current* gameweek does not force a fetch:
-        once it is finished, settled and captured it is skipped like any other."""
-        (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
+        once it is ratified and marked it is skipped like any other."""
+        _mark(tmp_path, 1)
         events = [_event(1, finished=True, is_current=True)]
 
         assert _select_gameweeks_to_fetch(
@@ -331,9 +377,9 @@ class TestSelectionLogic:
 
     def test_finished_gameweek_absent_from_finality_but_captured_is_skipped(self, tmp_path):
         """RECONSTRUCTED. A gameweek whose dates have rolled out of event-status's
-        current window is absent from the map, not unknown — with a capture on
-        disk that is treated as settled and skipped."""
-        (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
+        current window is absent from the map, not unknown — with its marker
+        present it is treated as ratified, already captured, and skipped."""
+        _mark(tmp_path, 1)
 
         assert _select_gameweeks_to_fetch(
             _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(2)
@@ -341,7 +387,7 @@ class TestSelectionLogic:
 
     def test_finished_gameweek_absent_from_finality_and_uncaptured_is_fetched(self, tmp_path):
         """RECONSTRUCTED. Same absent-from-the-map case as above, but with no
-        capture on disk: fetch it to backfill rather than assume it is done."""
+        marker: fetch it to backfill rather than assume it is done."""
         assert _select_gameweeks_to_fetch(
             _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(2)
         ) == [1]
@@ -349,40 +395,55 @@ class TestSelectionLogic:
     def test_two_consecutive_runs_settled_current_gameweek_not_refetched(self, tmp_path):
         """RECONSTRUCTED — except its final four lines, which survived verbatim
         in a transcript and constrain the shape: the second run must return
-        ``[]`` once the first run's capture exists. The setup preceding
+        ``[]`` once the first run's capture is recorded. The setup preceding
         ``assert run_1 == [1]`` is re-authored."""
         events = [_event(1, finished=True, is_current=True)]
         finality = _settled(1)
 
         run_1 = _select_gameweeks_to_fetch(_backend(tmp_path), events, event_finality=finality)
         assert run_1 == [1]
-        (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
+        _mark(tmp_path, 1)
 
         run_2 = _select_gameweeks_to_fetch(_backend(tmp_path), events, event_finality=finality)
         assert run_2 == []
 
+    def test_aged_out_gameweek_with_only_a_payload_is_fetched_once(self, tmp_path):
+        """A gameweek captured before markers existed has a payload but no
+        marker. That payload may be a frozen provisional one, so it is fetched
+        once more to get the ratified payload and earn its marker."""
+        (tmp_path / "fpl" / "event-live" / "01").mkdir(parents=True)
+
+        assert _select_gameweeks_to_fetch(
+            _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(2)
+        ) == [1]
+
     @pytest.mark.regression
     def test_s3_backed_aged_out_gameweek_is_recognized_as_already_captured(self):
-        """Pins the storage-backend-bypass bug: ``_has_event_live_capture`` used
-        to do a raw ``Path.is_dir()`` check against the local filesystem, no
-        matter which backend the run was actually configured to use. Against
-        S3 that check was always False, so a gameweek whose finality entry has
-        rolled out of event-status's current window (the normal state for a
-        gameweek settled well in the past) was refetched on every run forever
-        — it could never be recognized as already captured. This must be
-        decided by querying the actual active backend."""
+        """Pins the storage-backend-bypass bug: the capture check used to do a
+        raw ``Path.is_dir()`` against the local filesystem, no matter which
+        backend the run was actually configured to use. Against S3 that check
+        was always False, so a gameweek whose finality entry has rolled out of
+        event-status's current window was refetched on every run forever. The
+        ratification marker must be looked up on the actual active backend."""
         s3_client = _FakeS3Client()
-        s3_client.objects["raw/fpl/event-live/01/2026-08-10/20260810T080000Z-aaaaaa/payload.json"] = b"{}"
+        s3_client.objects["raw/fpl/_settlement/event-live/1/marker.json"] = b"{}"
         backend = S3Backend("fpl-data-safari", client=s3_client)
 
         assert _select_gameweeks_to_fetch(
             backend, [_event(1, finished=True)], event_finality=_settled(2)
         ) == []
 
+    def test_marker_lookup_does_not_match_a_longer_gameweek_id(self, tmp_path):
+        """Gameweek 1's marker check must not be satisfied by gameweek 10's marker."""
+        _mark(tmp_path, 10)
+
+        assert _select_gameweeks_to_fetch(
+            _backend(tmp_path), [_event(1, finished=True)], event_finality=_settled(1)
+        ) == [1]
+
     @pytest.mark.asyncio
     async def test_a_settled_and_already_captured_gameweek_is_never_fetched(self, tmp_path):
-        raw_dir = tmp_path / "raw"
-        (raw_dir / "fpl" / "event-live" / "01").mkdir(parents=True)
+        _mark(tmp_path / "raw", 1)
         client = _client({})
 
         outcome = await ingest_gameweeks(
@@ -394,6 +455,118 @@ class TestSelectionLogic:
 
         client.get_gameweek_live_raw.assert_not_called()
         assert outcome.result.fetched == 0
+
+
+class TestRatificationMarker:
+    """The marker is written per gameweek, and only after a clean capture."""
+
+    @pytest.mark.asyncio
+    async def test_clean_capture_writes_the_marker(self, tmp_path):
+        writer = _writer(tmp_path)
+
+        outcome = await ingest_gameweeks(
+            _client({3: _raw(_payload([1]), gw=3)}),
+            writer,
+            [_event(3, finished=True)],
+            event_finality=_settled(3),
+        )
+
+        marker = _read(tmp_path / "raw", _MARKER_KEY.format(gw=3))
+        assert marker["event"] == 3
+        assert marker["endpoint"] == "event-live"
+        assert marker["run_id"] == writer.run_id
+        assert marker["payload_key"] == outcome.lineage.raw_artifacts[0]
+
+    @pytest.mark.asyncio
+    async def test_marker_key_is_separate_from_element_summarys(self, tmp_path):
+        await ingest_gameweeks(
+            _client({1: _raw(_payload([1]), gw=1)}),
+            _writer(tmp_path),
+            [_event(1, finished=True)],
+            event_finality=_settled(1),
+        )
+
+        settlement = tmp_path / "raw" / "fpl" / "_settlement"
+        assert [p.name for p in settlement.iterdir()] == ["event-live"]
+
+    @pytest.mark.asyncio
+    async def test_shape_failure_withholds_the_marker(self, tmp_path):
+        """The payload is still written, but it has not earned the marker, so
+        the next run retries the gameweek."""
+        await ingest_gameweeks(
+            _client({1: _raw(gw=1, body=b"<html>502</html>")}),
+            _writer(tmp_path),
+            [_event(1, finished=True)],
+            event_finality=_settled(1),
+        )
+
+        assert not (tmp_path / "raw" / _MARKER_KEY.format(gw=1)).exists()
+
+    @pytest.mark.asyncio
+    async def test_markers_are_per_gameweek_not_all_or_nothing(self, tmp_path):
+        """One gameweek's fetch error and another's shape failure withhold only
+        their own markers; the clean gameweek is marked regardless."""
+        responses: dict = {
+            1: FPLClientError("network down"),
+            2: _raw(gw=2, body=b"not json"),
+            3: _raw(_payload([3]), gw=3),
+        }
+
+        await ingest_gameweeks(
+            _client(responses),
+            _writer(tmp_path),
+            [_event(gw, finished=True) for gw in (1, 2, 3)],
+            event_finality=_settled(1, 2, 3),
+        )
+
+        raw_dir = tmp_path / "raw"
+        assert not (raw_dir / _MARKER_KEY.format(gw=1)).exists()
+        assert not (raw_dir / _MARKER_KEY.format(gw=2)).exists()
+        assert (raw_dir / _MARKER_KEY.format(gw=3)).exists()
+
+    @pytest.mark.asyncio
+    async def test_strict_failure_writes_no_marker(self, tmp_path):
+        await ingest_gameweeks(
+            _client({1: FPLClientError("network down"), 2: _raw(_payload([1]), gw=2)}),
+            _writer(tmp_path),
+            [_event(1, finished=True), _event(2, finished=True)],
+            event_finality=_settled(1, 2),
+            strict=True,
+            execution_state=PipelineExecutionState(),
+        )
+
+        assert not (tmp_path / "raw" / "fpl" / "_settlement").exists()
+
+    @pytest.mark.asyncio
+    async def test_next_run_retries_only_the_unmarked_gameweek(self, tmp_path):
+        events = [_event(1, finished=True), _event(2, finished=True)]
+        finality = _settled(1, 2)
+        await ingest_gameweeks(
+            _client({1: FPLClientError("network down"), 2: _raw(_payload([2]), gw=2)}),
+            _writer(tmp_path),
+            events,
+            event_finality=finality,
+        )
+
+        client = _client({1: _raw(_payload([1]), gw=1)})
+        await ingest_gameweeks(
+            client,
+            LocalRawWriter(tmp_path / "raw", "fpl", run_id="20260824T090000Z-def456"),
+            events,
+            event_finality=finality,
+        )
+
+        assert [c.args[0] for c in client.get_gameweek_live_raw.call_args_list] == [1]
+        assert (tmp_path / "raw" / _MARKER_KEY.format(gw=1)).exists()
+
+    def test_an_existing_marker_is_not_an_error(self, tmp_path):
+        """An overlapping run may record the same gameweek first; that marker
+        already says what this one would."""
+        writer = _writer(tmp_path)
+        _record_ratified_capture(writer, 1, "fpl/event-live/01/x/payload.json")
+        _record_ratified_capture(writer, 1, "fpl/event-live/01/x/payload.json")
+
+        assert (tmp_path / "raw" / _MARKER_KEY.format(gw=1)).exists()
 
 
 class TestFetchAndCapture:
@@ -410,7 +583,7 @@ class TestFetchAndCapture:
             _client(responses),
             writer,
             [_event(1, finished=True), _event(2, finished=True)],
-            event_finality=None,
+            event_finality=_settled(1, 2),
         )
 
         for gw in (1, 2):
@@ -434,7 +607,7 @@ class TestFetchAndCapture:
         raw = _raw(_payload([1]), gw=7, attempt_count=3)
 
         await ingest_gameweeks(
-            _client({7: raw}), writer, [_event(7, finished=True)], event_finality=None
+            _client({7: raw}), writer, [_event(7, finished=True)], event_finality=_settled(7)
         )
 
         sidecar = _read(
@@ -463,7 +636,7 @@ class TestFetchAndCapture:
             _client(responses),
             writer,
             [_event(gw, finished=True) for gw in (1, 2, 3)],
-            event_finality=None,
+            event_finality=_settled(1, 2, 3),
         )
 
         status = classify_run_from_results([outcome.result], strict_mode=False)
@@ -486,7 +659,7 @@ class TestFetchAndCapture:
             _client(responses),
             writer,
             [_event(1, finished=True), _event(2, finished=True)],
-            event_finality=None,
+            event_finality=_settled(1, 2),
         )
 
         assert outcome.lineage is not None
@@ -517,7 +690,7 @@ class TestErrorHandling:
             _client(responses),
             writer,
             [_event(gw, finished=True) for gw in (1, 2, 3)],
-            event_finality=None,
+            event_finality=_settled(1, 2, 3),
         )
 
         assert outcome.result.fetched == 3
@@ -544,7 +717,7 @@ class TestErrorHandling:
             _client(responses),
             writer,
             [_event(1, finished=True), _event(2, finished=True)],
-            event_finality=None,
+            event_finality=_settled(1, 2),
             strict=False,
         )
 
@@ -571,7 +744,7 @@ class TestErrorHandling:
             _client(responses),
             writer,
             [_event(1, finished=True), _event(2, finished=True)],
-            event_finality=None,
+            event_finality=_settled(1, 2),
             strict=True,
             execution_state=state,
         )
@@ -592,7 +765,7 @@ class TestErrorHandling:
         writer = _writer(tmp_path)
 
         outcome = await ingest_gameweeks(
-            client, writer, [_event(1, finished=True)], event_finality=None, execution_state=state
+            client, writer, [_event(1, finished=True)], event_finality=_settled(1), execution_state=state
         )
 
         client.get_gameweek_live_raw.assert_not_called()

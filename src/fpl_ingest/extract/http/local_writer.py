@@ -74,8 +74,9 @@ class RawStorageBackend(Protocol):
 
     Deliberately narrow: writes never read back what they wrote, and the only
     read this surface offers is ``exists_prefix``, an existence check used by
-    stages that decide whether a gameweek or player has already been
-    captured. An S3 backend needs the same methods and no more.
+    stages that decide whether a player has already been captured or whether
+    a stage's per-gameweek ``_settlement`` marker has been written. An S3
+    backend needs the same methods and no more.
     """
 
     def put_bytes(self, key: str, data: bytes, *, overwrite: bool = False) -> str:
@@ -214,8 +215,9 @@ class LocalRawWriter:
     def backend(self) -> RawStorageBackend:
         """The storage backend this run writes through.
 
-        Exposed so stages that need to check whether something has already
-        been captured (e.g. ``gameweeks._has_event_live_capture``) query the
+        Exposed so stages that check for an existing capture or settlement
+        marker (``element_summary._has_element_summary_capture``,
+        ``gameweeks._needs_fetch``) query — and write their markers to — the
         same backend the run is actually writing to, rather than assuming a
         local filesystem.
         """

@@ -119,7 +119,7 @@ class TestCoreFailureIsDistinctFromGenuineEmptyResult:
         assert "Fail-fast tripped; skipping element-summary capture" in caplog.text
         # Neither of the ambiguous "nothing new" messages should appear —
         # downstream stages never reach that branch once fail-fast is tripped.
-        assert "All finished gameweeks already collected." not in caplog.text
+        assert "No newly ratified gameweeks; nothing to capture." not in caplog.text
         assert "no players known this run; nothing to fetch" not in caplog.text
 
         assert gw_outcome.result.errors == 0 and gw_outcome.result.skipped == 0
@@ -167,7 +167,7 @@ class TestCoreFailureIsDistinctFromGenuineEmptyResult:
         )
 
         assert "Fail-fast tripped" not in caplog.text
-        assert "All finished gameweeks already collected." in caplog.text
+        assert "No newly ratified gameweeks; nothing to capture." in caplog.text
         assert "no players known this run; nothing to fetch" in caplog.text
 
         status = classify_run_from_results(

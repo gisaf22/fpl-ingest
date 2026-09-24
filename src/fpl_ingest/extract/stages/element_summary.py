@@ -460,28 +460,31 @@ def _latest_gameweek_settled(
     fetching everyone. (``gameweeks.py`` fails safe the other way, by fetching
     nothing, because its capture is once-per-gameweek and marker-gated.)
 
-    An empty map is treated the same as ``None`` deliberately. This function
-    only ever asks about *one* gameweek — the current
-    one — never an already-finished one whose dates could legitimately have
-    aged out of event-status's window. A current gameweek missing from a
-    *non-empty* map (checked below) means event-status covers other dates and
-    genuinely has none for this one, which is the aged-out case. A current
-    gameweek missing because the whole map is empty instead means event-status
+    An empty map is treated the same as ``None`` deliberately: event-status
     returned no per-date data at all — an unknown state, not evidence of
     settlement — so it must not be read as "skip everyone."
+
+    A current gameweek missing from a *non-empty* map is ambiguous on its own,
+    and is resolved the same way as ``gameweeks._is_ratified``: by bootstrap's
+    ``finished`` flag. Finished and absent means its dates rolled out of
+    event-status's current-window array — the aged-out case, read as settled.
+    Not finished and absent means the two endpoints disagree about which
+    gameweek is current (e.g. bootstrap flipped ``is_current`` at the deadline
+    before event-status's window moved), so settlement is unknown. Reading
+    that as settled would skip everyone and let ``_settlement_refetch_event``
+    record the marker before the gameweek has even been played, consuming the
+    forced re-fetch its real settlement is owed.
     """
     if not event_finality:
         return None
 
-    current_id = next((e.id for e in events if e.is_current), None)
-    if current_id is None:
+    current = next((e for e in events if e.is_current), None)
+    if current is None:
         return None
 
-    info = event_finality.get(current_id)
+    info = event_finality.get(current.id)
     if info is None:
-        # No entry means event-status's current-window array has rolled past
-        # this gameweek — the normal state for one settled well in the past.
-        return True
+        return True if current.finished else None
 
     return bool(info.get("bonus_added"))
 

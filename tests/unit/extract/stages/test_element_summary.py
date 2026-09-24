@@ -556,6 +556,49 @@ class TestSettlementTransition:
             _backend(tmp_path), [_event(1, finished=False)], event_finality
         ) is None
 
+    @pytest.mark.regression
+    @pytest.mark.asyncio
+    async def test_unfinished_current_gameweek_missing_from_map_is_not_settled(self, tmp_path):
+        """A current gameweek that is not finished and absent from a non-empty
+        map is unknown, not settled — the rule ``gameweeks._is_ratified``
+        uses. It used to read as settled: already-captured players were
+        skipped and the marker for a gameweek not yet played was recorded,
+        consuming the forced re-fetch its real settlement is owed. Reachable
+        when bootstrap flips ``is_current`` at the deadline before
+        event-status's window moves (not observed through GW5 of 2026-27)."""
+        raw_dir = tmp_path / "raw"
+        for player_id in (1, 2):
+            (raw_dir / "fpl" / "element-summary" / str(player_id)).mkdir(parents=True)
+        events = [_event(2, finished=True, is_current=False), _event(3, finished=False)]
+        window_still_on_previous_gameweek = _settled(2)
+
+        assert element_summary_stage._settlement_refetch_event(
+            LocalFilesystemBackend(raw_dir), events, window_still_on_previous_gameweek
+        ) is None
+
+        client = _client({
+            1: _raw(_payload(1), player_id=1),
+            2: _raw(_payload(2), player_id=2),
+        })
+        outcome = await ingest_player_histories(
+            client, _writer(tmp_path), [1, 2], events,
+            event_finality=window_still_on_previous_gameweek,
+        )
+
+        assert client.get_element_summary_raw.call_count == 2
+        assert outcome.result.fetched == 2
+        assert not (raw_dir / "fpl" / "_settlement").exists()
+
+    def test_finished_current_gameweek_missing_from_map_still_owes_the_transition(self, tmp_path):
+        """Guard for the fix above: a *finished* current gameweek absent from a
+        non-empty map is the aged-out case and still reads as settled, so its
+        forced re-fetch is still due."""
+        events = [_event(3, finished=True)]
+
+        assert element_summary_stage._settlement_refetch_event(
+            _backend(tmp_path), events, _settled(4)
+        ) == 3
+
     def test_transition_is_detected_per_gameweek(self, tmp_path):
         """GW1's marker must not suppress GW2's forced re-fetch."""
         _mark_settled(tmp_path, 1)

@@ -15,22 +15,33 @@ schema contract and is no longer created.
 ``_collect_gameweeks`` keeps its concurrency and strict-mode cancellation
 semantics exactly — only what it does with each response changed.
 
-``_select_gameweeks_to_fetch`` no longer decides by ``gw_{n}.json``
-file-existence (strategy doc 4.2: that heuristic answers "have I fetched this
-before," not "is this finished," and freezes a gameweek captured while still
-provisional at that state forever). It now uses the ``event-status`` finality
-map fetched earlier in the same run (strategy doc A.5, ``event_status.py``): a
-finished gameweek is fetched unless event-status reports it settled AND it has
-already been captured at least once. The ``gw_{n}.json`` marker files and
-``_write_gameweek_caches`` are retired along with the heuristic they existed
-solely to serve — the captured payload under ``event-live/{gw:02d}`` is the
-only record of what the API returned.
+``_select_gameweeks_to_fetch`` captures each gameweek exactly once, after it
+is ratified. It no longer decides by ``gw_{n}.json`` file-existence (strategy
+doc 4.2: that heuristic answers "have I fetched this before," not "is this
+finished"), and no longer by payload existence either: a gameweek captured
+while still provisional satisfied an existence check once it settled, so the
+ratified payload (bonus, ratification-only fields) was never fetched and the
+provisional capture was frozen as final. Selection now reads the
+``event-status`` finality map fetched earlier in the same run (strategy doc
+A.5, ``event_status.py``) against a per-gameweek ratification marker under
+``_settlement/event-live/{gw}``: a ratified gameweek with no marker is fetched
+once, and the marker is written only after that gameweek's capture completed
+and passed shape validation. A provisional gameweek is not fetched, and an
+unknown finality signal fetches nothing — a missed run leaves the marker
+absent, so the next run with a known signal catches up.
+
+The marker is deliberately separate from ``element_summary``'s settlement
+marker (``_settlement/element-summary/{gw}``): each one only ever means "this
+stage's own capture for that gameweek succeeded." A shared flag would let one
+stage's success vouch for the other's when the two diverge within a run.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fpl_ingest.extract.http.client import (
@@ -39,7 +50,16 @@ from fpl_ingest.extract.http.client import (
     RawResponse,
     cancel_pending_tasks,
 )
-from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
+from fpl_ingest.extract.http.local_writer import (
+    LocalRawWriter,
+    RawObjectExistsError,
+    RawStorageBackend,
+)
+from fpl_ingest.extract.http.raw_keys import (
+    SETTLEMENT_PREFIX,
+    iso_utc,
+    settlement_marker_key,
+)
 from fpl_ingest.extract.stages.bootstrap import GameweekInfo
 from fpl_ingest.extract.stages.event_status import Finality
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
@@ -48,6 +68,10 @@ from fpl_ingest.orchestration.stage_result import StageLineage, StageMetadata, S
 logger = logging.getLogger(__name__)
 
 RAW_SOURCE = "fpl"
+
+#: Endpoint segment of this stage's ratification marker key. Never shared with
+#: ``element_summary``'s marker — see the module docstring.
+_MARKER_ENDPOINT = "event-live"
 
 #: Top-level keys an ``event/{gw}/live`` payload must carry (strategy doc B.2).
 _REQUIRED_TOP_LEVEL_KEYS = ("elements",)
@@ -94,16 +118,17 @@ async def ingest_gameweeks(
         raw_writer: Writer for this run; also accumulates the run manifest.
             The same writer the other capture stages use — one manifest per
             run covers every endpoint and every gameweek it touches. Its
-            ``backend`` is also queried to check whether a gameweek has ever
-            been captured before (§below) — always the actual active backend
+            ``backend`` is also queried for each gameweek's ratification
+            marker (§module docstring) — always the actual active backend
             (local filesystem or S3), never a hardcoded local path.
         events: GameweekInfo list from the core stage.
         event_finality: The per-event finality map from this run's
             event-status capture (``event_status.ingest_event_status``), or
             ``None`` when that capture failed or did not validate. ``None``
-            is treated as "nothing is known settled," never as "everything is
-            settled" — a missing finality signal must never cause
-            under-fetching.
+            (or an empty map) means finality is unknown, and this stage then
+            fetches nothing: fetching could only capture a possibly
+            provisional payload, and writing no marker leaves every gameweek
+            to be picked up by the next run whose signal is known.
         strict: If True, the first failed fetch cancels the rest of the batch.
         execution_state: Fail-fast sentinel.
 
@@ -112,7 +137,8 @@ async def ingest_gameweeks(
         stage no longer produces rows. Each gameweek that fails shape
         validation contributes one ``skipped`` so ``classify_run`` marks the
         run FAILED_PARTIAL while every other gameweek still counts as written;
-        the payload is written either way.
+        the payload is written either way, but only a clean capture earns
+        its gameweek's ratification marker.
     """
     if execution_state is not None and execution_state.is_failed:
         logger.info("Fail-fast tripped; skipping gameweek capture")
@@ -123,7 +149,7 @@ async def ingest_gameweeks(
     )
 
     if not gameweek_ids_to_fetch:
-        logger.info("All finished gameweeks already collected.")
+        logger.info("No newly ratified gameweeks; nothing to capture.")
         return StageOutcome(result=StageResult(stage="gameweeks"), lineage=StageLineage.from_metadata(GAMEWEEKS_STAGE))
 
     logger.info("Collecting %d gameweeks...", len(gameweek_ids_to_fetch))
@@ -177,6 +203,13 @@ async def ingest_gameweeks(
             write.content_length,
             write.payload_key,
         )
+        if shape["ok"]:
+            _record_ratified_capture(raw_writer, gameweek_id, write.payload_key)
+        else:
+            logger.warning(
+                "Gameweek %d ratification marker withheld; the next run retries it",
+                gameweek_id,
+            )
 
     # StageResult counts objects here, not rows: one captured object per
     # gameweek. Its invariants (fetched >= validated >= written, skipped ==
@@ -293,66 +326,104 @@ def _select_gameweeks_to_fetch(
 
     Candidates are every finished gameweek plus the current gameweek (which
     may or may not also be finished — FPL keeps a gameweek "current" for a
-    while after it finishes, until the next one's deadline). Each candidate
-    is then decided by :func:`_needs_fetch` — being "current" no longer
-    forces a fetch on its own; a current gameweek that is also finished,
-    settled, and already captured is skipped like any other.
+    while after it finishes, until the next one's deadline, and ratification
+    is not guaranteed to trail ``finished``). Each candidate is then decided
+    by :func:`_needs_fetch`.
     """
-    finished_ids = [e.id for e in events if e.finished]
-    current_id = next((e.id for e in events if e.is_current), None)
+    finished = [e for e in events if e.finished]
+    current = next((e for e in events if e.is_current), None)
     logger.info(
         "Found %d finished gameweeks, current gameweek: %s",
-        len(finished_ids), current_id,
+        len(finished), current.id if current is not None else None,
     )
 
-    candidate_ids = list(finished_ids)
-    if current_id is not None and current_id not in candidate_ids:
-        candidate_ids.append(current_id)
+    if not event_finality:
+        if finished or current is not None:
+            logger.warning(
+                "event-status finality unknown; capturing no gameweeks this run "
+                "(the next run with a known signal catches up)"
+            )
+        return []
 
-    return [gw for gw in candidate_ids if _needs_fetch(backend, gw, event_finality)]
+    candidates = list(finished)
+    if current is not None and current not in candidates:
+        candidates.append(current)
+
+    return [e.id for e in candidates if _needs_fetch(backend, e, event_finality)]
 
 
-def _needs_fetch(backend: RawStorageBackend, gameweek_id: int, event_finality: Finality | None) -> bool:
+def _needs_fetch(backend: RawStorageBackend, event: GameweekInfo, event_finality: Finality) -> bool:
     """Decide whether one gameweek must be fetched this run.
 
-    ============================  ===============  ======
-    event-status says             capture exists?   action
-    ============================  ===============  ======
-    settled                       either            skip
-    provisional (live)            either            fetch
-    absent, event-status ok       yes               skip — settled, rolled out of window
-    absent, event-status ok       no                fetch — backfill / never captured
-    event-status stage failed     either            fetch — unknown state, fail safe
-    ============================  ===============  ======
+    ===============================  ===============  ======
+    gameweek                         marker exists?   action
+    ===============================  ===============  ======
+    ratified                         no               fetch — once
+    ratified                         yes              skip
+    provisional                      either           skip — not final yet
+    finality unknown (whole map)     either           skip — see caller
+    ===============================  ===============  ======
 
-    ``event_finality is None`` means the event-status stage itself failed or
-    did not validate — "nothing is known," never "everything is settled."
-    That is distinct from ``event_finality`` being a dict that simply has no
-    entry for this gameweek, which means event-status succeeded but this
-    gameweek's match dates have rolled out of its current-window ``status``
-    array — the normal, expected state for a gameweek settled well in the
-    past. An absent key is therefore treated the same as "settled": trust the
-    existing capture if there is one, otherwise fetch to backfill.
+    Ratification is decided by :func:`_is_ratified`. Payload existence is
+    deliberately not consulted: a capture taken while the gameweek was
+    provisional exists but is not the ratified payload.
     """
-    if event_finality is None:
-        return True
-
-    info = event_finality.get(gameweek_id)
-    if info is not None and not info.get("bonus_added"):
-        return True
-
-    return not _has_event_live_capture(backend, gameweek_id)
+    if not _is_ratified(event, event_finality):
+        return False
+    return not backend.exists_prefix(_ratification_marker_prefix(event.id))
 
 
-def _has_event_live_capture(backend: RawStorageBackend, gameweek_id: int) -> bool:
-    """Whether this gameweek's live endpoint has ever been captured to raw storage.
+def _is_ratified(event: GameweekInfo, event_finality: Finality) -> bool:
+    """Whether event-status reports this gameweek ratified.
 
-    Queries the actual active backend (local filesystem or S3) rather than a
-    hardcoded local path — the finality map alone cannot answer this, and
-    checking the wrong storage means a settled-but-aged-out gameweek can
-    never be recognised as already captured.
+    A gameweek listed in the map is ratified once ``bonus_added`` (``_parse_
+    finality`` only sets it when every date reports ``points == "r"`` too).
+    A gameweek *absent* from a non-empty map has rolled out of event-status's
+    current-window ``status`` array — the normal state for one settled well in
+    the past — but only if bootstrap also reports it ``finished``; a current
+    gameweek that has not started yet is absent for the opposite reason.
+
+    Reading "finished and absent" as ratified assumes a round ratifies before
+    it leaves the window. That is an observation, not a guarantee: fpl-warehouse
+    CLAUDE.md ("Ratification lead before a round leaves the window", measured
+    2026-09-23) records it for rounds 2-4 of 2026-27 with at least 70.0h of
+    margin, over every event-status capture in S3.
     """
-    return backend.exists_prefix(f"{RAW_SOURCE}/{raw_endpoint(gameweek_id)}")
+    info = event_finality.get(event.id)
+    if info is None:
+        return event.finished
+    return bool(info.get("bonus_added"))
+
+
+def _ratification_marker_prefix(gameweek_id: int) -> str:
+    """Return the prefix ``exists_prefix`` is asked about for one gameweek."""
+    return f"{RAW_SOURCE}/{SETTLEMENT_PREFIX}/{_MARKER_ENDPOINT}/{gameweek_id}"
+
+
+def _record_ratified_capture(
+    raw_writer: LocalRawWriter, gameweek_id: int, payload_key: str
+) -> None:
+    """Mark this gameweek's ratified payload as captured.
+
+    Called only after the payload was written and passed shape validation, so
+    a failed fetch or a shape failure leaves the marker absent and the next
+    run retries the gameweek. A marker that already exists (an overlapping
+    run got there first) already says what this one would.
+    """
+    marker = {
+        "event": gameweek_id,
+        "endpoint": _MARKER_ENDPOINT,
+        "run_id": raw_writer.run_id,
+        "recorded_at": iso_utc(datetime.now(timezone.utc)),
+        "payload_key": payload_key,
+    }
+    try:
+        raw_writer.backend.put_bytes(
+            settlement_marker_key(RAW_SOURCE, _MARKER_ENDPOINT, gameweek_id),
+            json.dumps(marker, sort_keys=True).encode("utf-8"),
+        )
+    except RawObjectExistsError:
+        logger.info("Gameweek %d ratification marker already recorded", gameweek_id)
 
 
 async def _fetch_gameweeks_concurrently(

@@ -21,13 +21,12 @@ cached file.
 cancellation semantics exactly — only what it fetches, and what it does with
 each response, changed.
 
-Finality-aware skipping (matching ``gameweeks.py``'s pattern): a player whose
-``element-summary`` has already been captured is skipped once the latest
-gameweek is settled, on the theory that ``history`` (the only field with no
-equivalent elsewhere) cannot change further once the gameweek it reports has
-settled. This is existence-based, not content-based — it checks whether a
-capture directory exists, exactly like ``gameweeks._has_event_live_capture``,
-and deliberately does not read any payload back (``RawStorageBackend`` is
+Finality-aware skipping: a player whose ``element-summary`` has already been
+captured is skipped once the latest gameweek is settled, on the theory that
+``history`` (the only field with no equivalent elsewhere) cannot change
+further once the gameweek it reports has settled. This is existence-based,
+not content-based — it checks whether a capture directory exists and
+deliberately does not read any payload back (``RawStorageBackend`` is
 write-only by design; see its docstring). The embedded ``fixtures`` block can
 go stale between settlements as a result (a mid-week reschedule wouldn't be
 reflected until the next gameweek settles and the player is refetched), but
@@ -45,7 +44,11 @@ the never-captured ones, and only then records a ``_settlement`` marker for
 that gameweek; from the next run on, normal existence-based skipping resumes
 and holds. The marker is the sole piece of cross-run state here, and it is
 written only when the forced re-fetch fully succeeded, so a partial failure
-retries on the following run instead of stranding stale captures.
+retries on the following run instead of stranding stale captures. It is
+separate from ``gameweeks.py``'s own ``_settlement/event-live/{gw}`` marker on
+purpose: each marker only ever vouches for its own stage's capture, so one
+stage succeeding while the other fails in the same run leaves exactly the
+failed stage to retry.
 
 A gameweek still in progress must always trigger a fetch, existence or not: a
 player captured mid-gameweek has a ``history`` missing that gameweek's row,
@@ -430,8 +433,8 @@ def _select_players_to_fetch(
     re-fetched exactly once regardless of what exists.
 
     "Latest gameweek settled" is a single season-wide fact, not a per-player
-    one: it is the current gameweek's finality, read the same way
-    ``gameweeks._needs_fetch`` reads it. A gameweek still in progress means
+    one: it is the current gameweek's finality, read off the same
+    event-status map ``gameweeks.py`` uses. A gameweek still in progress means
     every player's ``history`` is missing that gameweek's row, so existence
     alone must not skip anyone until it settles.
     """
@@ -452,13 +455,13 @@ def _latest_gameweek_settled(
 
     Returns ``None`` (treated as "not settled", i.e. fetch everything) when
     that cannot be determined: no finality map, an *empty* finality map, or no
-    current gameweek found in ``events`` yet (e.g. pre-season). Mirrors the
-    fail-safe rule in ``gameweeks._needs_fetch`` — an unknown state must never
-    cause under-fetching.
+    current gameweek found in ``events`` yet (e.g. pre-season). An unknown
+    state must never cause under-fetching here: this stage fails safe by
+    fetching everyone. (``gameweeks.py`` fails safe the other way, by fetching
+    nothing, because its capture is once-per-gameweek and marker-gated.)
 
-    An empty map is treated the same as ``None`` deliberately, and
-    differently from ``gameweeks._needs_fetch``'s per-gameweek absent-key
-    check: this function only ever asks about *one* gameweek — the current
+    An empty map is treated the same as ``None`` deliberately. This function
+    only ever asks about *one* gameweek — the current
     one — never an already-finished one whose dates could legitimately have
     aged out of event-status's window. A current gameweek missing from a
     *non-empty* map (checked below) means event-status covers other dates and
@@ -544,8 +547,8 @@ def _has_element_summary_capture(backend: RawStorageBackend, player_id: int) -> 
     """Whether this player's element-summary endpoint has ever been captured.
 
     Queries the actual active backend (local filesystem or S3) rather than a
-    hardcoded local path — see ``gameweeks._has_event_live_capture``, which
-    shares this exact pattern and the bug it was fixed alongside.
+    hardcoded local path — checking the wrong storage was a real bug (commit
+    ``8f6b7bb``).
     """
     return backend.exists_prefix(f"{RAW_SOURCE}/{raw_endpoint(player_id)}")
 

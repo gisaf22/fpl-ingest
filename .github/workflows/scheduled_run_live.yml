@@ -14,9 +14,10 @@
 # ingestion" step for the measurement behind that.
 #
 # For every other endpoint the cron split between this workflow and
-# scheduled_run_daily.yml remains the cadence mechanism; the per-gameweek
-# finality-skip logic (already-settled gameweeks aren't re-fetched) keeps a
-# live-triggered run from being wasteful on the event-live side specifically.
+# scheduled_run_daily.yml remains the cadence mechanism. event-live is no
+# longer captured while a gameweek is provisional at all: each gameweek is
+# fetched once, by whichever run first sees it ratified with no event-live
+# marker, so a live-triggered run adds no event-live fetches of its own.
 #
 # Raw captures land in S3 (FPL_STORAGE_BACKEND=s3), authenticated via GitHub
 # OIDC federation to an IAM role — no long-lived AWS keys in this repo.

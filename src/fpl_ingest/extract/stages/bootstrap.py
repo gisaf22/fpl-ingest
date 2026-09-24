@@ -15,12 +15,11 @@ and the decision was taken not to dual-write during the migration. The
 the schema contract and are no longer created.
 
 What the stage still does beyond capture is hand two in-memory values to the
-stages that have not been migrated yet: the gameweek events (as
-``GameweekInfo``, holding only the fields gameweek selection needs) and the
-element ids. ``gameweeks.py`` and ``element_summary.py`` take those as
-arguments — they never read them back out of SQLite — so the handoff keeps
-working exactly as before without any table behind it. It disappears when those
-two stages are redirected to raw capture.
+downstream capture stages: the gameweek events (as ``GameweekInfo``, holding
+only the fields gameweek selection needs) and the element ids.
+``gameweeks.py`` and ``element_summary.py`` take those as arguments — no
+table sits behind the handoff, and neither stage reads a captured payload
+back to get them (``RawStorageBackend`` is write-only by design).
 """
 
 from __future__ import annotations
@@ -72,7 +71,7 @@ class GameweekInfo(NamedTuple):
 
 
 class CoreData(NamedTuple):
-    """The in-memory handoff to the stages not yet redirected to raw capture.
+    """The in-memory handoff to the gameweek and element-summary capture stages.
 
     Not a persisted shape and not a validated view of bootstrap-static — only
     the two things downstream stages take as arguments.

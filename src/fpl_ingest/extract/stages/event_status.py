@@ -65,10 +65,11 @@ async def ingest_event_status(
     Returns:
         StageOutcome whose ``output`` is the parsed per-event finality map when
         the capture is shape-valid, or ``None`` when the fetch failed or the
-        payload did not validate. Callers — the gameweeks stage's selection
-        logic and the run manifest — must treat ``None`` as "finality unknown"
-        and fail safe (over-fetch, or omit the manifest block), never as
-        "everything is settled."
+        payload did not validate. Callers — the gameweeks and element-summary
+        selection logic and the run manifest — must treat ``None`` as
+        "finality unknown" and fail safe, never as "everything is settled":
+        gameweeks captures nothing and writes no ratification marker,
+        element-summary over-fetches, the manifest omits its block.
     """
     if execution_state is not None and execution_state.is_failed:
         logger.info("Fail-fast tripped; skipping event-status capture")

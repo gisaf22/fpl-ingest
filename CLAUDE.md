@@ -47,11 +47,15 @@ hardcoded local path instead of the active backend was a real bug (commit `8f6b7
 
 | Endpoint | Policy |
 |---|---|
-| `event-live/{gw:02d}` | Skip once the gameweek is settled (bonus added) **and** already captured |
-| `element-summary/{player}` | Skip once settled and captured; the settlement transition forces one full refetch (commit `412516c`) |
+| `event-live/{gw:02d}` | Fetch once per gameweek, after it is ratified (bonus added) and only while its `_settlement/event-live/{gw}` marker is absent; the marker is written only after a clean, shape-valid capture. Provisional gameweeks are not fetched; unknown finality fetches nothing |
+| `element-summary/{player}` | Skip once settled and captured; the settlement transition forces one full refetch, gated by its own `_settlement/element-summary/{gw}` marker (commit `412516c`) |
 | `bootstrap-static` | Always refetch every run |
 | `fixtures` | Always refetch every run |
 | `event-status` | Always refetch every run — it is the finality signal |
+
+The two `_settlement` markers are separate on purpose: different keys, written and checked
+independently. Never merge them into one shared flag — each must only ever mean "this
+stage's own capture succeeded," or one stage's success could vouch for the other's failure.
 
 ---
 

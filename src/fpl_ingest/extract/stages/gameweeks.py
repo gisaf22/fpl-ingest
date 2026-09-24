@@ -25,8 +25,11 @@ provisional capture was frozen as final. Selection now reads the
 ``event-status`` finality map fetched earlier in the same run (strategy doc
 A.5, ``event_status.py``) against a per-gameweek ratification marker under
 ``_settlement/event-live/{gw}``: a ratified gameweek with no marker is fetched
-once, and the marker is written only after that gameweek's capture completed
-and passed shape validation. A provisional gameweek is not fetched, and an
+once, and the marker is written only after that gameweek's capture completed,
+passed shape validation, and carries published ICT (``readiness.ict_ready``:
+a capture taken before FPL populates influence/creativity/threat/ict_index is
+still written, but earns no marker, so the next run fetches it again). A
+provisional gameweek is not fetched, and an
 unknown finality signal fetches nothing — a missed run leaves the marker
 absent, so the next run with a known signal catches up.
 
@@ -62,6 +65,7 @@ from fpl_ingest.extract.http.raw_keys import (
 )
 from fpl_ingest.extract.stages.bootstrap import GameweekInfo
 from fpl_ingest.extract.stages.event_status import Finality
+from fpl_ingest.extract.stages.readiness import ICT_NOT_READY_REASON, ict_ready
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.stage_result import StageLineage, StageMetadata, StageOutcome, StageResult
 
@@ -203,7 +207,16 @@ async def ingest_gameweeks(
             write.content_length,
             write.payload_key,
         )
-        if shape["ok"]:
+        if shape["ok"] and not ict_ready(_live_stats_rows(raw)):
+            logger.warning(
+                "Gameweek %d captured but ICT not yet populated; ratification marker "
+                "withheld, the next run retries",
+                gameweek_id,
+            )
+            raw_writer.record_marker_withheld(
+                _MARKER_ENDPOINT, event=gameweek_id, reason=ICT_NOT_READY_REASON
+            )
+        elif shape["ok"]:
             _record_ratified_capture(raw_writer, gameweek_id, write.payload_key)
         else:
             logger.warning(
@@ -393,6 +406,18 @@ def _is_ratified(event: GameweekInfo, event_finality: Finality) -> bool:
     if info is None:
         return event.finished
     return bool(info.get("bonus_added"))
+
+
+def _live_stats_rows(raw: RawResponse) -> list[Any]:
+    """Return each live element's ``stats`` mapping, for :func:`ict_ready`.
+
+    Called only on a shape-valid payload, so ``elements`` is a list. An
+    element that is not an object, or has no ``stats``, yields a non-mapping
+    row, which ``ict_ready`` reads as not ready.
+    """
+    payload = raw.json()
+    elements = payload.get("elements", []) if isinstance(payload, dict) else []
+    return [e.get("stats") if isinstance(e, dict) else None for e in elements]
 
 
 def _ratification_marker_prefix(gameweek_id: int) -> str:

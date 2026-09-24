@@ -32,6 +32,7 @@ from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.extract.stages import element_summary as element_summary_stage
 from fpl_ingest.extract.stages import event_status as event_status_stage
 from fpl_ingest.extract.stages.bootstrap import GameweekInfo
+from fpl_ingest.extract.stages.readiness import ICT_FIELDS, ICT_NOT_READY_REASON
 from fpl_ingest.extract.stages.element_summary import (
     _select_players_to_fetch,
     ingest_player_histories,
@@ -65,6 +66,10 @@ def _payload(player_id: int, *, history: list | None = None) -> dict:
                     "fixture": 100 + player_id,
                     "minutes": 90,
                     "total_points": player_id,
+                    "influence": "20.6",
+                    "creativity": "3.2",
+                    "threat": "6.0",
+                    "ict_index": "3.0",
                 }
             ]
         ),
@@ -933,3 +938,199 @@ class TestStageContract:
 
     def test_stage_declares_no_output_tables(self):
         assert element_summary_stage.PLAYER_HISTORIES_STAGE.output_tables == ()
+
+
+# ---------------------------------------------------------------------------
+# ICT readiness guard
+# ---------------------------------------------------------------------------
+
+_ICT = ("20.6", "3.2", "6.0", "3.0")
+_ZERO_ICT = ("0.0", "0.0", "0.0", "0.0")
+_MARKER = "fpl/_settlement/element-summary/{gw}/marker.json"
+
+
+def _row(
+    player_id: int, minutes: object, ict: tuple[object, ...] | None = _ICT, *, round_: int = 1
+) -> dict:
+    """One ``history`` row; ``ict=None`` omits all four ICT keys."""
+    row: dict = {
+        "element": player_id,
+        "round": round_,
+        "fixture": 100 + player_id,
+        "minutes": minutes,
+        "total_points": 1,
+    }
+    if ict is not None:
+        row.update(zip(ICT_FIELDS, ict))
+    return row
+
+
+class TestIctReadinessGuard:
+    """The settlement marker is withheld until the forced re-fetch's rows for
+    the settling gameweek carry published ICT. Otherwise the marker would
+    return the stage to existence-based skipping with the provisional 0.0
+    values still in place — the exact freeze the forced re-fetch exists to
+    prevent. The captures are written regardless, and the run does not fail."""
+
+    async def _settle(self, tmp_path: Path, histories: dict[int, list], gw: int = 1):
+        raw_dir = tmp_path / "raw"
+        for player_id in histories:
+            (raw_dir / "fpl" / "element-summary" / str(player_id)).mkdir(parents=True)
+        writer = _writer(tmp_path)
+        client = _client(
+            {
+                player_id: _raw(_payload(player_id, history=history), player_id=player_id)
+                for player_id, history in histories.items()
+            }
+        )
+        outcome = await ingest_player_histories(
+            client,
+            writer,
+            sorted(histories),
+            [_event(gw, finished=True)],
+            event_finality=_settled(gw),
+        )
+        return writer, outcome, client
+
+    def _marked(self, tmp_path: Path, gw: int = 1) -> bool:
+        return (tmp_path / "raw" / _MARKER.format(gw=gw)).exists()
+
+    @pytest.mark.asyncio
+    async def test_played_players_with_all_zero_ict_withhold_the_marker(self, tmp_path):
+        writer, outcome, _ = await self._settle(
+            tmp_path, {1: [_row(1, 90, _ZERO_ICT)], 2: [_row(2, 45, _ZERO_ICT)]}
+        )
+
+        assert not self._marked(tmp_path)
+        assert len(outcome.lineage.raw_artifacts) == 2
+        assert all((tmp_path / "raw" / key).exists() for key in outcome.lineage.raw_artifacts)
+        assert outcome.result.written == 2
+        assert outcome.result.skipped == 0
+        assert outcome.result.errors == 0
+        assert classify_run_from_results([outcome.result], strict_mode=False) == RUN_STATUS_SUCCESS
+        assert writer.manifest_snapshot["markers_withheld"] == [
+            {"endpoint": "element-summary", "event": 1, "reason": ICT_NOT_READY_REASON}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_populated_ict_writes_the_marker(self, tmp_path):
+        writer, _, _ = await self._settle(
+            tmp_path, {1: [_row(1, 90)], 2: [_row(2, 0, _ZERO_ICT)]}
+        )
+
+        assert self._marked(tmp_path)
+        assert "markers_withheld" not in writer.manifest_snapshot
+
+    @pytest.mark.asyncio
+    async def test_nobody_played_writes_the_marker(self, tmp_path):
+        await self._settle(tmp_path, {1: [_row(1, 0, _ZERO_ICT)], 2: []})
+
+        assert self._marked(tmp_path)
+
+    @pytest.mark.parametrize(
+        "ict, marked",
+        [
+            pytest.param(("5.6", "0.0", "0.0", "0.0"), True, id="string_5.6_is_nonzero"),
+            pytest.param(("0.0", "0.0", "0.0", "0.6"), True, id="ict_index_alone_counts"),
+            pytest.param(_ZERO_ICT, False, id="string_0.0_is_zero"),
+            pytest.param(("0", "0", "0", "0"), False, id="string_0_is_zero"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_string_ict_values_are_parsed(self, tmp_path, ict, marked):
+        await self._settle(tmp_path, {1: [_row(1, 90, ict)]})
+
+        assert self._marked(tmp_path) is marked
+
+    @pytest.mark.asyncio
+    async def test_missing_ict_field_withholds_the_marker(self, tmp_path):
+        """Missing is not-ready, not zero — even when another row is populated."""
+        partial = _row(2, 90)
+        del partial["threat"]
+
+        await self._settle(tmp_path, {1: [_row(1, 90)], 2: [partial]})
+
+        assert not self._marked(tmp_path)
+
+    @pytest.mark.parametrize(
+        "ict",
+        [
+            pytest.param(("n/a", "3.2", "6.0", "3.0"), id="unparseable_string"),
+            pytest.param((None, "3.2", "6.0", "3.0"), id="null"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_unparseable_ict_withholds_the_marker(self, tmp_path, ict):
+        await self._settle(tmp_path, {1: [_row(1, 90)], 2: [_row(2, 90, ict)]})
+
+        assert not self._marked(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_old_minimal_played_shape_is_captured_but_not_marked(self, tmp_path):
+        """Regression: the pre-guard fixtures modeled a played player with no
+        ICT keys at all. That payload is still captured, but never marked."""
+        _, outcome, _ = await self._settle(
+            tmp_path,
+            {1: [{"element": 1, "round": 1, "fixture": 101, "minutes": 90, "total_points": 1}]},
+        )
+
+        assert outcome.result.written == 1
+        assert not self._marked(tmp_path)
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            pytest.param({"element": 2, "round": 2, "fixture": 102, "total_points": 1}, id="missing_minutes"),
+            pytest.param(_row(2, "ninety", round_=2), id="unparseable_minutes"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_unreadable_minutes_withholds_the_marker(self, tmp_path, row):
+        """The unreadable row is not ``history[0]``, which shape validation
+        samples, so this exercises the guard rather than the shape check."""
+        history = [_row(2, 90, round_=1), row]
+
+        await self._settle(tmp_path, {1: [_row(1, 90, round_=2)], 2: history}, gw=2)
+
+        assert not self._marked(tmp_path, gw=2)
+
+    @pytest.mark.asyncio
+    async def test_a_zero_ict_cameo_among_populated_rows_still_marks(self, tmp_path):
+        """"At least one", not "all": ratified data has genuine all-zero cameos."""
+        await self._settle(
+            tmp_path, {1: [_row(1, 90)], 2: [_row(2, 78)], 3: [_row(3, 3, _ZERO_ICT)]}
+        )
+
+        assert self._marked(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_only_the_settling_gameweeks_rows_are_judged(self, tmp_path):
+        """Populated ICT from an earlier, already-ratified round must not vouch
+        for the gameweek now settling."""
+        history = [_row(1, 90, round_=1), _row(1, 90, _ZERO_ICT, round_=2)]
+
+        await self._settle(tmp_path, {1: history}, gw=2)
+
+        assert not self._marked(tmp_path, gw=2)
+
+    @pytest.mark.asyncio
+    async def test_withheld_gameweek_forces_another_full_refetch_next_run(self, tmp_path):
+        await self._settle(tmp_path, {1: [_row(1, 90, _ZERO_ICT)], 2: [_row(2, 45, _ZERO_ICT)]})
+        assert not self._marked(tmp_path)
+
+        second = _client(
+            {
+                1: _raw(_payload(1, history=[_row(1, 90)]), player_id=1),
+                2: _raw(_payload(2, history=[_row(2, 45)]), player_id=2),
+            }
+        )
+        await ingest_player_histories(
+            second,
+            _writer_with_run_id(tmp_path, "20260824T190000Z-def456"),
+            [1, 2],
+            [_event(1, finished=True)],
+            event_finality=_settled(1),
+        )
+
+        assert sorted(c.args[0] for c in second.get_element_summary_raw.call_args_list) == [1, 2]
+        assert self._marked(tmp_path)

@@ -58,13 +58,32 @@ def _live_response(outcome: str) -> RawResponse | Exception:
         return FPLClientError("event-live down")
     if outcome == SHAPE_FAILURE:
         return _raw(b"<html>502 Bad Gateway</html>")
-    return _raw(json.dumps({"elements": [{"id": 1, "stats": {}, "explain": []}]}).encode())
+    stats = {
+        "minutes": 90,
+        "influence": "20.6",
+        "creativity": "3.2",
+        "threat": "6.0",
+        "ict_index": "3.0",
+    }
+    return _raw(json.dumps({"elements": [{"id": 1, "stats": stats, "explain": []}]}).encode())
 
 
 def _summary_response(player_id: int, *, fail: bool) -> RawResponse | Exception:
     if fail:
         return FPLClientError(f"element-summary {player_id} down")
-    history = [{"element": player_id, "round": GW, "fixture": 1, "minutes": 90, "total_points": 2}]
+    history = [
+        {
+            "element": player_id,
+            "round": GW,
+            "fixture": 1,
+            "minutes": 90,
+            "total_points": 2,
+            "influence": "20.6",
+            "creativity": "3.2",
+            "threat": "6.0",
+            "ict_index": "3.0",
+        }
+    ]
     return _raw(json.dumps({"history": history, "fixtures": [], "history_past": []}).encode())
 
 

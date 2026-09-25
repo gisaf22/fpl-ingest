@@ -99,6 +99,12 @@ Items on the [FPL Platform board](https://github.com/users/gisaf22/projects/3) f
 implement → PR → close. Read it before starting. This section is identical in fpl-ingest,
 fpl-warehouse and fpl-intelligence; change all three together.
 
+Fetch it into context with:
+
+```sh
+gh api repos/gisaf22/.github/contents/AGENT_WORKFLOW.md -H "Accept: application/vnd.github.raw"
+```
+
 Must-follow rules:
 
 - **No acceptance criteria table → stop.** Add the `needs-spec` label and ask.

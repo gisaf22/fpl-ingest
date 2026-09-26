@@ -15,7 +15,12 @@ import pytest
 
 from fpl_ingest.cli import main
 from fpl_ingest.extract.http.sync_http import FPLClientError
-from tests.support.cli_fakes import MINIMAL_BOOTSTRAP, _make_async_client, _run
+from tests.support.cli_fakes import (
+    MINIMAL_BOOTSTRAP,
+    _make_async_client,
+    _raw_fixtures_response,
+    _run,
+)
 
 
 def _bootstrap_with_deadline_in(minutes: float) -> dict:
@@ -46,23 +51,6 @@ def _manifests(raw: Path) -> list[dict]:
 
 class TestPreDeadlineCapture:
 
-    def test_in_window_writes_bootstrap_only_with_trigger(self, tmp_path):
-        raw = tmp_path / "raw"
-        client = _make_async_client(bootstrap=_bootstrap_with_deadline_in(60))
-
-        assert _pre_deadline(raw, client) == 0
-
-        payloads = sorted((raw / "fpl" / "bootstrap-static").rglob("payload.json"))
-        assert len(payloads) == 1
-        [manifest] = _manifests(raw)
-        assert manifest["trigger"] == "pre_deadline"
-        assert manifest["status"] == "SUCCESS"
-        assert set(manifest["objects"]) == {"bootstrap-static"}
-        # Only bootstrap-static is fetched; no other endpoint is touched.
-        client.get_event_status_raw.assert_not_awaited()
-        client.get_fixtures_raw.assert_not_awaited()
-        client.get_element_summary_raw.assert_not_awaited()
-
     def test_out_of_window_writes_nothing(self, tmp_path):
         raw = tmp_path / "raw"
         client = _make_async_client(bootstrap=_bootstrap_with_deadline_in(180))
@@ -86,6 +74,64 @@ class TestPreDeadlineCapture:
 
         assert _pre_deadline(raw, client) == 1
         assert not raw.exists() or not any(p.is_file() for p in raw.rglob("*"))
+
+
+def _payloads(raw: Path, endpoint: str) -> list[Path]:
+    return sorted((raw / "fpl" / endpoint).rglob("payload.json"))
+
+
+_FIXTURES = [
+    {"id": 51, "event": 6, "team_h": 11, "team_a": 13, "kickoff_time": "2026-10-10T11:30:00Z",
+     "team_h_difficulty": 4, "team_a_difficulty": 5, "finished": False},
+    {"id": 52, "event": 6, "team_h": 13, "team_a": 11, "kickoff_time": "2026-10-10T14:00:00Z",
+     "team_h_difficulty": 5, "team_a_difficulty": 4, "finished": False},
+]
+
+
+class TestPreDeadlineCapturesFixtures:
+
+    @pytest.mark.covers("#46 AC1")
+    @pytest.mark.parametrize("fixtures", [_FIXTURES, []], ids=["normal", "empty-list"])
+    def test_in_window_run_saves_fixtures_verbatim_alongside_bootstrap(self, tmp_path, fixtures):
+        raw = tmp_path / "raw"
+        client = _make_async_client(bootstrap=_bootstrap_with_deadline_in(60))
+        fetched = _raw_fixtures_response(fixtures)
+        client.get_fixtures_raw = AsyncMock(return_value=fetched)
+
+        assert _pre_deadline(raw, client) == 0
+
+        assert len(_payloads(raw, "bootstrap-static")) == 1
+        [fixtures_payload] = _payloads(raw, "fixtures")
+        assert fixtures_payload.read_bytes() == fetched.body
+        # Same run: one manifest covers both captures.
+        assert len(_manifests(raw)) == 1
+
+    @pytest.mark.covers("#46 AC2")
+    def test_in_window_manifest_lists_both_captures_as_pre_deadline(self, tmp_path):
+        raw = tmp_path / "raw"
+        client = _make_async_client(bootstrap=_bootstrap_with_deadline_in(60))
+        client.get_fixtures_raw = AsyncMock(return_value=_raw_fixtures_response(_FIXTURES))
+
+        assert _pre_deadline(raw, client) == 0
+
+        [manifest] = _manifests(raw)
+        assert manifest["trigger"] == "pre_deadline"
+        assert manifest["status"] == "SUCCESS"
+        assert set(manifest["objects"]) == {"bootstrap-static", "fixtures"}
+
+    @pytest.mark.covers("#46 AC3")
+    def test_fixtures_failure_keeps_bootstrap_and_reports_failure(self, tmp_path):
+        raw = tmp_path / "raw"
+        client = _make_async_client(bootstrap=_bootstrap_with_deadline_in(60))
+        # FPLClientError is what the client raises once its retries are exhausted.
+        client.get_fixtures_raw = AsyncMock(side_effect=FPLClientError("503 after retries"))
+
+        assert _pre_deadline(raw, client) != 0
+
+        assert len(_payloads(raw, "bootstrap-static")) == 1
+        assert _payloads(raw, "fixtures") == []
+        [manifest] = _manifests(raw)
+        assert manifest["status"] != "SUCCESS"
 
 
 class TestForce:

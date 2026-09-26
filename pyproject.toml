@@ -50,6 +50,7 @@ Issues = "https://github.com/gisaf22/fpl-ingest/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
+strict_markers = true
 markers = [
     # Tiers — applied automatically by each tier directory's conftest.
     "unit: pure unit tests — in-memory fixtures, no DB, no network",
@@ -61,6 +62,8 @@ markers = [
     "edge_case: degenerate or boundary payload/state",
     # Cross-cutting
     "regression: pins a specific past bug — the docstring must name it",
-    "perf: wall-clock performance benchmarks — not run by default",
+    "perf: wall-clock performance benchmarks — live in tests/integration, so they run under `-m integration` (and in CI)",
     "asyncio: run async tests in an event loop",
+    # Traceability
+    'covers: the acceptance criterion a test proves — covers("#<issue> AC<n>"); repeat for several',
 ]

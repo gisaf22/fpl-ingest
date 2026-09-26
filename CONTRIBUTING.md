@@ -10,17 +10,24 @@ Thanks for contributing to `fpl-ingest`.
 uv sync
 ```
 
-2. Run the full test suite:
-
-```bash
-uv run pytest -q
-```
+2. Run the tests (see [Tests](#tests)).
 
 3. Run the upstream smoke test when touching API-facing code:
 
 ```bash
 uv run fpl-ingest smoke-test
 ```
+
+## Tests
+
+```bash
+uv run pytest -m unit          # unit tier
+uv run pytest -m integration   # integration tier
+uv run pytest tests/e2e        # e2e tier — opt-in, hits the real FPL API
+```
+
+- Markers and what each means: `uv run pytest --markers`.
+- What CI runs: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the source of truth.
 
 ## Project Expectations
 

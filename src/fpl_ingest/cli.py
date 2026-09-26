@@ -108,7 +108,7 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
 
     pre_deadline_parser = subparsers.add_parser(
         "pre-deadline",
-        help="Capture bootstrap-static alone, only if a transfer deadline is within 75 minutes.",
+        help="Capture bootstrap-static and fixtures, only if a transfer deadline is within 75 minutes.",
     )
     add_shared_arguments(pre_deadline_parser, suppress_defaults=True)
     pre_deadline_parser.add_argument(

@@ -77,6 +77,11 @@ shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
 - **Select pre-deadline snapshots by the run manifest's `trigger == "pre_deadline"`**, not
   by "latest capture before the deadline". A capture with `trigger: "manual"` or
   `"scheduled"` can also precede a deadline.
+- **A pre-deadline run captures bootstrap-static and fixtures** in one run under one
+  manifest (#46), and so does a `--force` run (`trigger: "manual"`). Pre-deadline manifests
+  from before #46 merged list `bootstrap-static` only; a consumer must treat a missing
+  `fixtures` entry as "not captured", not as an error. If one endpoint fails, the other is
+  still written, the manifest lists the failed one under `failures`, and the run fails.
 - **Manifests written before 2026-09-24 17:16 UTC (PR #15, `ccca196`) have no `trigger`
   key**, including that morning's 07:20 daily run, and local runs without
   `--trigger` record `null`. Treat both as unknown.

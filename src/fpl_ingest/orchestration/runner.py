@@ -34,12 +34,13 @@ from fpl_ingest.orchestration.run_status import (
     classify_run_from_results,
 )
 from fpl_ingest.orchestration.stage_result import StageOutcome, StageResult
+from fpl_ingest.extract.stages.bootstrap import RAW_ENDPOINT as BOOTSTRAP_ENDPOINT
 from fpl_ingest.extract.stages.bootstrap import CoreData, capture_bootstrap_raw, ingest_core_data
 from fpl_ingest.extract.stages.event_status import Finality, ingest_event_status
 from fpl_ingest.extract.stages.fixtures import RAW_SOURCE, ingest_fixtures
 from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
 from fpl_ingest.extract.stages.element_summary import ingest_player_histories
-from fpl_ingest.extract.http.client import AsyncFPLClient
+from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
 from fpl_ingest.extract.http.rate_config import MAX_RATE, normalize_rate
 from fpl_ingest.extract.http.rate_limiter import TokenBucketLimiter
@@ -487,61 +488,84 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
 
 
 async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> int:
-    """Capture bootstrap-static alone, only when a deadline is near.
+    """Capture bootstrap-static and fixtures, only when a deadline is near.
 
     Fetches bootstrap-static and applies the gate in ``orchestration.pre_deadline``
     to that payload. Outside the window it returns 0 having written nothing —
     no payload and no manifest, so a no-op leaves no trace in raw storage.
-    Inside it, the same payload is written through ``capture_bootstrap_raw``
-    and the manifest is stamped ``trigger: pre_deadline``. A failed fetch
-    writes nothing either and returns 1, so the workflow's failure email fires.
+    Inside it, the same payload is written through ``capture_bootstrap_raw``,
+    fixtures is fetched and captured into the same run, and the manifest is
+    stamped ``trigger: pre_deadline``. A failed bootstrap-static fetch writes
+    nothing and returns 1, since the window cannot be evaluated without it; a
+    failed fixtures fetch keeps bootstrap-static and returns 1. Either way the
+    workflow's failure email fires.
 
     ``--force`` (the workflow's ``force`` dispatch input) skips the gate and
     records ``trigger: manual``, since the capture is then a person's choice,
-    not the deadline's.
+    not the deadline's. A forced run needs no payload to decide, so it
+    attempts fixtures even when bootstrap-static fails, keeping whichever
+    endpoint succeeded and returning 1.
     """
     storage_backend = _build_storage_backend(config)
     run_start = datetime.now(timezone.utc)
     applied_rate = _resolve_applied_rate(logger, args.rate)
     rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)
-
-    try:
-        async with AsyncFPLClient(
-            rate_limiter=rate_limiter,
-            connector_limit=_MAX_CONCURRENT_REQUESTS,
-        ) as client:
-            raw = await client.get_bootstrap_raw()
-    except FPLClientError as exc:
-        logger.error("pre-deadline: bootstrap-static fetch failed; nothing written: %s", exc)
-        return 1
-
-    payload = raw.json()
-    events = payload.get("events") if isinstance(payload, dict) else None
-    if not isinstance(events, list):
-        logger.warning("pre-deadline: bootstrap-static carried no events list; nothing written")
-        events = []
-
     force = bool(getattr(args, "force", False))
-    now = datetime.now(timezone.utc)
-    deadline = next_deadline(events, now=now)
-    if force:
-        logger.info("pre-deadline: --force given; capturing without the deadline gate")
-    elif deadline is None or not in_pre_deadline_window(events, now=now):
-        logger.info(
-            "pre-deadline: next deadline %s is outside the window; nothing written",
-            deadline.isoformat() if deadline is not None else "unknown",
+
+    async with AsyncFPLClient(
+        rate_limiter=rate_limiter,
+        connector_limit=_MAX_CONCURRENT_REQUESTS,
+    ) as client:
+        bootstrap_error: FPLClientError | None = None
+        try:
+            raw = await client.get_bootstrap_raw()
+        except FPLClientError as exc:
+            if not force:
+                logger.error("pre-deadline: bootstrap-static fetch failed; nothing written: %s", exc)
+                return 1
+            logger.error("pre-deadline: bootstrap-static fetch failed; capturing fixtures anyway: %s", exc)
+            bootstrap_error = exc
+            raw = None
+
+        if force:
+            logger.info("pre-deadline: --force given; capturing without the deadline gate")
+        else:
+            assert raw is not None  # an unforced fetch failure returned above
+            payload = raw.json()
+            events = payload.get("events") if isinstance(payload, dict) else None
+            if not isinstance(events, list):
+                logger.warning("pre-deadline: bootstrap-static carried no events list; nothing written")
+                events = []
+            now = datetime.now(timezone.utc)
+            deadline = next_deadline(events, now=now)
+            if deadline is None or not in_pre_deadline_window(events, now=now):
+                logger.info(
+                    "pre-deadline: next deadline %s is outside the window; nothing written",
+                    deadline.isoformat() if deadline is not None else "unknown",
+                )
+                return 0
+            logger.info("pre-deadline: deadline %s is within the window; capturing", deadline.isoformat())
+
+        if storage_backend is None:
+            config.raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_writer = LocalRawWriter(
+            config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend
         )
-        return 0
-    else:
-        logger.info("pre-deadline: deadline %s is within the window; capturing", deadline.isoformat())
-    if storage_backend is None:
-        config.raw_dir.mkdir(parents=True, exist_ok=True)
-    raw_writer = LocalRawWriter(
-        config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend
-    )
-    stage_results: list[StageResult] = []
-    outcome = capture_bootstrap_raw(raw, raw_writer)
-    _record_stage(stage_results, logger, outcome.result, strict=False)
+        stage_results: list[StageResult] = []
+        if raw is not None:
+            _record_stage(stage_results, logger, capture_bootstrap_raw(raw, raw_writer).result, strict=False)
+        else:
+            raw_writer.record_failure(
+                BOOTSTRAP_ENDPOINT,
+                request_url=_ENDPOINTS["bootstrap"],
+                error_class=type(bootstrap_error).__name__,
+                message=str(bootstrap_error),
+            )
+            _record_stage(stage_results, logger, StageResult(stage="core", errors=1), strict=False)
+
+        fixtures = await ingest_fixtures(client, raw_writer)
+        _record_stage(stage_results, logger, fixtures.result, strict=False)
+
     exit_code = _exit_code(logger, stage_results)
     _finalize_raw_manifest(
         raw_writer, logger, stage_results, strict_mode=False,

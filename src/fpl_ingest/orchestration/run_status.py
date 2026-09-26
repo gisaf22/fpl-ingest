@@ -1,38 +1,37 @@
 """Canonical terminal run-status classification for ingest runs.
 
-Defines the three terminal states (SUCCESS, FAILED_PARTIAL, FAILED) and the
-deterministic precedence rules that derive them from stage-level error and
-skip counts. All callers — the runner and store finalisation — use the
-same ``classify_run`` function to ensure consistent status assignment.
+A run's status describes what it left usable, and it is derived from the
+per-endpoint outcomes in the run manifest's ``endpoints`` block by the same
+rule those outcomes follow:
+
+* SUCCESS — everything attempted is usable.
+* PARTIAL — some usable, some failed.
+* FAILED  — nothing usable, including a run that recorded no endpoints.
+
+A deliberate non-fetch under the refetch policy is not recorded as an
+endpoint, so it never makes a run PARTIAL. Whether to alert is a separate
+question answered by the exit code, which is non-zero for anything but
+SUCCESS. Every caller — the full run and the pre-deadline run — uses
+``classify_run`` so status is assigned consistently.
 """
 
 from __future__ import annotations
 
-from typing import Literal
-from collections.abc import Sequence
+from collections.abc import Mapping
+from typing import Any, Literal
 
-RunStatus = Literal["SUCCESS", "FAILED", "FAILED_PARTIAL"]
+RunStatus = Literal["SUCCESS", "PARTIAL", "FAILED"]
 
 RUN_STATUS_SUCCESS: Literal["SUCCESS"] = "SUCCESS"
+RUN_STATUS_PARTIAL: Literal["PARTIAL"] = "PARTIAL"
 RUN_STATUS_FAILED: Literal["FAILED"] = "FAILED"
-RUN_STATUS_FAILED_PARTIAL: Literal["FAILED_PARTIAL"] = "FAILED_PARTIAL"
 
 
-def classify_run(*, errors: int, skipped: int, strict_mode: bool) -> RunStatus:
-    """Return the terminal run status using the canonical precedence order.
-
-    Precedence is strict and deterministic:
-    FAILED > FAILED_PARTIAL > SUCCESS
-    """
-    if strict_mode or errors > 0:
+def classify_run(endpoints: Mapping[str, Mapping[str, Any]]) -> RunStatus:
+    """Return the run status for a manifest's ``endpoints`` block."""
+    usable = sum(entry["usable"] for entry in endpoints.values())
+    if usable == 0:
         return RUN_STATUS_FAILED
-    if skipped > 0:
-        return RUN_STATUS_FAILED_PARTIAL
-    return RUN_STATUS_SUCCESS
-
-
-def classify_run_from_results(stage_results: Sequence[object], *, strict_mode: bool) -> RunStatus:
-    """Classify the terminal run status from canonical stage results."""
-    skipped = sum(getattr(result, "skipped", 0) for result in stage_results)
-    errors = sum(getattr(result, "errors", 0) for result in stage_results)
-    return classify_run(errors=errors, skipped=skipped, strict_mode=strict_mode)
+    if all(entry["outcome"] == RUN_STATUS_SUCCESS for entry in endpoints.values()):
+        return RUN_STATUS_SUCCESS
+    return RUN_STATUS_PARTIAL

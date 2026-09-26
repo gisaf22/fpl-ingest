@@ -5,7 +5,7 @@ What it must guarantee:
     under source ``fpl`` and endpoint ``element-summary/{player_id}``;
   - the sidecar carries the capture metadata the raw contract promises;
   - a payload that fails shape validation is still written, flagged in the
-    sidecar, and reported so the run manifest reads FAILED_PARTIAL — without
+    sidecar, and counted as not usable in the run manifest — without
     discounting the players that captured cleanly;
   - the concurrent fetch and its strict-mode cancellation still behave as
     they did before the redirect;
@@ -41,9 +41,9 @@ from fpl_ingest.extract.stages.element_summary import (
 )
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.run_status import (
-    RUN_STATUS_FAILED_PARTIAL,
+    RUN_STATUS_FAILED,
     RUN_STATUS_SUCCESS,
-    classify_run_from_results,
+    classify_run,
 )
 from tests.support.fixture_payloads import payload_bytes
 
@@ -299,9 +299,10 @@ class TestShapeValidation:
         assert outcome.result.errors == 0, "a shape failure is partial, not a hard error"
         assert outcome.result.skipped == 1
 
-        status = classify_run_from_results([outcome.result], strict_mode=False)
-        assert status == RUN_STATUS_FAILED_PARTIAL
-        assert writer.finalize(status).manifest["status"] == RUN_STATUS_FAILED_PARTIAL
+        status = classify_run(writer.endpoint_outcomes)
+        # Its only payload is not usable, so nothing usable came out of the run.
+        assert status == RUN_STATUS_FAILED
+        assert writer.finalize(status).manifest["status"] == RUN_STATUS_FAILED
 
 
 class TestSelectionLogic:
@@ -779,7 +780,7 @@ class TestFetchAndCapture:
             _client(responses), writer, [1, 2, 3], [], event_finality=None
         )
 
-        status = classify_run_from_results([outcome.result], strict_mode=False)
+        status = classify_run(writer.endpoint_outcomes)
         assert status == RUN_STATUS_SUCCESS
 
         manifest = writer.finalize(status).manifest
@@ -1007,7 +1008,7 @@ class TestIctReadinessGuard:
         assert outcome.result.written == 2
         assert outcome.result.skipped == 0
         assert outcome.result.errors == 0
-        assert classify_run_from_results([outcome.result], strict_mode=False) == RUN_STATUS_SUCCESS
+        assert classify_run(writer.endpoint_outcomes) == RUN_STATUS_SUCCESS
         assert writer.manifest_snapshot["markers_withheld"] == [
             {"endpoint": "element-summary", "event": 1, "reason": ICT_NOT_READY_REASON}
         ]

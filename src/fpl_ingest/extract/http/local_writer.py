@@ -45,7 +45,12 @@ from fpl_ingest.extract.http.raw_keys import (
     payload_filename,
     payload_key,
 )
-from fpl_ingest.orchestration.run_status import RunStatus
+from fpl_ingest.orchestration.run_status import (
+    RUN_STATUS_FAILED,
+    RUN_STATUS_PARTIAL,
+    RUN_STATUS_SUCCESS,
+    RunStatus,
+)
 
 __all__ = [
     "LocalRawWriter",
@@ -63,9 +68,9 @@ MANIFEST_STATUS_IN_PROGRESS = "IN_PROGRESS"
 # Per-endpoint outcomes share run status's vocabulary and its one rule:
 # SUCCESS when everything attempted is usable, PARTIAL when some is usable and
 # some failed, FAILED when nothing is usable (including nothing attempted).
-ENDPOINT_OUTCOME_SUCCESS = "SUCCESS"
-ENDPOINT_OUTCOME_PARTIAL = "PARTIAL"
-ENDPOINT_OUTCOME_FAILED = "FAILED"
+ENDPOINT_OUTCOME_SUCCESS = RUN_STATUS_SUCCESS
+ENDPOINT_OUTCOME_PARTIAL = RUN_STATUS_PARTIAL
+ENDPOINT_OUTCOME_FAILED = RUN_STATUS_FAILED
 
 
 class RawObjectExistsError(FileExistsError):
@@ -416,7 +421,8 @@ class LocalRawWriter:
 
         Args:
             status: Terminal status from ``orchestration.run_status`` —
-                SUCCESS, FAILED_PARTIAL, or FAILED.
+                SUCCESS, PARTIAL, or FAILED; ``classify_run`` over
+                ``endpoint_outcomes`` derives it.
             git_sha: Commit that produced the run.
             ingest_version: Producing package version.
             config: Effective run configuration (rate, concurrency, strict,
@@ -454,6 +460,11 @@ class LocalRawWriter:
             status=status,
             manifest=manifest,
         )
+
+    @property
+    def endpoint_outcomes(self) -> dict[str, dict[str, Any]]:
+        """The manifest's ``endpoints`` block as it currently stands."""
+        return self._endpoint_outcomes()
 
     @property
     def manifest_snapshot(self) -> dict[str, Any]:
@@ -581,6 +592,7 @@ class LocalRawWriter:
     def _endpoint_outcomes(self) -> dict[str, dict[str, Any]]:
         outcomes: dict[str, dict[str, Any]] = {}
         for name, entry in sorted(self._endpoints.items()):
+            outcome: RunStatus
             if entry["attempted"] and entry["usable"] == entry["attempted"]:
                 outcome = ENDPOINT_OUTCOME_SUCCESS
             elif entry["usable"]:

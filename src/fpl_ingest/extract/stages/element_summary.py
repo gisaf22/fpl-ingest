@@ -150,8 +150,9 @@ async def ingest_player_histories(
     Returns:
         StageOutcome whose result counts captured objects, not rows — this
         stage no longer produces rows. Each player whose payload fails shape
-        validation contributes one ``skipped`` so ``classify_run`` marks the
-        run FAILED_PARTIAL while every other player still counts as written;
+        validation contributes one ``skipped`` (strict mode aborts on it) and
+        is counted as not usable by the writer, while every other player
+        still counts as written;
         the payload is written either way.
     """
     if execution_state is not None and execution_state.is_failed:
@@ -266,9 +267,9 @@ async def ingest_player_histories(
     # fetched - validated) mean a shape failure must be reported as not
     # validated and not written even though the payload was deliberately
     # still written to raw storage — the sidecar's shape_validation field is
-    # where that fact lives. skipped > 0 is what makes classify_run mark the
-    # run FAILED_PARTIAL, and it does so without discounting the players that
-    # captured cleanly.
+    # where that fact lives. Run status comes from the writer, which counts
+    # those payloads as not usable without discounting the players that
+    # captured cleanly; skipped > 0 is what strict mode aborts on.
     fetched_count = len(fetched)
     if settlement_event_id is not None:
         complete = error_count == 0 and validated == len(player_ids_to_fetch)

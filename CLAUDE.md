@@ -81,7 +81,8 @@ shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
   manifest (#46), and so does a `--force` run (`trigger: "manual"`). Pre-deadline manifests
   from before #46 merged list `bootstrap-static` only; a consumer must treat a missing
   `fixtures` entry as "not captured", not as an error. If one endpoint fails, the other is
-  still written, the manifest lists the failed one under `failures`, and the run fails.
+  still written, the manifest lists the failed one under `failures`, and the run is PARTIAL
+  and exits non-zero.
 - **Judge each endpoint of a run by the manifest's `endpoints` block** (#49, contract
   1.1.0), keyed by endpoint (`element-summary`, not `element-summary/115`), each with
   `attempted`, `usable`, `failed`, `outcome` and `failures` (every one with a `reason`).
@@ -94,6 +95,18 @@ shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
     failed (`attempted: 0`, reason names that stage).
   - An endpoint the refetch policy deliberately didn't fetch is absent, not FAILED. Manifests
     before 1.1.0 have `objects` counts but no `endpoints` block.
+- **Run `status` is SUCCESS / PARTIAL / FAILED by the same rule, over the whole run** (#48,
+  contract 2.0.0): SUCCESS when every endpoint is SUCCESS, PARTIAL when something is usable
+  and something failed, FAILED when nothing is usable (a run with no endpoints included). A
+  policy skip never makes a run PARTIAL. Status says what is usable; the exit code (non-zero
+  for anything but SUCCESS) says whether to alert, so a strict-mode abort is still recorded
+  by what it left usable.
+- **Records before 2.0.0 use a different status vocabulary. Do not filter them on status
+  alone:**
+  - old `FAILED` covers any fetch error, so such a run may still have usable captures. Use
+    each endpoint's `usable` count or `outcome` (1.1.0 records). Records before 1.1.0 have
+    neither, only `objects` counts.
+  - old `FAILED_PARTIAL` means payloads were written but some failed their shape check.
 - **Manifests written before 2026-09-24 17:16 UTC (PR #15, `ccca196`) have no `trigger`
   key**, including that morning's 07:20 daily run, and local runs without
   `--trigger` record `null`. Treat both as unknown.

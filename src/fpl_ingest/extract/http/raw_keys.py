@@ -18,7 +18,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-RAW_CONTRACT_VERSION = "1.1.0"
+RAW_CONTRACT_VERSION = "2.0.0"
 
 MANIFEST_PREFIX = "_manifests"
 SETTLEMENT_PREFIX = "_settlement"

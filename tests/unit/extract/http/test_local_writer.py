@@ -337,14 +337,14 @@ def test_manifest_accumulates_across_writes(tmp_path: Path, writer: LocalRawWrit
     )
 
     manifest = writer.finalize(
-        "FAILED_PARTIAL",
+        "PARTIAL",
         git_sha="1134a88",
         ingest_version="fpl-ingest/1.0.0",
         config={"rate": 5.0, "concurrency": 10, "strict": False, "force": False},
         ended_at=RUN_START + timedelta(seconds=90),
     ).manifest
 
-    assert manifest["status"] == "FAILED_PARTIAL"
+    assert manifest["status"] == "PARTIAL"
     assert manifest["objects"]["bootstrap-static"] == {
         "attempted": 1,
         "written": 1,

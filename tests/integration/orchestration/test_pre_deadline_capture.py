@@ -144,16 +144,34 @@ class TestForce:
         assert _pre_deadline(raw, client) == 0
         assert not raw.exists() or not any(p.is_file() for p in raw.rglob("*"))
 
+    @pytest.mark.covers("#46 AC5")
     def test_force_captures_outside_the_window_as_manual(self, tmp_path):
         raw = tmp_path / "raw"
         client = _make_async_client(bootstrap=_bootstrap_with_deadline_in(180))
 
         assert _pre_deadline(raw, client, "--force") == 0
 
-        assert len(sorted((raw / "fpl" / "bootstrap-static").rglob("payload.json"))) == 1
+        assert len(_payloads(raw, "bootstrap-static")) == 1
+        assert len(_payloads(raw, "fixtures")) == 1
         [manifest] = _manifests(raw)
         assert manifest["trigger"] == "manual"
-        assert set(manifest["objects"]) == {"bootstrap-static"}
+        assert set(manifest["objects"]) == {"bootstrap-static", "fixtures"}
+
+    @pytest.mark.covers("#46 AC5")
+    def test_force_keeps_fixtures_when_bootstrap_fails_and_reports_failure(self, tmp_path):
+        raw = tmp_path / "raw"
+        client = _make_async_client(bootstrap=_bootstrap_with_deadline_in(180))
+        client.get_bootstrap_raw = AsyncMock(side_effect=FPLClientError("503 after retries"))
+
+        assert _pre_deadline(raw, client, "--force") != 0
+
+        client.get_bootstrap_raw.assert_awaited()
+        client.get_fixtures_raw.assert_awaited()
+        assert _payloads(raw, "bootstrap-static") == []
+        assert len(_payloads(raw, "fixtures")) == 1
+        [manifest] = _manifests(raw)
+        assert manifest["trigger"] == "manual"
+        assert manifest["status"] != "SUCCESS"
 
 
 class TestRunTrigger:

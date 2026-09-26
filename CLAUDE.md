@@ -123,7 +123,8 @@ Must-follow rules:
   comment; tick the Definition of Done** (N/A with reason where it doesn't apply).
 - **Never merge.** The human merges.
 - **After merge:** confirm the item is Done, then move every item it was blocking that has
-  no other open blocker from Blocked to Todo.
+  no other open blocker from Blocked to Todo. Then remove the item's worktrees and delete
+  its merged local branches.
 - **New items:** use the `gisaf22/.github` templates, create with `--body-file`, and set
   Work Item Type, Epic, Size, Status and parent.
 - **Public board:** no account IDs, ARNs or secrets in any issue, PR or comment.

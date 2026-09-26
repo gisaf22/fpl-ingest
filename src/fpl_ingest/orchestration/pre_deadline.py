@@ -1,4 +1,4 @@
-"""Gate for the pre-deadline bootstrap-static capture.
+"""Gate for the pre-deadline bootstrap-static and fixtures capture.
 
 ``scheduled_run_pre_deadline.yml`` runs every 30 minutes through the part of
 the day FPL deadlines fall in, and relies on this gate to write a capture only

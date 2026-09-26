@@ -63,8 +63,8 @@ async def ingest_fixtures(
     Returns:
         StageOutcome whose result counts captured objects, not rows — this
         stage no longer produces rows. A shape-validation failure reports
-        ``skipped=1`` so ``classify_run`` marks the run FAILED_PARTIAL; the
-        payload is written regardless.
+        ``skipped=1``, which strict mode aborts on; the payload is written
+        regardless, and the writer counts it as not usable.
     """
     if execution_state is not None and execution_state.is_failed:
         logger.info("Fail-fast tripped; skipping fixtures capture")
@@ -109,8 +109,9 @@ async def ingest_fixtures(
     # Its invariants (fetched >= validated >= written, skipped == fetched -
     # validated) mean a shape failure must be reported as validated=0/written=0
     # even though the payload was deliberately still written to raw storage —
-    # the sidecar's shape_validation field is where that fact lives. skipped=1
-    # is what makes classify_run mark the run FAILED_PARTIAL.
+    # the sidecar's shape_validation field is where that fact lives. Run status
+    # comes from the writer, which counts that payload as not usable; skipped=1
+    # is what strict mode aborts on.
     ok = bool(shape["ok"])
     result = StageResult(
         stage="fixtures",

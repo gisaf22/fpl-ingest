@@ -570,7 +570,7 @@ The `_manifests` prefix is a sibling of the endpoint prefixes, so a warehouse sc
 |---|---|
 | `run_id`, `source`, `extraction_date` | Identity |
 | `started_at`, `ended_at`, `duration_seconds` | Direct successor to today's per-stage timing in `runner.py::_measure_stage` |
-| `status` | `SUCCESS` / `FAILED_PARTIAL` / `FAILED` — **reuse `orchestration/run_status.py` verbatim.** Its precedence rules are already the shared vocabulary of runner and store. |
+| `status` | `SUCCESS` / `PARTIAL` / `FAILED` since 2.0.0 (#48): derived by `orchestration/run_status.py` from the `endpoints` outcomes with the same rule — everything usable, some usable and some failed, nothing usable. Before 2.0.0: `SUCCESS` / `FAILED_PARTIAL` / `FAILED`, where `FAILED` covered any fetch error |
 | `objects` | Per-endpoint: attempted, written, failed, total bytes |
 | `failures` | Per-failed-endpoint: URL, final status, attempt count, error class |
 | `endpoints` | Since 1.1.0 (#49). Per endpoint (`element-summary`, not per player): attempted, usable (stored and shape-valid), failed, an `outcome` of `SUCCESS` / `PARTIAL` / `FAILED`, and each failure's reason, including endpoints not attempted after an earlier stage failed |
@@ -760,8 +760,8 @@ shape, it does not belong here.*
 
 **Recommendation on failure handling: write the payload, record the failure, do not discard.**
 A shape-check failure means the source changed, which is precisely the moment the payload is
-most valuable. `metadata.json.shape_validation` records the failure; the manifest marks the run
-`FAILED_PARTIAL`; the warehouse can refuse to build on it. Discarding a payload because it
+most valuable. `metadata.json.shape_validation` records the failure; the manifest counts that
+capture as not usable, so the run is `PARTIAL` or `FAILED`; the warehouse can refuse to build on it. Discarding a payload because it
 surprised us is the one unrecoverable mistake available at this boundary.
 
 **Recommendation: promote `smoke-test` into the scheduled workflow**, as a pre-flight step

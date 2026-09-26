@@ -13,18 +13,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from fpl_ingest.cli import main
-from fpl_ingest.extract.http.local_writer import LocalFilesystemBackend
-from fpl_ingest.extract.http.raw_keys import SETTLEMENT_MARKER_FILENAME, SETTLEMENT_PREFIX
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from tests.factories import event_row
 from tests.support.cli_fakes import (
     MINIMAL_BOOTSTRAP,
-    PLAYER_HISTORY_1,
-    PLAYER_HISTORY_2,
     _make_async_client,
     _raw_event_status_response,
     _raw_response,
 )
+from tests.support.run_helpers import _history_failing_for, _manifest, _seed_settled_gameweek
 
 _OUTCOMES = {"SUCCESS", "PARTIAL", "FAILED"}
 # Sidecar fields that legitimately differ between two runs of the same capture.
@@ -38,12 +35,6 @@ def _full_run(raw: Path, client) -> int:
         except SystemExit as exc:
             return int(exc.code or 0)
     return 0
-
-
-def _manifest(raw: Path) -> dict:
-    paths = sorted((raw / "fpl" / "_manifests").rglob("manifest.json"))
-    assert len(paths) == 1, paths
-    return json.loads(paths[0].read_text())
 
 
 def _endpoint(manifest: dict, name: str) -> dict:
@@ -71,15 +62,6 @@ def _assert_consistent(entry: dict) -> None:
     assert all(f.get("reason") for f in entry["failures"])
     if entry["outcome"] != "SUCCESS":
         assert entry["failures"], "a failed or partial endpoint must say why"
-
-
-def _history_failing_for(*failing: int):
-    async def side_effect(pid):
-        if pid in failing:
-            raise FPLClientError(f"player {pid} unreachable")
-        return PLAYER_HISTORY_1 if pid == 1 else PLAYER_HISTORY_2
-
-    return side_effect
 
 
 class TestEachEndpointHasAnOutcome:
@@ -218,17 +200,6 @@ class TestGoodCapturesAreUnaffectedByOtherFailures:
             if name != "element-summary":
                 assert _endpoint(broken_manifest, name) == _endpoint(clean_manifest, name)
                 assert _endpoint(broken_manifest, name)["outcome"] == "SUCCESS"
-
-
-def _seed_settled_gameweek(raw: Path, gw: int, player_ids: list[int]) -> None:
-    """Leave raw storage as a previous run would after gameweek ``gw`` settled."""
-    backend = LocalFilesystemBackend(raw)
-    for endpoint in ("event-live", "element-summary"):
-        backend.put_bytes(
-            f"fpl/{SETTLEMENT_PREFIX}/{endpoint}/{gw}/{SETTLEMENT_MARKER_FILENAME}", b"{}"
-        )
-    for pid in player_ids:
-        backend.put_bytes(f"fpl/element-summary/{pid}/2026-09-01/seed/payload.json", b"{}")
 
 
 class TestDeliberateNonFetchIsNotAFailure:

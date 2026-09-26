@@ -139,8 +139,9 @@ async def ingest_gameweeks(
     Returns:
         StageOutcome whose result counts captured objects, not rows — this
         stage no longer produces rows. Each gameweek that fails shape
-        validation contributes one ``skipped`` so ``classify_run`` marks the
-        run FAILED_PARTIAL while every other gameweek still counts as written;
+        validation contributes one ``skipped`` (strict mode aborts on it) and
+        is counted as not usable by the writer, while every other gameweek
+        still counts as written;
         the payload is written either way, but only a clean capture earns
         its gameweek's ratification marker.
     """
@@ -229,9 +230,9 @@ async def ingest_gameweeks(
     # fetched - validated) mean a shape failure must be reported as not
     # validated and not written even though the payload was deliberately still
     # written to raw storage — the sidecar's shape_validation field is where
-    # that fact lives. skipped > 0 is what makes classify_run mark the run
-    # FAILED_PARTIAL, and it does so without discounting the gameweeks that
-    # captured cleanly.
+    # that fact lives. Run status comes from the writer, which counts those
+    # payloads as not usable without discounting the gameweeks that captured
+    # cleanly; skipped > 0 is what strict mode aborts on.
     fetched_count = len(fetched)
     return StageOutcome(
         result=StageResult(

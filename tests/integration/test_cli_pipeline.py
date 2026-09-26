@@ -18,7 +18,7 @@ from fpl_ingest.cli import (
     main,
 )
 from fpl_ingest.extract.http.rate_limiter import TokenBucketLimiter
-from fpl_ingest.orchestration.run_status import RUN_STATUS_FAILED, RUN_STATUS_FAILED_PARTIAL, RUN_STATUS_SUCCESS
+from fpl_ingest.orchestration.run_status import RUN_STATUS_FAILED, RUN_STATUS_SUCCESS
 from fpl_ingest.orchestration.stage_result import StageOutcome, StageResult
 from fpl_ingest.orchestration.runner import _exit_code, _log_fail_fast_failure, _resolve_applied_rate
 from fpl_ingest.orchestration.run_status import classify_run
@@ -230,7 +230,7 @@ class TestCliLifecycle:
         assert len(manifests) == 1, manifests
         manifest = json.loads(manifests[0].read_text())
         assert manifest["source"] == "fpl"
-        assert manifest["status"] in {"SUCCESS", "FAILED_PARTIAL", "FAILED"}
+        assert manifest["status"] in {"SUCCESS", "PARTIAL", "FAILED"}
         assert manifest["objects"]["fixtures"]["written"] == 1
         assert manifest["objects"]["bootstrap-static"]["written"] == 1, \
             "both captures belong to the one run manifest"

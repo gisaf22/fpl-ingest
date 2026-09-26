@@ -13,8 +13,9 @@ cross-run "last successful run" pointer as SQLite's ``_metadata`` table used
 to. There is still no in-run staleness check before a run starts; that would
 require the same manifest scan this module doesn't otherwise need.
 
-Returns 0 only when the run is fully clean; any stage error or strict-mode
-abort produces exit code 1.
+The run's status (SUCCESS / PARTIAL / FAILED) comes from what it left usable —
+``classify_run`` over the manifest's per-endpoint outcomes. The exit code is 0
+only for SUCCESS, so any failure still fails the workflow and alerts.
 """
 
 from __future__ import annotations
@@ -31,7 +32,8 @@ from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.run_status import (
     RUN_STATUS_FAILED,
     RUN_STATUS_SUCCESS,
-    classify_run_from_results,
+    RunStatus,
+    classify_run,
 )
 from fpl_ingest.orchestration.stage_result import StageOutcome, StageResult
 from fpl_ingest.extract.stages.bootstrap import RAW_ENDPOINT as BOOTSTRAP_ENDPOINT
@@ -181,17 +183,30 @@ def _log_fail_fast_failure(logger: logging.Logger, stage_result: StageResult) ->
     _log_partial_run_warning(logger)
 
 
+def _log_failed_endpoints(logger: logging.Logger, endpoints: dict[str, dict[str, Any]]) -> None:
+    """Name every endpoint that is not SUCCESS, so the failure says what to look at."""
+    failed = [
+        f"{name} {entry['outcome']} ({entry['usable']}/{entry['attempted']} usable)"
+        for name, entry in endpoints.items()
+        if entry["outcome"] != RUN_STATUS_SUCCESS
+    ]
+    if failed:
+        logger.error("[run] endpoints not fully usable: %s", ", ".join(failed))
+
+
 def _exit_code(
     logger: logging.Logger,
+    raw_writer: LocalRawWriter,
     stage_results: list[StageResult],
 ) -> int:
-    final_status = classify_run_from_results(stage_results, strict_mode=False)
-
+    """Log the run's status and return 0 only when it is SUCCESS."""
+    endpoints = raw_writer.endpoint_outcomes
+    final_status = classify_run(endpoints)
+    _log_run_summary(logger, status=final_status, results=stage_results)
     if final_status == RUN_STATUS_SUCCESS:
-        _log_run_summary(logger, status=RUN_STATUS_SUCCESS, results=stage_results)
         return 0
 
-    _log_run_summary(logger, status=final_status, results=stage_results)
+    _log_failed_endpoints(logger, endpoints)
     logger.error("Freshness metadata not updated because the run was not fully clean.")
     _log_partial_run_warning(logger)
     return 1
@@ -232,9 +247,7 @@ def _effective_run_config(args) -> dict[str, Any]:
 def _finalize_raw_manifest(
     raw_writer: LocalRawWriter,
     logger: logging.Logger,
-    stage_results: list[StageResult],
     *,
-    strict_mode: bool,
     event_finality: Finality | None = None,
     git_sha: str | None = None,
     ingest_version: str | None = None,
@@ -243,17 +256,18 @@ def _finalize_raw_manifest(
 ) -> None:
     """Stamp the run's raw manifest with the same status the runner reports.
 
-    ``classify_run_from_results`` is the single source of run status across
-    the runner and now the manifest — a shape-validation failure in a
-    capture stage surfaces here as FAILED_PARTIAL. Manifest finalisation must
-    never be what fails a run, so a writer error is logged and swallowed.
+    ``classify_run`` over the writer's per-endpoint outcomes is the single
+    source of run status for both the exit code and the manifest, so a
+    strict-mode abort is recorded by what it left usable, like any other run.
+    Manifest finalisation must never be what fails a run, so a writer error is
+    logged and swallowed.
 
     ``event_finality`` — this run's parsed event-status result, or None if
     that capture failed or did not validate — becomes the manifest's
     ``finality`` block (strategy doc A.5). It is omitted, not faked, when
     unavailable; a consumer must not read a missing block as "settled."
     """
-    status = classify_run_from_results(stage_results, strict_mode=strict_mode)
+    status: RunStatus = classify_run(raw_writer.endpoint_outcomes)
     try:
         result = raw_writer.finalize(
             status,
@@ -488,10 +502,10 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 strict=args.strict,
                 execution_state=execution_state,
             )
-        exit_code = _exit_code(logger, stage_results)
         _record_endpoints_not_attempted(raw_writer, stage_results)
+        exit_code = _exit_code(logger, raw_writer, stage_results)
         _finalize_raw_manifest(
-            raw_writer, logger, stage_results, strict_mode=False, event_finality=event_finality,
+            raw_writer, logger, event_finality=event_finality,
             git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,
             trigger=trigger,
         )
@@ -500,11 +514,13 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
         execution_state.fail()
         _record_endpoints_not_attempted(raw_writer, stage_results, aborted_stage=exc.result.stage)
         _finalize_raw_manifest(
-            raw_writer, logger, stage_results, strict_mode=True, event_finality=event_finality,
+            raw_writer, logger, event_finality=event_finality,
             git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,
             trigger=trigger,
         )
-        _log_run_summary(logger, status=RUN_STATUS_FAILED, results=stage_results)
+        endpoints = raw_writer.endpoint_outcomes
+        _log_run_summary(logger, status=classify_run(endpoints), results=stage_results)
+        _log_failed_endpoints(logger, endpoints)
         _log_fail_fast_failure(logger, exc.result)
         return 1
     except Exception:
@@ -604,9 +620,9 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
         fixtures = await ingest_fixtures(client, raw_writer)
         _record_stage(stage_results, logger, fixtures.result, strict=False)
 
-    exit_code = _exit_code(logger, stage_results)
+    exit_code = _exit_code(logger, raw_writer, stage_results)
     _finalize_raw_manifest(
-        raw_writer, logger, stage_results, strict_mode=False,
+        raw_writer, logger,
         git_sha=_current_git_sha(logger), ingest_version=INGEST_VERSION,
         config=_effective_run_config(args), trigger="manual" if force else PRE_DEADLINE_TRIGGER,
     )

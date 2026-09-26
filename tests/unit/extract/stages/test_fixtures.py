@@ -5,7 +5,7 @@ The stage no longer writes SQLite. What it must guarantee now:
     and endpoint ``fixtures``;
   - the sidecar carries the capture metadata the raw contract promises;
   - a payload that fails shape validation is still written, flagged in the
-    sidecar, and reported so the run manifest reads FAILED_PARTIAL;
+    sidecar, and counted as not usable in the run manifest;
   - nothing in this module can upsert rows.
 """
 
@@ -24,9 +24,9 @@ from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.extract.stages import fixtures as fixtures_stage
 from fpl_ingest.extract.stages.fixtures import ingest_fixtures, validate_fixtures_shape
 from fpl_ingest.orchestration.run_status import (
-    RUN_STATUS_FAILED_PARTIAL,
+    RUN_STATUS_FAILED,
     RUN_STATUS_SUCCESS,
-    classify_run_from_results,
+    classify_run,
 )
 
 pytestmark = pytest.mark.unit
@@ -162,9 +162,10 @@ class TestShapeValidation:
         assert outcome.result.errors == 0, "a shape failure is partial, not a hard error"
         assert outcome.result.skipped == 1
 
-        status = classify_run_from_results([outcome.result], strict_mode=False)
-        assert status == RUN_STATUS_FAILED_PARTIAL
-        assert writer.finalize(status).manifest["status"] == RUN_STATUS_FAILED_PARTIAL
+        status = classify_run(writer.endpoint_outcomes)
+        # Its only payload is not usable, so nothing usable came out of the run.
+        assert status == RUN_STATUS_FAILED
+        assert writer.finalize(status).manifest["status"] == RUN_STATUS_FAILED
 
 
 class TestFetchAndCapture:
@@ -214,7 +215,7 @@ class TestFetchAndCapture:
         writer = _writer(tmp_path)
         outcome = await ingest_fixtures(_client(_raw(_VALID_PAYLOAD)), writer)
 
-        status = classify_run_from_results([outcome.result], strict_mode=False)
+        status = classify_run(writer.endpoint_outcomes)
         assert status == RUN_STATUS_SUCCESS
 
         manifest = writer.finalize(status).manifest

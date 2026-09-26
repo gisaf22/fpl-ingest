@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from fpl_ingest.orchestration.run_status import RUN_STATUS_FAILED, RUN_STATUS_SUCCESS
+from fpl_ingest.orchestration.run_status import RUN_STATUS_PARTIAL, RUN_STATUS_SUCCESS
 from fpl_ingest.extract.stages.bootstrap import CoreData
 from fpl_ingest.orchestration.runner import StrictRunFailure, _warn_or_raise_on_unclean_stage, run_pipeline
 from fpl_ingest.orchestration.stage_result import StageOutcome, StageResult
@@ -29,6 +30,38 @@ def _errored(stage: str) -> StageResult:
 
 
 _EMPTY_CORE = CoreData(events=[], player_ids=[])
+
+# One representative raw endpoint per mocked stage.
+_STAGE_ENDPOINTS = {
+    "event_status": "event-status",
+    "core": "bootstrap-static",
+    "fixtures": "fixtures",
+    "gameweeks": "event-live/01",
+    "player_histories": "element-summary/1",
+}
+
+
+def _stage(outcome: StageOutcome) -> AsyncMock:
+    """A mocked stage that records through the writer what its result reports.
+
+    Run status is derived from the writer's per-endpoint outcomes, so a mock
+    that only returned a StageResult would leave the run with nothing recorded.
+    """
+    async def run(client, raw_writer, *args, **kwargs):
+        result = outcome.result
+        endpoint = _STAGE_ENDPOINTS[result.stage]
+        if result.errors:
+            raw_writer.record_failure(endpoint, request_url="https://example.test/", error_class="FPLClientError")
+        else:
+            now = datetime.now(timezone.utc)
+            raw_writer.write_object(
+                endpoint, b"{}", request_url="https://example.test/", requested_at=now,
+                received_at=now, http_status=200,
+                shape_validation={"ok": not result.skipped, "failures": ["mocked shape failure"] if result.skipped else []},
+            )
+        return outcome
+
+    return AsyncMock(side_effect=run)
 
 
 def _make_args(**overrides) -> SimpleNamespace:
@@ -61,15 +94,15 @@ def _run_pipeline(args, tmp_path,
     with (
         patch("fpl_ingest.orchestration.runner.AsyncFPLClient", _mock_async_fpl_client()),
         patch("fpl_ingest.orchestration.runner.ingest_event_status",
-              AsyncMock(return_value=StageOutcome(result=event_status_result or _clean("event_status"), output={}))),
+              _stage(StageOutcome(result=event_status_result or _clean("event_status"), output={}))),
         patch("fpl_ingest.orchestration.runner.ingest_core_data",
-              AsyncMock(return_value=StageOutcome(result=core_result or _clean("core"), output=_EMPTY_CORE))),
+              _stage(StageOutcome(result=core_result or _clean("core"), output=_EMPTY_CORE))),
         patch("fpl_ingest.orchestration.runner.ingest_fixtures",
-              AsyncMock(return_value=StageOutcome(result=fixtures_result or _clean("fixtures")))),
+              _stage(StageOutcome(result=fixtures_result or _clean("fixtures")))),
         patch("fpl_ingest.orchestration.runner.ingest_gameweeks",
-              AsyncMock(return_value=StageOutcome(result=gw_result or _clean("gameweeks")))),
+              _stage(StageOutcome(result=gw_result or _clean("gameweeks")))),
         patch("fpl_ingest.orchestration.runner.ingest_player_histories",
-              AsyncMock(return_value=StageOutcome(result=hist_result or _clean("player_histories")))),
+              _stage(StageOutcome(result=hist_result or _clean("player_histories")))),
     ):
         return asyncio.run(
             run_pipeline(
@@ -132,7 +165,8 @@ class TestFinalisationOrder:
         manifests = sorted((tmp_path / "raw" / "fpl" / "_manifests").rglob("manifest.json"))
         assert len(manifests) == 1
         manifest = json.loads(manifests[0].read_text())
-        assert manifest["status"] == RUN_STATUS_FAILED
+        # event-status was usable before core aborted the run (#48 AC2).
+        assert manifest["status"] == RUN_STATUS_PARTIAL
 
 
 class TestStrictModeAbort:

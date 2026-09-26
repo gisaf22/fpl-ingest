@@ -5,7 +5,7 @@ What it must guarantee:
     and endpoint ``event-status``;
   - the sidecar carries the capture metadata the raw contract promises;
   - a payload that fails shape validation is still written, flagged in the
-    sidecar, and reported so the run manifest reads FAILED_PARTIAL;
+    sidecar, and counted as not usable in the run manifest;
   - a shape-valid payload is parsed into a per-event finality map, aggregating
     multiple match-date entries per event (strategy doc 2.1);
   - a fetch failure or shape failure yields ``output=None`` — "finality
@@ -33,9 +33,9 @@ from fpl_ingest.extract.stages.event_status import (
 )
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.run_status import (
-    RUN_STATUS_FAILED_PARTIAL,
+    RUN_STATUS_FAILED,
     RUN_STATUS_SUCCESS,
-    classify_run_from_results,
+    classify_run,
 )
 
 pytestmark = pytest.mark.unit
@@ -177,9 +177,10 @@ class TestShapeValidation:
         assert outcome.result.skipped == 1
         assert outcome.output is None, "an invalid payload must never be trusted for finality"
 
-        status = classify_run_from_results([outcome.result], strict_mode=False)
-        assert status == RUN_STATUS_FAILED_PARTIAL
-        assert writer.finalize(status).manifest["status"] == RUN_STATUS_FAILED_PARTIAL
+        status = classify_run(writer.endpoint_outcomes)
+        # Its only payload is not usable, so nothing usable came out of the run.
+        assert status == RUN_STATUS_FAILED
+        assert writer.finalize(status).manifest["status"] == RUN_STATUS_FAILED
 
 
 class TestFetchAndCapture:
@@ -229,7 +230,7 @@ class TestFetchAndCapture:
         writer = _writer(tmp_path)
         outcome = await ingest_event_status(_client(_raw(_VALID_PAYLOAD)), writer)
 
-        status = classify_run_from_results([outcome.result], strict_mode=False)
+        status = classify_run(writer.endpoint_outcomes)
         assert status == RUN_STATUS_SUCCESS
 
         manifest = writer.finalize(status, finality=outcome.output).manifest

@@ -38,7 +38,7 @@ from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.run_status import (
     RUN_STATUS_FAILED,
     RUN_STATUS_SUCCESS,
-    classify_run_from_results,
+    classify_run,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -125,10 +125,7 @@ class TestCoreFailureIsDistinctFromGenuineEmptyResult:
         assert gw_outcome.result.errors == 0 and gw_outcome.result.skipped == 0
         assert hist_outcome.result.errors == 0 and hist_outcome.result.skipped == 0
 
-        status = classify_run_from_results(
-            [core_outcome.result, gw_outcome.result, hist_outcome.result],
-            strict_mode=False,
-        )
+        status = classify_run(writer.endpoint_outcomes)
         assert status == RUN_STATUS_FAILED
 
     async def test_genuine_empty_bootstrap_success_does_not_trip_fail_fast(
@@ -170,8 +167,5 @@ class TestCoreFailureIsDistinctFromGenuineEmptyResult:
         assert "No newly ratified gameweeks; nothing to capture." in caplog.text
         assert "no players known this run; nothing to fetch" in caplog.text
 
-        status = classify_run_from_results(
-            [core_outcome.result, gw_outcome.result, hist_outcome.result],
-            strict_mode=False,
-        )
+        status = classify_run(writer.endpoint_outcomes)
         assert status == RUN_STATUS_SUCCESS

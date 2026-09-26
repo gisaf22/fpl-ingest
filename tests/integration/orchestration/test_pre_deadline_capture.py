@@ -7,7 +7,6 @@ Deadlines are built relative to the real clock, so the gate runs unpatched.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -16,26 +15,11 @@ import pytest
 from fpl_ingest.cli import main
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from tests.support.cli_fakes import (
-    MINIMAL_BOOTSTRAP,
     _make_async_client,
     _raw_fixtures_response,
     _run,
 )
-
-
-def _bootstrap_with_deadline_in(minutes: float) -> dict:
-    deadline = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-    return {
-        **MINIMAL_BOOTSTRAP,
-        "events": [
-            {
-                "id": 6,
-                "finished": False,
-                "is_current": False,
-                "deadline_time": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-        ],
-    }
+from tests.support.run_helpers import _bootstrap_with_deadline_in
 
 
 def _pre_deadline(raw: Path, client, *extra: str) -> int:

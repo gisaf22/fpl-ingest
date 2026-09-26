@@ -461,3 +461,9 @@ def test_naive_run_start_is_treated_as_utc(tmp_path: Path):
     writer = LocalRawWriter(tmp_path, "fpl", started_at=datetime(2026, 8, 24, 8, 0, 12))
     assert writer.extraction_date == "2026-08-24"
     assert writer.run_id.startswith("20260824T080012Z-")
+
+
+@pytest.mark.covers("#49 AC4")
+def test_finalized_manifest_declares_a_minor_bump_over_1_0_0(writer: LocalRawWriter):
+    manifest = writer.finalize("SUCCESS").manifest
+    assert manifest["raw_contract_version"] == "1.1.0"

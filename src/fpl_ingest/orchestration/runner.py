@@ -54,6 +54,15 @@ from fpl_ingest.orchestration.pre_deadline import (
 _MAX_CONCURRENT_REQUESTS = 10
 _StageOutput = TypeVar("_StageOutput")
 
+# The full run's stages in execution order, each with the endpoint it captures.
+_PIPELINE_ENDPOINTS: tuple[tuple[str, str], ...] = (
+    ("event_status", "event-status"),
+    ("core", BOOTSTRAP_ENDPOINT),
+    ("fixtures", "fixtures"),
+    ("gameweeks", "event-live"),
+    ("player_histories", "element-summary"),
+)
+
 
 def _build_storage_backend(config: Any) -> RawStorageBackend | None:
     """Select the raw-capture backend from config.storage_backend.
@@ -291,6 +300,33 @@ async def _measure_stage(awaitable: Awaitable[_StageOutput]) -> tuple[_StageOutp
     return result, stage_started_at, stage_ended_at, perf_counter() - stage_started
 
 
+def _record_endpoints_not_attempted(
+    raw_writer: LocalRawWriter,
+    stage_results: list[StageResult],
+    *,
+    aborted_stage: str | None = None,
+) -> None:
+    """Record every endpoint whose stage came after the one that failed the run.
+
+    The failing stage is the strict-mode abort's, else the first with errors —
+    the same condition that trips fail-fast. Every later stage either skipped
+    itself on the tripped sentinel or, after a strict abort, never ran, so none
+    of its endpoint was attempted. Stages before it ran normally, and anything
+    they deliberately did not fetch is not recorded.
+    """
+    failed_stage = aborted_stage or next(
+        (result.stage for result in stage_results if result.errors > 0), None
+    )
+    stages = [stage for stage, _ in _PIPELINE_ENDPOINTS]
+    if failed_stage not in stages:
+        return
+    failed_endpoint = dict(_PIPELINE_ENDPOINTS)[failed_stage]
+    for _, endpoint in _PIPELINE_ENDPOINTS[stages.index(failed_stage) + 1 :]:
+        raw_writer.record_not_attempted(
+            endpoint, reason=f"not attempted: the {failed_endpoint} stage failed earlier in this run"
+        )
+
+
 async def _execute_stage(
     *,
     awaitable: Awaitable[StageOutcome[_StageOutput]],
@@ -453,6 +489,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 execution_state=execution_state,
             )
         exit_code = _exit_code(logger, stage_results)
+        _record_endpoints_not_attempted(raw_writer, stage_results)
         _finalize_raw_manifest(
             raw_writer, logger, stage_results, strict_mode=False, event_finality=event_finality,
             git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,
@@ -461,6 +498,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
         return exit_code
     except StrictRunFailure as exc:
         execution_state.fail()
+        _record_endpoints_not_attempted(raw_writer, stage_results, aborted_stage=exc.result.stage)
         _finalize_raw_manifest(
             raw_writer, logger, stage_results, strict_mode=True, event_finality=event_finality,
             git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,

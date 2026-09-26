@@ -82,6 +82,18 @@ shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
   from before #46 merged list `bootstrap-static` only; a consumer must treat a missing
   `fixtures` entry as "not captured", not as an error. If one endpoint fails, the other is
   still written, the manifest lists the failed one under `failures`, and the run fails.
+- **Judge each endpoint of a run by the manifest's `endpoints` block** (#49, contract
+  1.1.0), keyed by endpoint (`element-summary`, not `element-summary/115`), each with
+  `attempted`, `usable`, `failed`, `outcome` and `failures` (every one with a `reason`).
+  - **written vs usable:** `objects[...].written` counts payloads stored; `endpoints[...].usable`
+    counts payloads stored *and* passing their shape check, so a shape-invalid capture is
+    written but not usable.
+  - **SUCCESS:** everything attempted is usable.
+  - **PARTIAL:** some usable, some failed.
+  - **FAILED:** nothing usable — including an endpoint not attempted because an earlier stage
+    failed (`attempted: 0`, reason names that stage).
+  - An endpoint the refetch policy deliberately didn't fetch is absent, not FAILED. Manifests
+    before 1.1.0 have `objects` counts but no `endpoints` block.
 - **Manifests written before 2026-09-24 17:16 UTC (PR #15, `ccca196`) have no `trigger`
   key**, including that morning's 07:20 daily run, and local runs without
   `--trigger` record `null`. Treat both as unknown.

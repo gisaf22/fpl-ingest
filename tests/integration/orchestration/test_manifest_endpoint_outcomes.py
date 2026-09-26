@@ -26,7 +26,7 @@ from tests.support.cli_fakes import (
     _raw_response,
 )
 
-_OUTCOMES = {"saved", "partial", "failed"}
+_OUTCOMES = {"SUCCESS", "PARTIAL", "FAILED"}
 # Sidecar fields that legitimately differ between two runs of the same capture.
 _PER_RUN_SIDECAR_FIELDS = {"run_id", "extraction_date", "requested_at", "received_at"}
 
@@ -54,18 +54,22 @@ def _endpoint(manifest: dict, name: str) -> dict:
 
 
 def _assert_consistent(entry: dict) -> None:
-    """The outcome agrees with the counts, and every failure carries a reason."""
+    """The outcome agrees with the counts, and every failure carries a reason.
+
+    One rule, shared with run status: SUCCESS when everything attempted is usable,
+    PARTIAL when some is usable and some failed, FAILED when nothing is usable.
+    """
     assert entry["outcome"] in _OUTCOMES
-    assert entry["attempted"] == entry["saved"] + entry["failed"]
-    if entry["attempted"] and entry["saved"] == entry["attempted"]:
-        assert entry["outcome"] == "saved"
-    elif entry["saved"] > 0:
-        assert entry["outcome"] == "partial"
+    assert entry["attempted"] == entry["usable"] + entry["failed"]
+    if entry["attempted"] and entry["usable"] == entry["attempted"]:
+        assert entry["outcome"] == "SUCCESS"
+    elif entry["usable"] > 0:
+        assert entry["outcome"] == "PARTIAL"
     else:
-        assert entry["outcome"] == "failed"
+        assert entry["outcome"] == "FAILED"
     assert len(entry["failures"]) >= entry["failed"]
     assert all(f.get("reason") for f in entry["failures"])
-    if entry["outcome"] != "saved":
+    if entry["outcome"] != "SUCCESS":
         assert entry["failures"], "a failed or partial endpoint must say why"
 
 
@@ -81,7 +85,7 @@ def _history_failing_for(*failing: int):
 class TestEachEndpointHasAnOutcome:
 
     @pytest.mark.covers("#49 AC1")
-    def test_clean_run_marks_every_captured_endpoint_saved(self, tmp_path):
+    def test_clean_run_marks_every_captured_endpoint_successful(self, tmp_path):
         raw = tmp_path / "raw"
         assert _full_run(raw, _make_async_client()) == 0
 
@@ -91,8 +95,8 @@ class TestEachEndpointHasAnOutcome:
         ]:
             entry = _endpoint(manifest, name)
             _assert_consistent(entry)
-            assert (entry["attempted"], entry["saved"], entry["failed"]) == (count, count, 0)
-            assert entry["outcome"] == "saved"
+            assert (entry["attempted"], entry["usable"], entry["failed"]) == (count, count, 0)
+            assert entry["outcome"] == "SUCCESS"
 
     @pytest.mark.covers("#49 AC1")
     def test_some_players_failing_marks_element_summary_partial(self, tmp_path):
@@ -101,8 +105,8 @@ class TestEachEndpointHasAnOutcome:
 
         entry = _endpoint(_manifest(raw), "element-summary")
         _assert_consistent(entry)
-        assert (entry["attempted"], entry["saved"], entry["failed"]) == (2, 1, 1)
-        assert entry["outcome"] == "partial"
+        assert (entry["attempted"], entry["usable"], entry["failed"]) == (2, 1, 1)
+        assert entry["outcome"] == "PARTIAL"
         assert any("player 2 unreachable" in f["reason"] for f in entry["failures"])
 
     @pytest.mark.covers("#49 AC1")
@@ -112,11 +116,11 @@ class TestEachEndpointHasAnOutcome:
 
         entry = _endpoint(_manifest(raw), "element-summary")
         _assert_consistent(entry)
-        assert (entry["attempted"], entry["saved"], entry["failed"]) == (2, 0, 2)
-        assert entry["outcome"] == "failed"
+        assert (entry["attempted"], entry["usable"], entry["failed"]) == (2, 0, 2)
+        assert entry["outcome"] == "FAILED"
 
     @pytest.mark.covers("#49 AC1")
-    def test_shape_invalid_fixtures_is_saved_to_storage_but_marked_failed(self, tmp_path):
+    def test_shape_invalid_fixtures_is_stored_but_marked_failed(self, tmp_path):
         raw = tmp_path / "raw"
         client = _make_async_client()
         client.get_fixtures_raw = AsyncMock(
@@ -128,8 +132,8 @@ class TestEachEndpointHasAnOutcome:
         assert sorted((raw / "fpl" / "fixtures").rglob("payload.json"))
         entry = _endpoint(_manifest(raw), "fixtures")
         _assert_consistent(entry)
-        assert (entry["attempted"], entry["saved"], entry["failed"]) == (1, 0, 1)
-        assert entry["outcome"] == "failed"
+        assert (entry["attempted"], entry["usable"], entry["failed"]) == (1, 0, 1)
+        assert entry["outcome"] == "FAILED"
         reasons = " ".join(f["reason"] for f in entry["failures"])
         assert "shape" in reasons.lower()
         assert "top_level_is_list" in reasons
@@ -143,8 +147,8 @@ class TestEachEndpointHasAnOutcome:
 
         entry = _endpoint(_manifest(raw), "fixtures")
         _assert_consistent(entry)
-        assert (entry["attempted"], entry["saved"], entry["failed"]) == (1, 0, 1)
-        assert entry["outcome"] == "failed"
+        assert (entry["attempted"], entry["usable"], entry["failed"]) == (1, 0, 1)
+        assert entry["outcome"] == "FAILED"
         assert any("fixtures unreachable" in f["reason"] for f in entry["failures"])
 
     @pytest.mark.covers("#49 AC1")
@@ -161,7 +165,7 @@ class TestEachEndpointHasAnOutcome:
         entry = _endpoint(_manifest(raw), skipped_endpoint)
         _assert_consistent(entry)
         assert entry["attempted"] == 0
-        assert entry["outcome"] == "failed"
+        assert entry["outcome"] == "FAILED"
         reasons = " ".join(f["reason"] for f in entry["failures"]).lower()
         assert "not attempted" in reasons
         assert "fixtures" in reasons
@@ -198,7 +202,7 @@ class TestGoodCapturesAreUnaffectedByOtherFailures:
             ),
         ],
     )
-    def test_saved_capture_is_stored_and_described_as_in_a_clean_run(
+    def test_usable_capture_is_stored_and_described_as_in_a_clean_run(
         self, tmp_path, break_run, good_endpoints
     ):
         clean_raw, broken_raw = tmp_path / "clean", tmp_path / "broken"
@@ -213,7 +217,7 @@ class TestGoodCapturesAreUnaffectedByOtherFailures:
             name = endpoint.split("/")[0]
             if name != "element-summary":
                 assert _endpoint(broken_manifest, name) == _endpoint(clean_manifest, name)
-                assert _endpoint(broken_manifest, name)["outcome"] == "saved"
+                assert _endpoint(broken_manifest, name)["outcome"] == "SUCCESS"
 
 
 def _seed_settled_gameweek(raw: Path, gw: int, player_ids: list[int]) -> None:
@@ -233,7 +237,7 @@ class TestDeliberateNonFetchIsNotAFailure:
     def _assert_not_a_failure(manifest: dict, name: str) -> None:
         entry = manifest.get("endpoints", {}).get(name)
         if entry is not None:
-            assert entry["outcome"] not in {"failed", "partial"}, entry
+            assert entry["outcome"] not in {"FAILED", "PARTIAL"}, entry
             assert entry["failed"] == 0
         assert not any(f["endpoint"].split("/")[0] == name for f in manifest["failures"])
 

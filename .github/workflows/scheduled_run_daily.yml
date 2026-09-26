@@ -2,7 +2,7 @@
 #
 # Runs the full ingestion pipeline twice a day. This is the only scheduled
 # full-pipeline workflow (scheduled_run_pre_deadline.yml captures only
-# bootstrap-static, near deadlines): every run executes all five stages
+# bootstrap-static and fixtures, near deadlines): every run executes all five stages
 # (event-status, bootstrap-static, fixtures, event-live, element-summary), and each stage's
 # own refetch policy (CLAUDE.md, "Endpoint refetch policy") decides what it
 # actually fetches. No consumer needs sub-daily capture: event-live is

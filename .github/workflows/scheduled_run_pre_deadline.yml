@@ -1,17 +1,21 @@
-# Scheduled FPL ingestion workflow — pre-deadline bootstrap-static capture.
+# Scheduled FPL ingestion workflow — pre-deadline bootstrap-static + fixtures capture.
 #
-# Captures bootstrap-static alone, shortly before each transfer deadline. The
+# Captures bootstrap-static and fixtures, shortly before each transfer deadline. The
 # daily workflow lands ~07:15 and ~19:15 UTC while deadlines fall between
 # 10:00 and 18:30 UTC, so its last capture before a deadline is up to ~11h
 # stale; measured over GW3-5 it missed an average of 4 availability changes
 # (status / chance_of_playing) for relevant players per deadline.
 #
 # This restores only the deadline-state capture that scheduled_run_live.yml
-# provided until 46d3c19 — no match-window pulls, no other endpoints. The
-# `pre-deadline` command fetches bootstrap-static, and writes it (payload,
-# sidecar, manifest with trigger: pre_deadline) only if the next deadline is
-# within 75 minutes (orchestration/pre_deadline.py). Otherwise it exits 0
-# having written nothing. There is no marker and no state between runs.
+# provided until 46d3c19, plus fixtures (#46) so fixture difficulty and
+# kickoff times are kept as they stood at each deadline — no match-window
+# pulls, no other endpoints. The `pre-deadline` command fetches
+# bootstrap-static and, only if the next deadline is within 75 minutes
+# (orchestration/pre_deadline.py), writes it and fetches and writes fixtures
+# in the same run (payloads, sidecars, one manifest with trigger:
+# pre_deadline). Otherwise it exits 0 having written nothing. A failure of
+# either endpoint keeps the other and fails the run. There is no marker and
+# no state between runs.
 #
 # Cron covers 09:00-19:30 UTC every 30 minutes: that serves any deadline
 # between 09:00 and 20:45 UTC. deadline_time is UTC, so the UK clock change
@@ -65,7 +69,7 @@ jobs:
           role-to-assume: arn:aws:iam::737634035092:role/github-actions-fpl-ingest
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
-      - name: Capture bootstrap-static if a deadline is near
+      - name: Capture bootstrap-static and fixtures if a deadline is near
         run: uv run fpl-ingest pre-deadline ${{ inputs.force && '--force' || '' }}
 
       - name: Email on failure

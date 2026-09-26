@@ -132,6 +132,7 @@ class TestPreDeadlineCapturesFixtures:
         assert _payloads(raw, "fixtures") == []
         [manifest] = _manifests(raw)
         assert manifest["status"] != "SUCCESS"
+        assert [f["endpoint"] for f in manifest["failures"]] == ["fixtures"]
 
 
 class TestForce:
@@ -172,6 +173,7 @@ class TestForce:
         [manifest] = _manifests(raw)
         assert manifest["trigger"] == "manual"
         assert manifest["status"] != "SUCCESS"
+        assert [f["endpoint"] for f in manifest["failures"]] == ["bootstrap-static"]
 
 
 class TestRunTrigger:

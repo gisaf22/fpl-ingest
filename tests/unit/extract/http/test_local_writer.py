@@ -507,6 +507,7 @@ def _fetch_failure(writer: LocalRawWriter, endpoint: str) -> None:
             "FAILED",
             id="nothing-usable",
         ),
+        pytest.param(lambda w: None, "FAILED", id="no-endpoints-recorded"),
     ],
 )
 def test_new_record_status_is_success_partial_or_failed_never_failed_partial(

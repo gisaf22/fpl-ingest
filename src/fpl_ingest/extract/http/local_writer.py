@@ -60,6 +60,13 @@ __all__ = [
 
 MANIFEST_STATUS_IN_PROGRESS = "IN_PROGRESS"
 
+# Per-endpoint outcomes share run status's vocabulary and its one rule:
+# SUCCESS when everything attempted is usable, PARTIAL when some is usable and
+# some failed, FAILED when nothing is usable (including nothing attempted).
+ENDPOINT_OUTCOME_SUCCESS = "SUCCESS"
+ENDPOINT_OUTCOME_PARTIAL = "PARTIAL"
+ENDPOINT_OUTCOME_FAILED = "FAILED"
+
 
 class RawObjectExistsError(FileExistsError):
     """Raised when a raw object key already exists.
@@ -209,6 +216,7 @@ class LocalRawWriter:
         self._backend: RawStorageBackend = backend or LocalFilesystemBackend(root_dir)
         self._objects: dict[str, dict[str, int]] = {}
         self._failures: list[dict[str, Any]] = []
+        self._endpoints: dict[str, dict[str, Any]] = {}
         self._markers_withheld: list[dict[str, Any]] = []
         self._finalized = False
 
@@ -304,6 +312,15 @@ class LocalRawWriter:
         self._backend.put_bytes(m_key, _json_bytes(sidecar))
 
         self._record_object(endpoint, written=1, byte_count=len(payload_bytes))
+        shape_failures = _shape_failures(shape_validation)
+        if shape_failures is None:
+            self._record_endpoint(endpoint, usable=True)
+        else:
+            self._record_endpoint(
+                endpoint,
+                usable=False,
+                reason=f"shape check failed: {'; '.join(shape_failures) or 'no detail'}",
+            )
         self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
         return WriteResult(
@@ -348,6 +365,24 @@ class LocalRawWriter:
                 "message": message,
             }
         )
+        self._record_endpoint(
+            endpoint, usable=False, reason=f"{error_class}: {message}" if message else error_class
+        )
+        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+
+    def record_not_attempted(self, endpoint: str, *, reason: str) -> None:
+        """Record an endpoint the run never attempted because of an earlier failure.
+
+        It appears in the manifest's ``endpoints`` block with nothing attempted,
+        outcome FAILED and ``reason`` as its failure. It is not an object-level
+        failure, so ``objects``, ``totals`` and ``failures`` are unchanged. Not
+        for deliberate non-fetches under the refetch policy — those are not
+        failures and are not recorded at all.
+        """
+        self._assert_open()
+        raw_keys.validate_endpoint(endpoint)
+        entry = self._endpoint_entry(endpoint)
+        entry["failures"].append({"endpoint": endpoint, "reason": reason})
         self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
     def record_marker_withheld(self, endpoint: str, *, event: int, reason: str) -> None:
@@ -498,6 +533,7 @@ class LocalRawWriter:
             },
             "totals": self._totals(),
             "failures": list(self._failures),
+            "endpoints": self._endpoint_outcomes(),
             "git_sha": git_sha,
             "ingest_version": ingest_version,
             "config": dict(config) if config is not None else None,
@@ -527,6 +563,39 @@ class LocalRawWriter:
         counts["failed"] += failed
         counts["bytes"] += byte_count
 
+    def _endpoint_entry(self, endpoint: str) -> dict[str, Any]:
+        """Return the tallies for ``endpoint``'s family (``element-summary/115`` -> ``element-summary``)."""
+        return self._endpoints.setdefault(
+            endpoint.split("/", 1)[0], {"attempted": 0, "usable": 0, "failed": 0, "failures": []}
+        )
+
+    def _record_endpoint(self, endpoint: str, *, usable: bool, reason: str | None = None) -> None:
+        entry = self._endpoint_entry(endpoint)
+        entry["attempted"] += 1
+        if usable:
+            entry["usable"] += 1
+        else:
+            entry["failed"] += 1
+            entry["failures"].append({"endpoint": endpoint, "reason": reason})
+
+    def _endpoint_outcomes(self) -> dict[str, dict[str, Any]]:
+        outcomes: dict[str, dict[str, Any]] = {}
+        for name, entry in sorted(self._endpoints.items()):
+            if entry["attempted"] and entry["usable"] == entry["attempted"]:
+                outcome = ENDPOINT_OUTCOME_SUCCESS
+            elif entry["usable"]:
+                outcome = ENDPOINT_OUTCOME_PARTIAL
+            else:
+                outcome = ENDPOINT_OUTCOME_FAILED
+            outcomes[name] = {
+                "attempted": entry["attempted"],
+                "usable": entry["usable"],
+                "failed": entry["failed"],
+                "outcome": outcome,
+                "failures": [dict(f) for f in entry["failures"]],
+            }
+        return outcomes
+
     def _flush_manifest(self, status: str) -> None:
         """Persist the in-progress manifest so a dead run leaves an honest trace."""
         manifest = self._build_manifest(
@@ -551,6 +620,17 @@ class LocalRawWriter:
     def _assert_open(self) -> None:
         if self._finalized:
             raise RuntimeError(f"run {self.run_id} has already been finalized")
+
+
+def _shape_failures(shape_validation: Mapping[str, Any] | None) -> list[str] | None:
+    """Return the shape check's failures, or None when the capture is usable.
+
+    A capture written without a verdict is treated as usable: the check is the
+    only thing that can mark a stored payload unusable.
+    """
+    if shape_validation is None or shape_validation.get("ok", True):
+        return None
+    return [str(f) for f in shape_validation.get("failures") or []]
 
 
 def _normalize_headers(headers: Mapping[str, str] | None) -> dict[str, str]:

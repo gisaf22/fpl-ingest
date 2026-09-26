@@ -573,6 +573,7 @@ The `_manifests` prefix is a sibling of the endpoint prefixes, so a warehouse sc
 | `status` | `SUCCESS` / `FAILED_PARTIAL` / `FAILED` — **reuse `orchestration/run_status.py` verbatim.** Its precedence rules are already the shared vocabulary of runner and store. |
 | `objects` | Per-endpoint: attempted, written, failed, total bytes |
 | `failures` | Per-failed-endpoint: URL, final status, attempt count, error class |
+| `endpoints` | Since 1.1.0 (#49). Per endpoint (`element-summary`, not per player): attempted, usable (stored and shape-valid), failed, an `outcome` of `SUCCESS` / `PARTIAL` / `FAILED`, and each failure's reason, including endpoints not attempted after an earlier stage failed |
 | `finality` | **FPL only, new.** The captured `event-status` payload's essentials: per-event `points` (`p`/`r`) and `bonus_added`. Lets a warehouse decide whether a run's data is settled **without opening any payload.** This is the single most valuable new field. |
 | `git_sha`, `ingest_version` | Which code produced this run |
 | `config` | Effective rate limit, concurrency, strict mode, `--force` |

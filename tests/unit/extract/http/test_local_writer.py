@@ -27,6 +27,7 @@ from fpl_ingest.extract.http.local_writer import (
     RawObjectExistsError,
 )
 from fpl_ingest.extract.http.raw_keys import RawKeyError
+from fpl_ingest.orchestration.run_status import classify_run
 
 pytestmark = pytest.mark.unit
 
@@ -463,7 +464,55 @@ def test_naive_run_start_is_treated_as_utc(tmp_path: Path):
     assert writer.run_id.startswith("20260824T080012Z-")
 
 
-@pytest.mark.covers("#49 AC4")
-def test_finalized_manifest_declares_a_minor_bump_over_1_0_0(writer: LocalRawWriter):
-    manifest = writer.finalize("SUCCESS").manifest
-    assert manifest["raw_contract_version"] == "1.1.0"
+@pytest.mark.covers("#48 AC5")
+def test_finalized_manifest_declares_contract_version_2_0_0(writer: LocalRawWriter):
+    _write_bootstrap(writer)
+    manifest = writer.finalize(classify_run(writer.endpoint_outcomes)).manifest
+    assert manifest["raw_contract_version"] == "2.0.0"
+
+
+_SHAPE_INVALID = {"ok": False, "checks": ["top_level_is_list"], "failures": ["top_level_is_list: got dict"]}
+
+
+def _fetch_failure(writer: LocalRawWriter, endpoint: str) -> None:
+    writer.record_failure(endpoint, request_url=f"https://example.test/{endpoint}/", error_class="FPLClientError")
+
+
+@pytest.mark.covers("#48 AC5")
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        pytest.param(lambda w: _write_bootstrap(w), "SUCCESS", id="all-usable"),
+        pytest.param(
+            lambda w: (_write_bootstrap(w),
+                       w.write_object("fixtures", b"{}", request_url="https://example.test/fixtures/",
+                                      requested_at=RUN_START, received_at=RUN_START, http_status=200,
+                                      shape_validation=_SHAPE_INVALID)),
+            "PARTIAL",
+            id="shape-failure-alongside-usable",
+        ),
+        pytest.param(
+            lambda w: (_write_bootstrap(w), _fetch_failure(w, "fixtures")),
+            "PARTIAL",
+            id="fetch-failure-alongside-usable",
+        ),
+        pytest.param(
+            lambda w: _write_bootstrap(w, shape_validation=_SHAPE_INVALID),
+            "FAILED",
+            id="only-payload-shape-invalid",
+        ),
+        pytest.param(
+            lambda w: (_fetch_failure(w, "bootstrap-static"),
+                       w.record_not_attempted("fixtures", reason="not attempted")),
+            "FAILED",
+            id="nothing-usable",
+        ),
+    ],
+)
+def test_new_record_status_is_success_partial_or_failed_never_failed_partial(
+    writer: LocalRawWriter, record, expected
+):
+    record(writer)
+    manifest = writer.finalize(classify_run(writer.endpoint_outcomes)).manifest
+    assert manifest["status"] == expected
+    assert manifest["status"] in {"SUCCESS", "PARTIAL", "FAILED"}

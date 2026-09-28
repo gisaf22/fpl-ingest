@@ -137,6 +137,7 @@ gh api repos/gisaf22/.github/contents/AGENT_WORKFLOW.md -H "Accept: application/
 
 Must-follow rules:
 
+- **Design decisions:** run AGENT_WORKFLOW.md step 0 before writing any story's ACs.
 - **No acceptance criteria table → stop.** Add the `needs-spec` label and ask.
 - **Move the item to In Progress** when you pick it up. Bigger than its Size → stop and
   propose a split.

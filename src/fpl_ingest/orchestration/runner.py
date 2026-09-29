@@ -552,7 +552,7 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
     stamped ``trigger: pre_deadline``. A failed bootstrap-static fetch writes
     nothing and returns 1, since the window cannot be evaluated without it; a
     failed fixtures fetch keeps bootstrap-static and returns 1. Either way the
-    workflow's failure email fires.
+    scheduled run pings its healthchecks.io check with ``/fail``.
 
     ``--force`` (the workflow's ``force`` dispatch input) skips the gate and
     records ``trigger: manual``, since the capture is then a person's choice,

@@ -72,3 +72,16 @@ jobs:
           body: |
             scheduled_run_daily.yml failed on ${{ github.repository }}@${{ github.ref_name }}.
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      # Heartbeat to healthchecks.io (#57). The last step, on every outcome of
+      # a scheduled run, and it can never change the job's conclusion.
+      # Manual runs do not ping, so they neither raise nor clear an alert.
+      # job.status is passed through env, not interpolated into the script.
+      - name: Ping healthchecks.io
+        if: always() && github.event_name == 'schedule'
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL_DAILY }}
+          JOB_STATUS: ${{ job.status }}
+        run: bash .github/scripts/healthchecks_ping.sh "$JOB_STATUS"

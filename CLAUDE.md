@@ -113,6 +113,43 @@ shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
 
 ---
 
+## Monitoring
+
+Each scheduled workflow pings a [healthchecks.io](https://healthchecks.io) check at the end
+of every scheduled run (#57; design decisions on #34). A check alerts by email when a run
+reports failure, and also when no ping arrives within the check's schedule plus grace. That
+second case covers runs that never start and GitHub Actions outages.
+
+| Check | Workflow | Schedule | Timezone | Grace | Ping URL secret |
+|---|---|---|---|---|---|
+| `fpl-ingest pre-deadline` | `scheduled_run_pre_deadline.yml` | `*/30 9-19 * * *` | UTC | 1 h | `HEALTHCHECKS_PING_URL_PRE_DEADLINE` |
+| `fpl-ingest daily` | `scheduled_run_daily.yml` | `0 7,19 * * *` | UTC | 1 h | `HEALTHCHECKS_PING_URL_DAILY` |
+
+fpl-warehouse's scheduled build has its own check, documented in that repo.
+
+- **Outcome comes from the job's exit code**, via `job.status`. `success` pings the plain
+  URL, and `failure` or `cancelled` pings `<url>/fail`. The command exits 1 for PARTIAL and
+  FAILED, so those report `/fail`. So does any failure before the command runs, such as
+  `uv sync` or OIDC. A pre-deadline run outside the window succeeds and pings success.
+- **Scheduled runs only.** A manual dispatch, including `force=true`, does not ping, so it
+  can neither raise an alert nor clear one while the schedule is broken.
+- **The ping can never fail the job.** `.github/scripts/healthchecks_ping.sh` always exits
+  0: it logs a notice and sends nothing when the secret is empty (a fork or fresh clone), and
+  it logs a warning when the request fails. The step is also `continue-on-error` with a
+  2-minute timeout. A lost ping reads as absence and alerts after the grace, which is the
+  accepted false positive. The same holds for a failed checkout, which leaves no script to
+  run.
+- **The ping URLs are secrets, not variables.** The repo is public, and anyone holding a URL
+  could send a false success ping. Never paste one into an issue, PR or log.
+- **Grace sizing**, measured over scheduled runs to 2026-09-28. Pre-deadline runs start 8–22
+  minutes after their cron time and take at most 37 s. Daily runs finish at most 35 minutes
+  after cron. The daily job has no `timeout-minutes`, so a hung run alerts through absence
+  after 1 h.
+- The SMTP "Email on failure" steps still run alongside the pings until healthchecks.io alerts
+  have been seen working; #58 removes them.
+
+---
+
 ## Git safety
 
 This repo has suffered a real data-loss incident: `git checkout` on a path that had been

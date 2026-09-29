@@ -185,7 +185,9 @@ Must-follow rules:
   result on the PR or issue.
 - **Pause for approval before implementing.** Commit the tests first (failing), then stop
   and report. Size XS with every AC manual: skip the pause; the PR is the review point.
-  Size S: always pause; if every AC is manual, report a verification plan instead.
+  Size S: pause only if a design decision was open or new at pick-up; otherwise commit the
+  failing tests, implement and open the PR. If a pause applies and every AC is manual,
+  report a verification plan instead.
 - **Stay inside Out of scope.** Spec wrong or ambiguous → stop and ask; don't improvise.
 - **PR body says `Closes #N`; post AC results (pass/fail per AC, with evidence) as a PR
   comment; tick the Definition of Done** (N/A with reason where it doesn't apply).

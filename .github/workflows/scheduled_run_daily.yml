@@ -58,21 +58,6 @@ jobs:
         # The manifest's trigger field records whether cron or a person started the run.
         run: uv run fpl-ingest run --trigger ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}
 
-      - name: Email on failure
-        if: failure()
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          from: fpl-ingest CI <${{ secrets.SMTP_USERNAME }}>
-          to: ${{ secrets.NOTIFY_EMAIL_TO }}
-          subject: "fpl-ingest: scheduled_run_daily failed"
-          body: |
-            scheduled_run_daily.yml failed on ${{ github.repository }}@${{ github.ref_name }}.
-            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
       # Heartbeat to healthchecks.io (#57). The last step, on every outcome of
       # a scheduled run, and it can never change the job's conclusion.
       # Manual runs do not ping, so they neither raise nor clear an alert.

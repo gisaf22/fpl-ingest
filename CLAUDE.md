@@ -145,8 +145,8 @@ fpl-warehouse's scheduled build has its own check, documented in that repo.
   minutes after their cron time and take at most 37 s. Daily runs finish at most 35 minutes
   after cron. The daily job has no `timeout-minutes`, so a hung run alerts through absence
   after 1 h.
-- The SMTP "Email on failure" steps still run alongside the pings until healthchecks.io alerts
-  have been seen working; #58 removes them.
+- **healthchecks.io is the only failure alert.** The SMTP "Email on failure" steps were
+  removed once its alerts had been seen working (#58), so each failure raises one alert.
 
 ---
 

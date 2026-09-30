@@ -18,7 +18,11 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-RAW_CONTRACT_VERSION = "2.0.0"
+RAW_CONTRACT_VERSION = "2.1.0"
+
+#: Prefix every key carries in the capture bucket. The keys built here are
+#: relative to it; ``bucket_key`` adds it, whatever the storage backend.
+BUCKET_KEY_PREFIX = "raw/"
 
 MANIFEST_PREFIX = "_manifests"
 SETTLEMENT_PREFIX = "_settlement"
@@ -108,6 +112,15 @@ def settlement_marker_key(source: str, endpoint: str, event_id: int) -> str:
     if event_id < 0:
         raise RawKeyError(f"invalid event_id: {event_id!r}")
     return f"{source}/{SETTLEMENT_PREFIX}/{endpoint}/{event_id}/{SETTLEMENT_MARKER_FILENAME}"
+
+
+def bucket_key(key: str) -> str:
+    """Return ``key`` as the full object key under the bucket, without a scheme.
+
+    The form the manifest's ``captures[]`` records, identical for local and S3
+    runs, so a consumer can join an entry to the object it lists.
+    """
+    return f"{BUCKET_KEY_PREFIX}{key}"
 
 
 def payload_filename(extension: str = "json") -> str:

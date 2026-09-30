@@ -5,7 +5,9 @@ Captures the FPL ``event-status/`` endpoint verbatim — the finality signal
 provisional or settled. Captured first, before any other endpoint, because it
 determines how everything else in the run should be interpreted (strategy doc
 A.5): capturing it last would mean the finality signal describes a moment
-after the payloads it labels.
+after the payloads it labels. That ordering is about the fetch: in a full run
+the payload is written only after bootstrap-static has been fetched and the
+run's season set (``before_write``), so its sidecar carries the season (#62).
 
 Also parses the captured payload into a compact per-event finality map —
 ``{event_id: {"points": "p"|"r", "bonus_added": bool}}`` — which becomes the
@@ -17,6 +19,7 @@ run manifest's ``finality`` block (strategy doc A.5) and is the signal
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
@@ -54,6 +57,7 @@ async def ingest_event_status(
     raw_writer: LocalRawWriter,
     *,
     execution_state: PipelineExecutionState | None = None,
+    before_write: Callable[[], Awaitable[None]] | None = None,
 ) -> StageOutcome[Finality | None]:
     """Fetch event-status and capture the response verbatim into raw storage.
 
@@ -61,6 +65,10 @@ async def ingest_event_status(
         client: Async FPL client for the HTTP fetch.
         raw_writer: Writer for this run; also accumulates the run manifest.
         execution_state: Fail-fast sentinel.
+        before_write: Awaited after a successful fetch and before the write.
+            The runner fetches bootstrap-static here to set the run's season,
+            so event-status is still observed first but its immutable sidecar
+            carries the season (#62 D1). Not called when the fetch fails.
 
     Returns:
         StageOutcome whose ``output`` is the parsed per-event finality map when
@@ -87,6 +95,9 @@ async def ingest_event_status(
             message=str(exc),
         )
         return StageOutcome(result=StageResult(stage="event_status", errors=1), output=None)
+
+    if before_write is not None:
+        await before_write()
 
     shape = validate_event_status_shape(raw)
     if not shape["ok"]:

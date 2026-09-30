@@ -30,6 +30,7 @@ from typing import Any, NamedTuple
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.extract.http.sync_http import FPLClientError
+from fpl_ingest.extract.season import resolve_season
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.stage_result import (
     StageLineage,
@@ -86,6 +87,7 @@ async def ingest_core_data(
     raw_writer: LocalRawWriter,
     *,
     execution_state: PipelineExecutionState | None = None,
+    prefetched: RawResponse | FPLClientError | None = None,
 ) -> StageOutcome[CoreData]:
     """Fetch bootstrap-static and capture the response verbatim into raw storage.
 
@@ -96,6 +98,9 @@ async def ingest_core_data(
             run covers every endpoint it touches.
         execution_state: Fail-fast sentinel. When a previous stage has already
             failed, the capture is skipped rather than written.
+        prefetched: The response, or the fetch error, when the runner already
+            fetched bootstrap-static to derive the run's season (#62 D1). The
+            stage then captures it instead of fetching again.
 
     Returns:
         StageOutcome whose result counts captured objects, not rows — this
@@ -110,9 +115,14 @@ async def ingest_core_data(
             result=StageResult(stage="core"), output=CoreData(events=[], player_ids=[])
         )
 
-    logger.info("Fetching bootstrap-static...")
     try:
-        raw = await client.get_bootstrap_raw()
+        if isinstance(prefetched, FPLClientError):
+            raise prefetched
+        if prefetched is not None:
+            raw = prefetched
+        else:
+            logger.info("Fetching bootstrap-static...")
+            raw = await client.get_bootstrap_raw()
     except FPLClientError as exc:
         logger.error("Failed to fetch bootstrap-static: %s", exc)
         raw_writer.record_failure(
@@ -191,6 +201,17 @@ def capture_bootstrap_raw(raw: RawResponse, raw_writer: LocalRawWriter) -> Stage
             CORE_STAGE, raw_artifacts=(write.payload_key,)
         ),
     )
+
+
+def season_for_bootstrap(raw: RawResponse | None, log: logging.Logger) -> str | None:
+    """Return the run's season from its bootstrap-static response (#62 D5, D6).
+
+    ``raw`` is None when the fetch failed. A shape-invalid payload is not
+    parsed at all, so a body that is not JSON cannot raise here.
+    """
+    shape_ok = raw is not None and bool(validate_bootstrap_shape(raw)["ok"])
+    payload = raw.json() if raw is not None and shape_ok else None
+    return resolve_season(payload, shape_ok=shape_ok, logger=log)
 
 
 def core_handoff(raw: RawResponse) -> CoreData:

@@ -544,39 +544,60 @@ Sidecar object rather than S3 user metadata: user metadata is capped at 2 KB, is
 `GET` of the payload, and cannot be read by a dbt external-table scan. A sidecar is just
 another readable object.
 
-Contents:
+**Fields: `schemas/raw-contract/2.1.0/sidecar.schema.json` is the contract.** The field
+table that used to sit here drifted from the code and was replaced by the schema (#62). The
+reasons behind the fields stay here:
 
-| Field | Example | Why |
-|---|---|---|
-| `source` | `"fpl"` | Self-describing without parsing the key |
-| `endpoint` | `"bootstrap-static"` | ditto |
-| `run_id` | `"20260824T080012Z-a3f19c"` | ditto |
-| `request_url` | `"https://fantasy.premierleague.com/api/bootstrap-static/"` | Exact URL including any query string |
-| `requested_at` / `received_at` | ISO-8601 UTC | Bounds the observation instant |
-| `http_status` | `200` | Only 2xx should ever be written, but record it |
-| `response_headers` | `{"date": ..., "age": "41", "cache-control": "max-age=300", "etag": ...}` | **Load-bearing.** §3 established the API is Fastly-cached with a 5-min TTL; `Age` is the only way to know how stale a 200 was. `ETag`/`Last-Modified` enable conditional requests later. |
-| `content_length` | `1616455` | Cheap corruption check |
-| `content_sha256` | hex digest | Identity of the payload. Enables no-op detection and cross-run dedupe without re-reading bytes. |
-| `attempt_count` | `1` | Non-1 means the retry path was exercised |
-| `ingest_version` | `"fpl-ingest/1.0.0"` | Which code produced this |
-| `shape_validation` | `{"status": "pass", "checks": [...]}` | §B validation result for this payload |
+- `source`, `endpoint`, `run_id`, `extraction_date` make the object self-describing without
+  parsing its key.
+- `season` (since 2.1.0) is derived from the same run's bootstrap-static: the deadline year Y
+  of its lowest-id event gives `Y-(Y+1 mod 100)`. It is `null` when the run has no usable
+  bootstrap; there is no fallback, because reading an earlier run's manifest back would break
+  the write-only backend. event-status is still fetched first, but written after bootstrap is
+  fetched, so its sidecar carries the season too.
+- `request_url` is the exact URL, including any query string. `requested_at` and
+  `received_at` bound the observation instant.
+- `http_status`: only 2xx should ever be written, but record it.
+- `response_headers` is **load-bearing.** §3 established the API is Fastly-cached with a
+  5-min TTL; `Age` is the only way to know how stale a 200 was. `ETag`/`Last-Modified`
+  enable conditional requests later.
+- `content_length` is a cheap corruption check. `content_sha256` is the payload's identity:
+  it enables no-op detection and cross-run dedupe without re-reading bytes.
+- `attempt_count` other than 1 means the retry path was exercised.
+- `shape_validation` is the §B validation result for this payload.
 
 ### Per-run manifest — `raw/{source}/_manifests/{extraction_date}/{run_id}/manifest.json`
 
 The `_manifests` prefix is a sibling of the endpoint prefixes, so a warehouse scanning
 `raw/fpl/bootstrap-static/**` never accidentally reads manifests as payloads.
 
-| Field | Why |
-|---|---|
-| `run_id`, `source`, `extraction_date` | Identity |
-| `started_at`, `ended_at`, `duration_seconds` | Direct successor to today's per-stage timing in `runner.py::_measure_stage` |
-| `status` | `SUCCESS` / `PARTIAL` / `FAILED` since 2.0.0 (#48): derived by `orchestration/run_status.py` from the `endpoints` outcomes with the same rule — everything usable, some usable and some failed, nothing usable. Before 2.0.0: `SUCCESS` / `FAILED_PARTIAL` / `FAILED`, where `FAILED` covered any fetch error |
-| `objects` | Per-endpoint: attempted, written, failed, total bytes |
-| `failures` | Per-failed-endpoint: URL, final status, attempt count, error class |
-| `endpoints` | Since 1.1.0 (#49). Per endpoint (`element-summary`, not per player): attempted, usable (stored and shape-valid), failed, an `outcome` of `SUCCESS` / `PARTIAL` / `FAILED`, and each failure's reason, including endpoints not attempted after an earlier stage failed |
-| `finality` | **FPL only, new.** The captured `event-status` payload's essentials: per-event `points` (`p`/`r`) and `bonus_added`. Lets a warehouse decide whether a run's data is settled **without opening any payload.** This is the single most valuable new field. |
-| `git_sha`, `ingest_version` | Which code produced this run |
-| `config` | Effective rate limit, concurrency, strict mode, `--force` |
+**Fields: `schemas/raw-contract/2.1.0/manifest.schema.json` is the contract**, replacing the
+field table that used to sit here (#62). The reasons:
+
+- `run_id`, `source`, `extraction_date` are its identity. `started_at`, `ended_at` and
+  `duration_seconds` succeed the per-stage timing in `runner.py::_measure_stage`.
+- `status` is `SUCCESS` / `PARTIAL` / `FAILED` since 2.0.0 (#48), derived by
+  `orchestration/run_status.py` from the `endpoints` outcomes with the same rule: everything
+  usable, some usable and some failed, nothing usable. Before 2.0.0 it was `SUCCESS` /
+  `FAILED_PARTIAL` / `FAILED`, where `FAILED` covered any fetch error. `IN_PROGRESS` marks a
+  manifest the run is still rewriting, or one left by a run that died.
+- `objects` (per endpoint: attempted, written, failed, total bytes) and `failures` (per failed
+  endpoint: URL, final status, attempt count, error class) say what is missing from an
+  incomplete run.
+- `endpoints` (since 1.1.0, #49) judges each endpoint family (`element-summary`, not per
+  player): attempted, usable (stored and shape-valid), failed, an `outcome`, and each
+  failure's reason, including endpoints not attempted after an earlier stage failed.
+- `captures` (since 2.1.0, #62) indexes every payload the run wrote: its full bucket key,
+  endpoint, `received_at`, `content_sha256`, `content_length`, `http_status`, `shape_ok`,
+  `usable` and `season`, each built from the same record as that payload's sidecar. Finding
+  usable captures no longer means reading every sidecar. Fetch failures have no payload and
+  no entry. It is written only into the finalized manifest; an `IN_PROGRESS` manifest, which
+  is rewritten after every object, carries none, so consumers must ignore those.
+- `finality` (FPL only) holds the captured `event-status` payload's essentials: per-event
+  `points` (`p`/`r`) and `bonus_added`. It lets a warehouse decide whether a run's data is
+  settled **without opening any payload.**
+- `git_sha` and `ingest_version` record which code produced the run. `config` records the
+  effective rate limit, concurrency, strict mode and `--force`; `trigger` what started it.
 
 **The manifest is the successor to `_runs` and `_stage_lineage`.** `_runs`
 (`store.py::_RUNS_DDL`) carries `started_at, stage, fetched, validated, written, skipped,
@@ -589,6 +610,10 @@ no tables, no grain.
 **`event-status` is captured first, before everything else.** It is the cheapest request (285
 bytes) and it determines how the rest of the run should be interpreted. Capturing it last
 would mean the finality signal describes a moment *after* the payloads it labels.
+
+Since 2.1.0 (#62) that ordering is about the **fetch**. The run fetches event-status, then
+bootstrap-static, derives the season, and only then writes event-status, so its immutable
+sidecar can carry the season. Its `received_at` still precedes bootstrap-static's.
 
 ## A.6 The Understat HTML case
 

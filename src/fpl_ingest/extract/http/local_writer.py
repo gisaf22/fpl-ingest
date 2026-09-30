@@ -39,6 +39,7 @@ from fpl_ingest.extract.http import raw_keys
 from fpl_ingest.extract.http.raw_keys import (
     RAW_CONTRACT_VERSION,
     RawKeyError,
+    bucket_key,
     iso_utc,
     manifest_key,
     metadata_key,
@@ -64,6 +65,15 @@ __all__ = [
 ]
 
 MANIFEST_STATUS_IN_PROGRESS = "IN_PROGRESS"
+
+# Sidecar fields a captures[] entry repeats, besides the key and the derived
+# shape_ok/usable flags (#62). Entry and sidecar come from one dict.
+_CAPTURE_SIDECAR_FIELDS = (
+    "endpoint", "received_at", "content_sha256", "content_length", "http_status",
+)
+
+# Default for ``write_object(season=...)``: use the run's season.
+_RUN_SEASON: Any = object()
 
 # Per-endpoint outcomes share run status's vocabulary and its one rule:
 # SUCCESS when everything attempted is usable, PARTIAL when some is usable and
@@ -223,6 +233,8 @@ class LocalRawWriter:
         self._failures: list[dict[str, Any]] = []
         self._endpoints: dict[str, dict[str, Any]] = {}
         self._markers_withheld: list[dict[str, Any]] = []
+        self._captures: list[dict[str, Any]] = []
+        self._season: str | None = None
         self._finalized = False
 
     @property
@@ -236,6 +248,20 @@ class LocalRawWriter:
         local filesystem.
         """
         return self._backend
+
+    @property
+    def season(self) -> str | None:
+        """The season every capture of this run records; None until set."""
+        return self._season
+
+    def set_season(self, season: str | None) -> None:
+        """Set the run's season, derived from its bootstrap-static (#62 D6).
+
+        Sidecars are immutable, so this must happen before the first write
+        that should carry it — hence event-status's deferred write (#62 D1).
+        """
+        self._assert_open()
+        self._season = season
 
     # -- object writes ------------------------------------------------------
 
@@ -253,6 +279,7 @@ class LocalRawWriter:
         extension: str = "json",
         shape_validation: Mapping[str, Any] | None = None,
         companions: Mapping[str, bytes] | None = None,
+        season: str | None = _RUN_SEASON,
     ) -> WriteResult:
         """Write one captured payload plus its metadata sidecar.
 
@@ -274,6 +301,7 @@ class LocalRawWriter:
             companions: Extra files written into the same directory, keyed by
                 filename. Used for the Understat ``source.html`` case (A.6);
                 ``payload.*`` and ``metadata.json`` are reserved.
+            season: Season to record; defaults to the run's (``set_season``).
 
         Returns:
             WriteResult describing where the payload landed and its checksum.
@@ -313,8 +341,10 @@ class LocalRawWriter:
             shape_validation=shape_validation,
             payload_filename=payload_filename(extension),
             companion_files=sorted(companion_keys),
+            season=self._season if season is _RUN_SEASON else season,
         )
         self._backend.put_bytes(m_key, _json_bytes(sidecar))
+        self._captures.append(_capture_entry(p_key, sidecar))
 
         self._record_object(endpoint, written=1, byte_count=len(payload_bytes))
         shape_failures = _shape_failures(shape_validation)
@@ -495,6 +525,7 @@ class LocalRawWriter:
         shape_validation: Mapping[str, Any] | None,
         payload_filename: str,
         companion_files: list[str],
+        season: str | None,
     ) -> dict[str, Any]:
         return {
             "raw_contract_version": RAW_CONTRACT_VERSION,
@@ -502,6 +533,7 @@ class LocalRawWriter:
             "endpoint": endpoint,
             "run_id": self.run_id,
             "extraction_date": self.extraction_date,
+            "season": season,
             "request_url": request_url,
             "requested_at": iso_utc(requested_at),
             "received_at": iso_utc(received_at),
@@ -554,6 +586,10 @@ class LocalRawWriter:
             manifest["finality"] = finality
         if self._markers_withheld:
             manifest["markers_withheld"] = list(self._markers_withheld)
+        # The index is complete only once the run is: an IN_PROGRESS manifest,
+        # re-written after every object, carries none (#62 D4).
+        if status != MANIFEST_STATUS_IN_PROGRESS:
+            manifest["captures"] = [dict(entry) for entry in self._captures]
         return manifest
 
     def _totals(self) -> dict[str, int]:
@@ -632,6 +668,19 @@ class LocalRawWriter:
     def _assert_open(self) -> None:
         if self._finalized:
             raise RuntimeError(f"run {self.run_id} has already been finalized")
+
+
+def _capture_entry(payload_key: str, sidecar: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the captures[] entry for a payload, projected from its sidecar."""
+    shape_ok = _shape_failures(sidecar["shape_validation"]) is None
+    return {
+        "key": bucket_key(payload_key),
+        **{name: sidecar[name] for name in _CAPTURE_SIDECAR_FIELDS},
+        "shape_ok": shape_ok,
+        # Every entry is a payload that was written, so usable is shape_ok.
+        "usable": shape_ok,
+        "season": sidecar["season"],
+    }
 
 
 def _shape_failures(shape_validation: Mapping[str, Any] | None) -> list[str] | None:

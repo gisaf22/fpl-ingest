@@ -7,8 +7,10 @@ so the real stages, runner and writer produce the files under test.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -142,6 +144,61 @@ class TestCapturesMatchSidecars:
         manifest = _mixed_run(raw)
 
         assert {c["season"] for c in manifest["captures"]} == {"2026-27"}
+
+
+    @pytest.mark.covers("#62 AC2")
+    def test_forced_pre_deadline_run_captures_match_sidecars(self, tmp_path):
+        raw = tmp_path / "raw"
+        client = _make_async_client(bootstrap=BOOTSTRAP_2026)
+        with patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=client):
+            with pytest.raises(SystemExit) as exc:
+                main(["--raw-dir", str(raw), "pre-deadline", "--force"])
+        assert int(exc.value.code or 0) == 0
+        manifest = _manifest(raw)
+
+        assert sorted(c["endpoint"] for c in manifest["captures"]) == ["bootstrap-static", "fixtures"]
+        assert sorted(c["key"] for c in manifest["captures"]) == _payload_keys_on_disk(raw)
+        for entry in manifest["captures"]:
+            sidecar = _sidecar_for(raw, entry["key"])
+            for field in _SHARED_FIELDS:
+                if field == "shape_ok":
+                    assert _shape_ok(sidecar) is entry["shape_ok"]
+                else:
+                    assert sidecar[field] == entry[field], field
+            assert entry["season"] == "2026-27"
+
+
+class TestEventStatusFetchedFirst:
+
+    @pytest.mark.covers("#62 AC7")
+    def test_event_status_is_fetched_before_bootstrap(self, tmp_path):
+        """D1 moves event-status's write after bootstrap's fetch, never its fetch."""
+        raw = tmp_path / "raw"
+        calls: list[str] = []
+        base = datetime(2026, 9, 30, 7, 0, tzinfo=timezone.utc)
+
+        def _stamped(name: str, url: str, payload):
+            def fetch(*_args):
+                calls.append(name)
+                response = _raw_response(url, payload)
+                at = base + timedelta(seconds=len(calls))
+                return dataclasses.replace(response, requested_at=at, received_at=at)
+            return fetch
+
+        client = _make_async_client(bootstrap=BOOTSTRAP_2026)
+        client.get_event_status_raw = AsyncMock(side_effect=_stamped(
+            "event-status", "https://fantasy.premierleague.com/api/event-status/",
+            {"status": [], "leagues": ""},
+        ))
+        client.get_bootstrap_raw = AsyncMock(side_effect=_stamped(
+            "bootstrap-static", "https://fantasy.premierleague.com/api/bootstrap-static/", BOOTSTRAP_2026,
+        ))
+        _run(raw, client)
+        manifest = _manifest(raw)
+
+        assert calls[:2] == ["event-status", "bootstrap-static"]
+        received = {c["endpoint"]: c["received_at"] for c in manifest["captures"]}
+        assert received["event-status"] < received["bootstrap-static"]
 
 
 class TestSeasonWithoutUsableBootstrap:

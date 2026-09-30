@@ -95,6 +95,16 @@ shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
     failed (`attempted: 0`, reason names that stage).
   - An endpoint the refetch policy deliberately didn't fetch is absent, not FAILED. Manifests
     before 1.1.0 have `objects` counts but no `endpoints` block.
+- **Find a run's captures from its manifest's `captures[]`** (#62, contract 2.1.0), not by
+  reading sidecars. There is one entry per payload written, with its full bucket key
+  (`raw/fpl/...`), `shape_ok`, `usable` and `season`. It appears only in the finalized
+  manifest, so ignore `IN_PROGRESS` manifests. Fetch failures stay in `failures` and have no
+  entry. Manifests before 2.1.0 have no `captures[]`.
+- **`season` is on every 2.1.0 sidecar and capture entry**, derived from the same run's
+  bootstrap-static (the deadline year of its lowest-id event). It is `null`, logged at ERROR
+  as `season_source=none`, when the run had no usable bootstrap; there is no fallback. The
+  field list for both files is `schemas/raw-contract/2.1.0/`, which replaces strategy doc
+  §A.5's tables.
 - **Run `status` is SUCCESS / PARTIAL / FAILED by the same rule, over the whole run** (#48,
   contract 2.0.0): SUCCESS when every endpoint is SUCCESS, PARTIAL when something is usable
   and something failed, FAILED when nothing is usable (a run with no endpoints included). A

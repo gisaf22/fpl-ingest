@@ -37,12 +37,17 @@ from fpl_ingest.orchestration.run_status import (
 )
 from fpl_ingest.orchestration.stage_result import StageOutcome, StageResult
 from fpl_ingest.extract.stages.bootstrap import RAW_ENDPOINT as BOOTSTRAP_ENDPOINT
-from fpl_ingest.extract.stages.bootstrap import CoreData, capture_bootstrap_raw, ingest_core_data
+from fpl_ingest.extract.stages.bootstrap import (
+    CoreData,
+    capture_bootstrap_raw,
+    ingest_core_data,
+    season_for_bootstrap,
+)
 from fpl_ingest.extract.stages.event_status import Finality, ingest_event_status
 from fpl_ingest.extract.stages.fixtures import RAW_SOURCE, ingest_fixtures
 from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
 from fpl_ingest.extract.stages.element_summary import ingest_player_histories
-from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient
+from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
 from fpl_ingest.extract.http.rate_config import MAX_RATE, normalize_rate
 from fpl_ingest.extract.http.rate_limiter import TokenBucketLimiter
@@ -379,6 +384,7 @@ async def _run_core_stage(
     stage_results: list[StageResult],
     logger: logging.Logger,
     strict: bool,
+    prefetched: RawResponse | FPLClientError | None = None,
 ) -> CoreData:
     """Run the core stage. Returns CoreData or raises — never returns None."""
     outcome: StageOutcome[CoreData]
@@ -387,6 +393,7 @@ async def _run_core_stage(
             client,
             raw_writer,
             execution_state=execution_state,
+            prefetched=prefetched,
         )
     )
     _record_stage(
@@ -439,11 +446,29 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
             rate_limiter=rate_limiter,
             connector_limit=_MAX_CONCURRENT_REQUESTS,
         ) as client:
+            # event-status is fetched first, but its sidecar must carry the
+            # season, which only this run's bootstrap-static can give. So the
+            # stage fetches, then this fetches bootstrap and sets the season,
+            # then the stage writes; the core stage captures the prefetched
+            # response (#62 D1). Observation order is unchanged.
+            bootstrap_prefetch: list[RawResponse | FPLClientError] = []
+
+            async def _fetch_bootstrap_and_set_season() -> None:
+                bootstrap_raw: RawResponse | None = None
+                try:
+                    bootstrap_raw = await client.get_bootstrap_raw()
+                except FPLClientError as exc:
+                    bootstrap_prefetch.append(exc)
+                else:
+                    bootstrap_prefetch.append(bootstrap_raw)
+                raw_writer.set_season(season_for_bootstrap(bootstrap_raw, logger))
+
             event_finality = await _execute_stage(
                 awaitable=ingest_event_status(
                     client,
                     raw_writer,
                     execution_state=execution_state,
+                    before_write=_fetch_bootstrap_and_set_season,
                 ),
                 stage_results=stage_results,
                 logger=logger,
@@ -458,6 +483,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
                 stage_results=stage_results,
                 logger=logger,
                 strict=args.strict,
+                prefetched=bootstrap_prefetch[0] if bootstrap_prefetch else None,
             )
 
             await _execute_stage(
@@ -605,6 +631,7 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
         raw_writer = LocalRawWriter(
             config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend
         )
+        raw_writer.set_season(season_for_bootstrap(raw, logger))
         stage_results: list[StageResult] = []
         if raw is not None:
             _record_stage(stage_results, logger, capture_bootstrap_raw(raw, raw_writer).result, strict=False)

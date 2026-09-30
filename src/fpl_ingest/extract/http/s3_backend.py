@@ -29,8 +29,7 @@ import re
 from typing import Any
 
 from fpl_ingest.extract.http.local_writer import RawObjectExistsError
-
-_KEY_PREFIX = "raw/"
+from fpl_ingest.extract.http.raw_keys import BUCKET_KEY_PREFIX as _KEY_PREFIX
 
 #: Setting this to ``1`` allows S3 writes from outside CI.
 LOCAL_S3_OVERRIDE_ENV = "FPL_ALLOW_LOCAL_S3"

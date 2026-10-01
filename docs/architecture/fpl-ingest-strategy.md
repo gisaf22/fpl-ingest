@@ -618,24 +618,15 @@ sidecar can carry the season. Its `received_at` still precedes bootstrap-static'
 ### Backfill catalog — `raw/{source}/_catalog/backfill/{run_id}.json`
 
 Runs captured before 2.1.0, and the ported 2025-26 history run, have no `captures[]`. A
-backfill catalog fills that gap: one file per such run, written once and never overwritten
-(#63, #66). `_catalog` is a reserved sibling of the endpoint prefixes, like `_manifests`.
+backfill catalog fills that gap with one file per such run, so a consumer can union catalogs
+with manifests instead of reading every sidecar (#63, #66).
+
+- **Scope:** every live run not indexed by a 2.1.0+ manifest, plus the history run.
+- **Write-once:** a catalog is never overwritten. A rerun skips any run that already has one.
+- **Reserved prefix:** `_catalog` is a sibling of the endpoint prefixes, like `_manifests`.
 
 **Fields: `schemas/raw-contract/2.1.0/backfill-catalog.schema.json` is the contract.** The
-envelope is `run_id`, `source`, `scope` (`live` or `history`) and `generated_at`. Each entry
-carries every `captures[]` field, so a consumer can union catalogs with manifests, plus:
-
-- `shape_source`: `sidecar` when the sidecar's `shape_validation` is a dict with `ok`, which is
-  used as recorded. Otherwise `revalidated`: the payload is checked with the endpoint's current
-  validator (#63 D10).
-- `validator_version`: `null` for `sidecar`, `fpl-ingest/<version>+<sha7>` for `revalidated`
-  (#63 D7).
-
-A live run's `season` comes from its own bootstrap-static, by the rule above, only when that
-capture is shape-ok. Otherwise it is `null`, and the run is listed in the report. History
-entries take `2025-26` from their key. Their `received_at` is the synthetic run's instant, and
-their `http_status` is `null` because the old ingest never recorded one (#63 D5, D6). The
-builder is `fpl_ingest.backfill`.
+rules behind them are #63 D5–D10. The builder is `fpl_ingest.backfill`.
 
 ## A.6 The Understat HTML case
 

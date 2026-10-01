@@ -615,6 +615,19 @@ Since 2.1.0 (#62) that ordering is about the **fetch**. The run fetches event-st
 bootstrap-static, derives the season, and only then writes event-status, so its immutable
 sidecar can carry the season. Its `received_at` still precedes bootstrap-static's.
 
+### Backfill catalog — `raw/{source}/_catalog/backfill/{run_id}.json`
+
+Runs captured before 2.1.0, and the ported 2025-26 history run, have no `captures[]`. A
+backfill catalog fills that gap with one file per such run, so a consumer can union catalogs
+with manifests instead of reading every sidecar (#63, #66).
+
+- **Scope:** every live run not indexed by a 2.1.0+ manifest, plus the history run.
+- **Write-once:** a catalog is never overwritten. A rerun skips any run that already has one.
+- **Reserved prefix:** `_catalog` is a sibling of the endpoint prefixes, like `_manifests`.
+
+**Fields: `schemas/raw-contract/2.1.0/backfill-catalog.schema.json` is the contract.** The
+rules behind them are #63 D5–D10. The builder is `fpl_ingest.backfill`.
+
 ## A.6 The Understat HTML case
 
 `understat/match-info/{mid}` is scraped from an HTML page (§7.2), which creates a genuine

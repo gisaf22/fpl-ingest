@@ -11,7 +11,7 @@ SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas" / "raw-contract" / 
 
 
 def validator(name: str) -> Draft202012Validator:
-    """Return a validator for ``sidecar`` or ``manifest``."""
+    """Return a validator for ``sidecar``, ``manifest`` or ``backfill-catalog``."""
     schema = json.loads((SCHEMA_DIR / f"{name}.schema.json").read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)

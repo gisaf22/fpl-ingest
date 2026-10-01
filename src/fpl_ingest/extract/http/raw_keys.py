@@ -26,6 +26,9 @@ BUCKET_KEY_PREFIX = "raw/"
 
 MANIFEST_PREFIX = "_manifests"
 SETTLEMENT_PREFIX = "_settlement"
+#: Backfill catalogs for runs captured before 2.1.0 (#63 D8). Reserved like
+#: ``_manifests``: no endpoint segment can start with an underscore.
+CATALOG_PREFIX = "_catalog"
 PAYLOAD_STEM = "payload"
 METADATA_FILENAME = "metadata.json"
 MANIFEST_FILENAME = "manifest.json"
@@ -112,6 +115,13 @@ def settlement_marker_key(source: str, endpoint: str, event_id: int) -> str:
     if event_id < 0:
         raise RawKeyError(f"invalid event_id: {event_id!r}")
     return f"{source}/{SETTLEMENT_PREFIX}/{endpoint}/{event_id}/{SETTLEMENT_MARKER_FILENAME}"
+
+
+def backfill_catalog_key(source: str, run_id: str) -> str:
+    """Return the key for a run's backfill catalog file (#63 D8)."""
+    validate_source(source)
+    validate_run_id(run_id)
+    return f"{source}/{CATALOG_PREFIX}/backfill/{run_id}.json"
 
 
 def bucket_key(key: str) -> str:

@@ -14,6 +14,8 @@ Modelled on what #63's step 0 measured in the bucket on 2026-09-30:
   revalidated.
 - ``RUN_NO_BOOTSTRAP``: element-summary only, like the out-of-CI run
   ``20260902T163935Z-07eb06`` — its season is null.
+- ``RUN_BAD_BOOTSTRAP``: has a bootstrap-static, but its sidecar records it
+  shape-invalid, so it is not usable and the run's season is null.
 - ``RUN_2_1_0``: already indexed by its own manifest, so out of scope.
 - ``HISTORY_RUN``: the ported 2025-26 run. Sidecars carry no verdict, no
   ``received_at`` and no ``http_status``; one element-summary is malformed.
@@ -30,12 +32,22 @@ from tests.support.cli_fakes import MINIMAL_BOOTSTRAP, PLAYER_HISTORY_1
 RUN_1_0_0 = "20260829T012300Z-aaaaaa"
 RUN_2_0_0 = "20260910T191300Z-bbbbbb"
 RUN_NO_BOOTSTRAP = "20260902T163935Z-07eb06"
+RUN_BAD_BOOTSTRAP = "20260905T191200Z-dddddd"
 RUN_2_1_0 = "20260930T191434Z-cccccc"
 HISTORY_RUN = "20260526T034626Z-2a6b73"
 HISTORY_RECEIVED_AT = "2026-05-26T03:46:26Z"
 VALIDATOR_VERSION = "fpl-ingest/1.0.0+abc1234"
 
-IN_SCOPE_RUNS = (RUN_1_0_0, RUN_2_0_0, RUN_NO_BOOTSTRAP, HISTORY_RUN)
+IN_SCOPE_RUNS = (RUN_1_0_0, RUN_2_0_0, RUN_NO_BOOTSTRAP, RUN_BAD_BOOTSTRAP, HISTORY_RUN)
+NULL_SEASON_RUNS = (RUN_NO_BOOTSTRAP, RUN_BAD_BOOTSTRAP)
+
+# Fields every backfill entry carries: the manifest captures[] fields (#63 D8),
+# so C1 can union the two, plus where the shape verdict came from.
+CAPTURE_FIELDS = (
+    "key", "endpoint", "received_at", "content_sha256", "content_length",
+    "http_status", "shape_ok", "usable", "season",
+)
+ENTRY_FIELDS = (*CAPTURE_FIELDS, "shape_source", "validator_version")
 
 SHAPE_OK = {"ok": True, "checks": ["top_level_is_object"], "failures": [], "record_count": 1}
 SHAPE_INVALID = {
@@ -120,13 +132,15 @@ class BackfillTree:
         return f"{prefix}/payload.json"
 
 
-def build_tree(root: Path) -> BackfillTree:
+def build_tree(root: Path, *, shape_failures: bool = True) -> BackfillTree:
+    """The fixture tree; ``shape_failures=False`` leaves out every capture that fails its shape check."""
     tree = BackfillTree(root)
 
     tree.manifest(RUN_1_0_0, "1.0.0")
     tree.live(RUN_1_0_0, "bootstrap-static", BOOTSTRAP_2026)
     tree.live(RUN_1_0_0, "element-summary/1", PLAYER_HISTORY_1)
-    tree.live(RUN_1_0_0, "element-summary/2", MALFORMED, shape=SHAPE_INVALID)
+    if shape_failures:
+        tree.live(RUN_1_0_0, "element-summary/2", MALFORMED, shape=SHAPE_INVALID)
 
     tree.manifest(RUN_2_0_0, "2.0.0")
     tree.live(RUN_2_0_0, "bootstrap-static", BOOTSTRAP_2026, version="2.0.0")
@@ -134,6 +148,11 @@ def build_tree(root: Path) -> BackfillTree:
 
     tree.manifest(RUN_NO_BOOTSTRAP, "1.0.0")
     tree.live(RUN_NO_BOOTSTRAP, "element-summary/3", PLAYER_HISTORY_1)
+
+    tree.manifest(RUN_BAD_BOOTSTRAP, "1.0.0")
+    if shape_failures:
+        tree.live(RUN_BAD_BOOTSTRAP, "bootstrap-static", MALFORMED, shape=SHAPE_INVALID)
+    tree.live(RUN_BAD_BOOTSTRAP, "element-summary/4", PLAYER_HISTORY_1)
 
     tree.manifest(RUN_2_1_0, "2.1.0", captures=[])
     tree.live(RUN_2_1_0, "event-status", {"status": [], "leagues": ""}, version="2.1.0")
@@ -144,7 +163,8 @@ def build_tree(root: Path) -> BackfillTree:
     tree.history("fixtures", FIXTURES)
     tree.history("event-live/01", EVENT_LIVE)
     tree.history("element-summary/10", PLAYER_HISTORY_1)
-    tree.history("element-summary/11", MALFORMED)
+    if shape_failures:
+        tree.history("element-summary/11", MALFORMED)
     return tree
 
 

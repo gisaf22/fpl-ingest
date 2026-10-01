@@ -8,6 +8,7 @@ run whose manifest is below 2.1.0, plus the ported history run.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -16,12 +17,15 @@ import pytest
 from fpl_ingest.backfill import LocalTree, build_backfill
 from tests.support import raw_contract_schema
 from tests.support.backfill_tree import (
+    ENTRY_FIELDS,
     HISTORY_RECEIVED_AT,
     HISTORY_RUN,
     IN_SCOPE_RUNS,
+    NULL_SEASON_RUNS,
     RUN_1_0_0,
     RUN_2_0_0,
     RUN_2_1_0,
+    RUN_BAD_BOOTSTRAP,
     RUN_NO_BOOTSTRAP,
     VALIDATOR_VERSION,
     build_tree,
@@ -77,6 +81,7 @@ class TestOneCatalogPerRun:
             assert catalog["run_id"] == run_id
             assert catalog["source"] == "fpl"
             assert catalog["scope"] == ("history" if run_id == HISTORY_RUN else "live")
+            assert isinstance(catalog["generated_at"], str) and catalog["generated_at"].endswith("Z")
 
 
 class TestIdempotent:
@@ -134,7 +139,9 @@ class TestReport:
 
         report = _backfill(tmp_path).to_json()
 
-        (live,) = report["shape_failures"]["live"]
+        live_failures = report["shape_failures"]["live"]
+        assert sorted(f["run_id"] for f in live_failures) == sorted([RUN_1_0_0, RUN_BAD_BOOTSTRAP])
+        (live,) = [f for f in live_failures if f["run_id"] == RUN_1_0_0]
         assert live["run_id"] == RUN_1_0_0
         assert live["endpoint"] == "element-summary/2"
         assert live["extraction_date"] == "2026-08-29"
@@ -163,15 +170,7 @@ class TestReport:
 
     @pytest.mark.covers("#66 AC3")
     def test_zero_shape_failures_is_stated(self, tmp_path):
-        tree = build_tree(tmp_path)
-        for run_id in (RUN_1_0_0, HISTORY_RUN):
-            for key in tree.payload_keys[run_id]:
-                if "/element-summary/2/" in key or "/element-summary/11/" in key:
-                    folder = (tmp_path / key).parent
-                    for f in folder.iterdir():
-                        f.unlink()
-                    folder.rmdir()
-                    tree.payload_keys[run_id].remove(key)
+        build_tree(tmp_path, shape_failures=False)
 
         backfill = _backfill(tmp_path)
 
@@ -200,6 +199,10 @@ class TestSchema:
         "mutate",
         [
             pytest.param(lambda d: d.update(unexpected=1), id="file-unknown-field"),
+            pytest.param(lambda d: d.pop("generated_at"), id="file-missing-generated-at"),
+            pytest.param(lambda d: d["captures"][0].pop("content_sha256"), id="entry-missing-content-sha256"),
+            pytest.param(lambda d: d["captures"][0].pop("usable"), id="entry-missing-usable"),
+            pytest.param(lambda d: d["captures"][0].pop("validator_version"), id="entry-missing-validator-version"),
             pytest.param(lambda d: d["captures"][0].update(unexpected=1), id="entry-unknown-field"),
             pytest.param(lambda d: d["captures"][0].pop("shape_source"), id="entry-missing-shape-source"),
             pytest.param(lambda d: d["captures"][0].update(shape_source="guessed"), id="entry-bad-shape-source"),
@@ -214,6 +217,24 @@ class TestSchema:
 
         assert raw_contract_schema.errors("backfill-catalog", catalog) == []
         assert raw_contract_schema.errors("backfill-catalog", mutated) != []
+
+
+class TestEntryFields:
+
+    @pytest.mark.covers("#66 AC4")
+    def test_every_entry_carries_the_captures_fields_plus_shape_source(self, tmp_path):
+        build_tree(tmp_path)
+
+        _backfill(tmp_path)
+
+        for run_id in IN_SCOPE_RUNS:
+            for entry in _entries(tmp_path, run_id):
+                assert sorted(entry) == sorted(ENTRY_FIELDS), entry["key"]
+                body = (tmp_path / entry["key"]).read_bytes()
+                assert entry["content_sha256"] == hashlib.sha256(body).hexdigest()
+                assert entry["content_length"] == len(body)
+                assert entry["usable"] is entry["shape_ok"]
+                assert f"/fpl/{entry['endpoint']}/" in entry["key"]
 
 
 class TestSeason:
@@ -234,8 +255,24 @@ class TestSeason:
         report = _backfill(tmp_path)
 
         assert {e["season"] for e in _entries(tmp_path, RUN_NO_BOOTSTRAP)} == {None}
-        assert report.null_season_runs == [RUN_NO_BOOTSTRAP]
+        assert RUN_NO_BOOTSTRAP in report.null_season_runs
         assert RUN_NO_BOOTSTRAP in json.dumps(report.to_json()["null_season_runs"])
+
+    @pytest.mark.covers("#66 AC6")
+    def test_live_run_whose_bootstrap_failed_its_shape_check_has_null_season_and_is_listed(self, tmp_path):
+        build_tree(tmp_path)
+
+        report = _backfill(tmp_path)
+
+        assert {e["season"] for e in _entries(tmp_path, RUN_BAD_BOOTSTRAP)} == {None}
+        assert RUN_BAD_BOOTSTRAP in report.null_season_runs
+        assert RUN_BAD_BOOTSTRAP in json.dumps(report.to_json()["null_season_runs"])
+
+    @pytest.mark.covers("#66 AC6")
+    def test_null_season_runs_lists_exactly_those_runs(self, tmp_path):
+        build_tree(tmp_path)
+
+        assert sorted(_backfill(tmp_path).null_season_runs) == sorted(NULL_SEASON_RUNS)
 
     @pytest.mark.covers("#66 AC6")
     def test_history_entries_carry_season_and_the_synthetic_run_instant(self, tmp_path):

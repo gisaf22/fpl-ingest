@@ -17,9 +17,15 @@ verdict came from.
 - **Write-once (D2):** a run whose catalog already exists is skipped before it
   is built, and a write never replaces an existing file.
 
+- **Date range (#67 E2):** optional ``from_date`` / ``to_date`` select whole
+  runs by the date their ``run_id`` starts on, never single payloads, so no
+  catalog is ever written for part of a run.
+
 The builder reads and writes through a small tree interface. ``LocalTree`` is
-the filesystem form; B2 adds the S3 form. A shape failure is reported, never
-raised: B reports only, and C1 decides exclusion.
+the filesystem form and ``S3Tree`` the bucket form (#67), whose writes are
+conditional (``If-None-Match: *``) so S3 itself refuses an overwrite.
+``DryRunTree`` wraps either and sends no write. A shape failure is reported,
+never raised: B reports only, and C1 decides exclusion.
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -119,6 +125,82 @@ class LocalTree:
         return True
 
 
+class S3Tree:
+    """The capture bucket, keys relative to the bucket root (#67).
+
+    Reads go through the caller's boto3 client. ``put_if_absent`` sends
+    ``If-None-Match: *``: S3 answers an existing key with 412, reported as
+    "not written" so the run skips it (E7). Any other error, a 409
+    conditional-write conflict included, is raised: the workflow's
+    concurrency group means a second writer should never exist.
+    """
+
+    def __init__(self, bucket: str, *, client: Any) -> None:
+        self.bucket = bucket
+        self._client = client
+
+    def list_keys(self, prefix: str) -> Iterator[str]:
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                yield obj["Key"]
+
+    def get_bytes(self, key: str) -> bytes | None:
+        try:
+            response = self._client.get_object(Bucket=self.bucket, Key=key)
+        except Exception as exc:  # noqa: BLE001 - boto3 raises botocore.exceptions.ClientError
+            if _error_code(exc) in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise
+        return response["Body"].read()
+
+    def exists(self, key: str) -> bool:
+        try:
+            self._client.head_object(Bucket=self.bucket, Key=key)
+        except Exception as exc:  # noqa: BLE001
+            if _error_code(exc) in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            raise
+        return True
+
+    def put_if_absent(self, key: str, data: bytes) -> bool:
+        """Write ``data`` unless ``key`` exists, enforced by S3. Returns whether it wrote."""
+        try:
+            self._client.put_object(Bucket=self.bucket, Key=key, Body=data, IfNoneMatch="*")
+        except Exception as exc:  # noqa: BLE001
+            if _error_code(exc) == "PreconditionFailed":
+                return False
+            raise
+        return True
+
+
+class DryRunTree:
+    """Reads through ``inner``; records each write instead of sending it (#67 E1)."""
+
+    dry_run = True
+
+    def __init__(self, inner: Tree) -> None:
+        self._inner = inner
+        self.would_write: list[str] = []
+
+    def list_keys(self, prefix: str) -> Iterator[str]:
+        return self._inner.list_keys(prefix)
+
+    def get_bytes(self, key: str) -> bytes | None:
+        return self._inner.get_bytes(key)
+
+    def exists(self, key: str) -> bool:
+        return self._inner.exists(key)
+
+    def put_if_absent(self, key: str, data: bytes) -> bool:
+        self.would_write.append(key)
+        return True
+
+
+def _error_code(exc: Exception) -> str | None:
+    return getattr(exc, "response", {}).get("Error", {}).get("Code")
+
+
 @dataclass(frozen=True)
 class ShapeResult:
     """One capture's shape verdict and where it came from."""
@@ -172,6 +254,8 @@ def shape_for_capture(
 class BackfillReport:
     """What one backfill pass did (#63 D4)."""
 
+    dry_run: bool = False
+    runtime_seconds: float | None = None
     indexed: int = 0
     revalidated: int = 0
     shape_failures: dict[str, list[dict[str, Any]]] = field(
@@ -187,6 +271,8 @@ class BackfillReport:
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "dry_run": self.dry_run,
+            "runtime_seconds": self.runtime_seconds,
             "indexed": self.indexed,
             "revalidated": self.revalidated,
             "shape_failure_count": self.shape_failure_count,
@@ -197,15 +283,19 @@ class BackfillReport:
         }
 
     def to_markdown(self) -> str:
-        lines = [
-            "## Capture-index backfill",
-            "",
+        lines = ["## Capture-index backfill", ""]
+        if self.dry_run:
+            lines += ["**Dry run: nothing was written.** \"Would write\" counts the files a real run writes.", ""]
+        written_label = "Catalog files that would be written" if self.dry_run else "Catalog files written"
+        lines += [
             f"- Indexed: {self.indexed}",
             f"- Revalidated: {self.revalidated}",
             f"- Shape failures: {self.shape_failure_count}",
-            f"- Catalog files written: {len(self.written)}, skipped (already present): {len(self.skipped)}",
-            "",
+            f"- {written_label}: {len(self.written)}, skipped (already present): {len(self.skipped)}",
         ]
+        if self.runtime_seconds is not None:
+            lines.append(f"- Runtime: {self.runtime_seconds:.1f}s")
+        lines.append("")
         if self.shape_failure_count == 0:
             lines += ["0 shape failures.", ""]
         for scope, heading in (("live", "Live"), ("history", "History")):
@@ -238,15 +328,26 @@ class _Payload:
     run_id: str
 
 
-def build_backfill(tree: Tree, *, validator_version: str) -> BackfillReport:
+def build_backfill(
+    tree: Tree,
+    *,
+    validator_version: str,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> BackfillReport:
     """Write a catalog for every in-scope run that lacks one, and report.
 
     A run whose catalog exists is skipped before it is built (D2), so a rerun
-    after a complete pass reads no payloads and writes nothing.
+    after a complete pass reads no payloads and writes nothing. ``from_date``
+    and ``to_date`` (inclusive) keep only runs whose ``run_id`` starts in that
+    range; a run is always built whole (E2).
     """
-    report = BackfillReport()
+    report = BackfillReport(dry_run=getattr(tree, "dry_run", False))
     runs = _in_scope_runs(tree)
     for (scope, run_id), payloads in sorted(runs.items(), key=lambda kv: kv[0][1]):
+        started = _run_start_date(run_id)
+        if (from_date and started < from_date) or (to_date and started > to_date):
+            continue
         catalog_key = BUCKET_KEY_PREFIX + backfill_catalog_key(SOURCE, run_id)
         if tree.exists(catalog_key):
             report.skipped.append(catalog_key)
@@ -385,6 +486,11 @@ def _live_season(rows: list[tuple[_Payload, bytes, Any, ShapeResult]]) -> str | 
                 return None
             return resolve_season(payload, shape_ok=True, logger=logger)
     return resolve_season(None, shape_ok=False, logger=logger)
+
+
+def _run_start_date(run_id: str) -> date:
+    """The UTC date a run id's prefix names."""
+    return datetime.strptime(run_id.split("-")[0], "%Y%m%dT%H%M%SZ").date()
 
 
 def _run_instant(run_id: str) -> str:

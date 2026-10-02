@@ -1,0 +1,104 @@
+# Capture-index backfill (#63, #67).
+#
+# Builds raw/fpl/_catalog/backfill/{run_id}.json for every run captured before
+# raw contract 2.1.0, plus the ported 2025-26 history run. Manual dispatch only.
+#
+# Safety, in layers:
+# - dry_run defaults to true: the job reads the bucket and writes nothing.
+# - The job runs in the `backfill` environment: main only, required review.
+# - It assumes a dedicated role (vars.BACKFILL_ROLE_ARN on that environment)
+#   whose trust admits only this environment's OIDC subject, and which can
+#   write raw/fpl/_catalog/* only, and only as a conditional write
+#   (If-None-Match: *). Policy drafts: docs/iam/backfill-role/.
+# - One backfill at a time (concurrency group), inside the 1-hour OIDC session.
+#
+# A shape failure never fails the job (B reports only); an operational error does.
+#   gh workflow run backfill_catalog.yml -f dry_run=true -f from_date=2026-08-29 -f to_date=2026-08-29
+
+name: Capture-index backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Read and report only; write nothing"
+        type: boolean
+        default: true
+      from_date:
+        description: "Only runs whose run_id starts on or after this date (YYYY-MM-DD); empty = no lower bound"
+        type: string
+        default: ""
+      to_date:
+        description: "Only runs whose run_id starts on or before this date (YYYY-MM-DD); empty = no upper bound"
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: capture-index-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    environment: backfill
+    timeout-minutes: 60
+
+    env:
+      FPL_S3_BUCKET: ${{ vars.FPL_S3_BUCKET || 'fpl-data-safari' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Check the backfill role is configured
+        env:
+          BACKFILL_ROLE_ARN: ${{ vars.BACKFILL_ROLE_ARN }}
+        run: |
+          if [ -z "$BACKFILL_ROLE_ARN" ]; then
+            echo "::error::BACKFILL_ROLE_ARN is not set on the 'backfill' environment. See docs/iam/backfill-role/README.md."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.BACKFILL_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run backfill
+        # Inputs reach the script through env, never interpolated into it.
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          FROM_DATE: ${{ inputs.from_date }}
+          TO_DATE: ${{ inputs.to_date }}
+        run: |
+          args=(backfill --bucket "$FPL_S3_BUCKET" --report-json backfill-report.json --summary backfill-summary.md)
+          [ -n "$FROM_DATE" ] && args+=(--from-date "$FROM_DATE")
+          [ -n "$TO_DATE" ] && args+=(--to-date "$TO_DATE")
+          [ "$DRY_RUN" = "false" ] && args+=(--write)
+          uv run fpl-ingest "${args[@]}"
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f backfill-summary.md ]; then cat backfill-summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-report-${{ github.run_id }}
+          path: |
+            backfill-report.json
+            backfill-summary.md
+          if-no-files-found: warn

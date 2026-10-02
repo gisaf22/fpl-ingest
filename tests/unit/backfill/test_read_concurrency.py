@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from fpl_ingest.cli import build_parser, run_backfill
-from tests.support.backfill_tree import RUN_1_0_0, build_tree, catalog_key
+from tests.support.backfill_tree import HISTORY_RUN, RUN_1_0_0, build_tree, catalog_key
 from tests.support.fake_s3 import FakeS3Client
 
 CONCURRENCIES = (1, 4, 16)
@@ -74,16 +74,18 @@ def test_a_read_error_under_concurrency_exits_non_zero(tmp_path):
 
 
 @pytest.mark.covers("#72 AC2")
-def test_a_missing_sidecar_under_concurrency_is_revalidated(tmp_path):
+def test_a_missing_history_sidecar_under_concurrency_is_revalidated(tmp_path):
+    # History only: a live capture needs its sidecar's received_at, so B1 fails
+    # the run without one, sequentially as in parallel.
     bucket = tmp_path / "bucket"
     tree = build_tree(bucket)
-    payload_key = tree.payload_keys[RUN_1_0_0][1]
+    payload_key = tree.payload_keys[HISTORY_RUN][0]
     bucket.joinpath(*payload_key.rsplit("/", 1)[0].split("/"), "metadata.json").unlink()
 
     rc = _run(bucket, tmp_path / "out", 16)
 
     assert rc == 0
-    catalog = json.loads(bucket.joinpath(*catalog_key(RUN_1_0_0).split("/")).read_text())
+    catalog = json.loads(bucket.joinpath(*catalog_key(HISTORY_RUN).split("/")).read_text())
     (entry,) = [e for e in catalog["captures"] if e["key"] == payload_key]
     assert entry["shape_source"] == "revalidated"
 

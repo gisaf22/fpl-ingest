@@ -1,0 +1,31 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListBucketForMissingKeyAnswers",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::fpl-data-safari"
+    },
+    {
+      "Sid": "ReadCapturesAndHistory",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::fpl-data-safari/raw/fpl/*",
+        "arn:aws:s3:::fpl-data-safari/history/2025-26/*"
+      ]
+    },
+    {
+      "Sid": "WriteCatalogOnlyIfAbsent",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::fpl-data-safari/raw/fpl/_catalog/*",
+      "Condition": {
+        "Null": {
+          "s3:if-none-match": "false"
+        }
+      }
+    }
+  ]
+}

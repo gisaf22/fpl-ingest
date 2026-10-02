@@ -1,6 +1,6 @@
 """CLI entry point and command dispatcher for fpl-ingest.
 
-Exposes the ``run``, ``pre-deadline``, ``smoke-test``, and ``inspect`` sub-commands.
+Exposes the ``run``, ``pre-deadline``, ``smoke-test``, ``inspect`` and ``backfill`` sub-commands.
 Each command handler resolves configuration, delegates to the appropriate
 orchestration or extract function, and exits with a meaningful code.
 This module contains no business logic — all behaviour lives in the imported
@@ -17,9 +17,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as dt
+import json
 import logging
+import os
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 from fpl_ingest.cli_formatters import (
     format_run_detail,
@@ -135,6 +140,26 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
         "--last", type=int, default=10, metavar="N",
         help="With --list, how many recent runs to show (default: 10).",
     )
+
+    backfill_parser = subparsers.add_parser(
+        "backfill",
+        help="Build capture-index catalogs for pre-2.1.0 and history runs (#63). Dry run unless --write.",
+    )
+    backfill_parser.add_argument("--bucket", required=True, help="The capture bucket.")
+    backfill_parser.add_argument(
+        "--from-date", type=dt.date.fromisoformat, default=None, metavar="YYYY-MM-DD",
+        help="Only runs whose run_id starts on or after this date.",
+    )
+    backfill_parser.add_argument(
+        "--to-date", type=dt.date.fromisoformat, default=None, metavar="YYYY-MM-DD",
+        help="Only runs whose run_id starts on or before this date.",
+    )
+    backfill_parser.add_argument(
+        "--write", action="store_true",
+        help="Write catalog files. Without it the run reads everything and writes nothing.",
+    )
+    backfill_parser.add_argument("--report-json", type=Path, required=True, help="Where to write the JSON report.")
+    backfill_parser.add_argument("--summary", type=Path, required=True, help="Where to write the Markdown summary.")
     return parser
 
 
@@ -195,6 +220,43 @@ def run_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_backfill(args: argparse.Namespace, *, client: Any | None = None) -> int:
+    """Run the capture-index backfill against the bucket and write its report (#67).
+
+    Shape failures are reported and exit 0: B reports only (#63 D4). Any
+    operational error, such as an unreadable object, exits 1.
+    """
+    from fpl_ingest import __version__
+    from fpl_ingest.backfill import DryRunTree, S3Tree, build_backfill
+
+    if client is None:
+        import boto3
+
+        client = boto3.client("s3")
+    sha = (os.environ.get("GITHUB_SHA") or "local")[:7]
+    tree: Any = S3Tree(args.bucket, client=client)
+    if not args.write:
+        tree = DryRunTree(tree)
+
+    started = time.monotonic()
+    try:
+        report = build_backfill(
+            tree,
+            validator_version=f"fpl-ingest/{__version__}+{sha}",
+            from_date=args.from_date,
+            to_date=args.to_date,
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure must fail the job, with a summary
+        logging.getLogger(__name__).exception("backfill failed")
+        args.summary.write_text(f"## Capture-index backfill\n\n**Failed:** {exc!r}\n", encoding="utf-8")
+        return 1
+    report.runtime_seconds = round(time.monotonic() - started, 1)
+
+    args.report_json.write_text(json.dumps(report.to_json(), indent=2) + "\n", encoding="utf-8")
+    args.summary.write_text(report.to_markdown(), encoding="utf-8")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -210,6 +272,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(run_smoke_test(args))
     if args.command == "inspect":
         sys.exit(run_inspect(args))
+    if args.command == "backfill":
+        sys.exit(run_backfill(args))
     if args.command == "pre-deadline":
         sys.exit(run_pre_deadline(args))
     sys.exit(run_pipeline(args))

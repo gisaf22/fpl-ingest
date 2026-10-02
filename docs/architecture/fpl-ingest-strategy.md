@@ -622,7 +622,10 @@ backfill catalog fills that gap with one file per such run, so a consumer can un
 with manifests instead of reading every sidecar (#63, #66).
 
 - **Scope:** every live run not indexed by a 2.1.0+ manifest, plus the history run.
-- **Write-once:** a catalog is never overwritten. A rerun skips any run that already has one.
+- **Write-once:** a catalog is never overwritten. A rerun skips any run that already has one,
+  and every write is conditional (`If-None-Match: *`), so S3 itself refuses an overwrite (#67).
+- **Where it runs:** `.github/workflows/backfill_catalog.yml`, manual dispatch only, a dry run by
+  default, under a dedicated role that can write only `_catalog/*` (`docs/iam/backfill-role/`).
 - **Reserved prefix:** `_catalog` is a sibling of the endpoint prefixes, like `_manifests`.
 
 **Fields: `schemas/raw-contract/2.1.0/backfill-catalog.schema.json` is the contract.** The

@@ -46,3 +46,15 @@ def test_concurrency_group_prevents_parallel_backfills():
 
     assert concurrency["group"]
     assert concurrency["cancel-in-progress"] is False
+
+
+@pytest.mark.covers("#72 AC3")
+def test_read_concurrency_input_defaults_to_16_and_reaches_the_cli():
+    workflow = _workflow()
+    read_concurrency = workflow[True]["workflow_dispatch"]["inputs"]["read_concurrency"]
+    run_steps = [s for s in _job(workflow)["steps"] if "fpl-ingest" in str(s.get("run", ""))]
+
+    assert str(read_concurrency["default"]) == "16"
+    (step,) = run_steps
+    assert step["env"]["READ_CONCURRENCY"] == "${{ inputs.read_concurrency }}"
+    assert '--read-concurrency "$READ_CONCURRENCY"' in step["run"]

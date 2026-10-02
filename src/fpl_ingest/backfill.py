@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -88,6 +89,10 @@ class Tree(Protocol):
 
     def put_if_absent(self, key: str, data: bytes) -> bool: ...
 
+    def prefetch(self, keys: list[str]) -> None:
+        """Hint: the keys the builder is about to read for one run (#72)."""
+        ...
+
 
 class LocalTree:
     """A bucket-shaped tree on the local filesystem, keys relative to ``root``."""
@@ -109,6 +114,9 @@ class LocalTree:
     def get_bytes(self, key: str) -> bytes | None:
         path = self._path(key)
         return path.read_bytes() if path.is_file() else None
+
+    def prefetch(self, keys: list[str]) -> None:
+        """No-op: local reads are cheap."""
 
     def exists(self, key: str) -> bool:
         return self._path(key).is_file()
@@ -133,11 +141,21 @@ class S3Tree:
     "not written" so the run skips it (E7). Any other error, a 409
     conditional-write conflict included, is raised: the workflow's
     concurrency group means a second writer should never exist.
+
+    ``prefetch`` reads one run's keys with ``concurrency`` threads and holds
+    them until ``get_bytes`` takes them (#72). The cache holds one run at a
+    time: each prefetch replaces it. A missing key prefetches as ``None``; any
+    other error is raised from ``prefetch`` and the pending reads are cancelled.
+    The one client is shared across threads, which boto3 clients allow.
     """
 
-    def __init__(self, bucket: str, *, client: Any) -> None:
+    def __init__(self, bucket: str, *, client: Any, concurrency: int = 1) -> None:
+        if concurrency < 1:
+            raise ValueError(f"concurrency must be at least 1, got {concurrency}")
         self.bucket = bucket
         self._client = client
+        self._concurrency = concurrency
+        self._cache: dict[str, bytes | None] = {}
 
     def list_keys(self, prefix: str) -> Iterator[str]:
         paginator = self._client.get_paginator("list_objects_v2")
@@ -145,7 +163,24 @@ class S3Tree:
             for obj in page.get("Contents", []):
                 yield obj["Key"]
 
+    def prefetch(self, keys: list[str]) -> None:
+        self._cache = {}
+        with ThreadPoolExecutor(max_workers=self._concurrency) as pool:
+            futures = {key: pool.submit(self._read, key) for key in dict.fromkeys(keys)}
+            try:
+                cache = {key: future.result() for key, future in futures.items()}
+            except BaseException:
+                for future in futures.values():
+                    future.cancel()
+                raise
+        self._cache = cache
+
     def get_bytes(self, key: str) -> bytes | None:
+        if key in self._cache:
+            return self._cache.pop(key)
+        return self._read(key)
+
+    def _read(self, key: str) -> bytes | None:
         try:
             response = self._client.get_object(Bucket=self.bucket, Key=key)
         except Exception as exc:  # noqa: BLE001 - boto3 raises botocore.exceptions.ClientError
@@ -188,6 +223,9 @@ class DryRunTree:
 
     def get_bytes(self, key: str) -> bytes | None:
         return self._inner.get_bytes(key)
+
+    def prefetch(self, keys: list[str]) -> None:
+        self._inner.prefetch(keys)
 
     def exists(self, key: str) -> bool:
         return self._inner.exists(key)
@@ -422,12 +460,14 @@ def _build_catalog(
     validator_version: str,
     report: BackfillReport,
 ) -> dict[str, Any]:
+    ordered = sorted(payloads, key=lambda p: p.key)
+    tree.prefetch([k for p in ordered for k in (p.key, _sidecar_key(p.key))])
     rows = []
-    for p in sorted(payloads, key=lambda p: p.key):
+    for p in ordered:
         body = tree.get_bytes(p.key)
         if body is None:
             raise FileNotFoundError(p.key)
-        sidecar_bytes = tree.get_bytes(p.key.rsplit("/", 1)[0] + "/" + METADATA_FILENAME)
+        sidecar_bytes = tree.get_bytes(_sidecar_key(p.key))
         sidecar = json.loads(sidecar_bytes) if sidecar_bytes is not None else None
         shape = shape_for_capture(p.endpoint, sidecar, body, validator_version=validator_version)
         rows.append((p, body, sidecar, shape))
@@ -474,6 +514,10 @@ def _build_catalog(
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "captures": entries,
     }
+
+
+def _sidecar_key(payload_key: str) -> str:
+    return payload_key.rsplit("/", 1)[0] + "/" + METADATA_FILENAME
 
 
 def _live_season(rows: list[tuple[_Payload, bytes, Any, ShapeResult]]) -> str | None:

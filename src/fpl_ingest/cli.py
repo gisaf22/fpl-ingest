@@ -158,6 +158,19 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
         "--write", action="store_true",
         help="Write catalog files. Without it the run reads everything and writes nothing.",
     )
+    def at_least_one(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from exc
+        if parsed < 1:
+            raise argparse.ArgumentTypeError(f"must be at least 1, got {parsed}")
+        return parsed
+
+    backfill_parser.add_argument(
+        "--read-concurrency", type=at_least_one, default=16, metavar="N",
+        help="Parallel S3 reads per run (default: 16).",
+    )
     backfill_parser.add_argument("--report-json", type=Path, required=True, help="Where to write the JSON report.")
     backfill_parser.add_argument("--summary", type=Path, required=True, help="Where to write the Markdown summary.")
     return parser
@@ -231,10 +244,12 @@ def run_backfill(args: argparse.Namespace, *, client: Any | None = None) -> int:
 
     if client is None:
         import boto3
+        from botocore.config import Config
 
-        client = boto3.client("s3")
+        # The pool must cover every reader thread, or reads queue on it (#72 P3).
+        client = boto3.client("s3", config=Config(max_pool_connections=max(10, args.read_concurrency)))
     sha = (os.environ.get("GITHUB_SHA") or "local")[:7]
-    tree: Any = S3Tree(args.bucket, client=client)
+    tree: Any = S3Tree(args.bucket, client=client, concurrency=args.read_concurrency)
     if not args.write:
         tree = DryRunTree(tree)
 

@@ -32,6 +32,10 @@ on:
         description: "Only runs whose run_id starts on or before this date (YYYY-MM-DD); empty = no upper bound"
         type: string
         default: ""
+      read_concurrency:
+        description: "Parallel S3 reads per run (#72)"
+        type: string
+        default: "16"
 
 permissions:
   id-token: write
@@ -81,8 +85,9 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           FROM_DATE: ${{ inputs.from_date }}
           TO_DATE: ${{ inputs.to_date }}
+          READ_CONCURRENCY: ${{ inputs.read_concurrency }}
         run: |
-          args=(backfill --bucket "$FPL_S3_BUCKET" --report-json backfill-report.json --summary backfill-summary.md)
+          args=(backfill --bucket "$FPL_S3_BUCKET" --read-concurrency "$READ_CONCURRENCY" --report-json backfill-report.json --summary backfill-summary.md)
           [ -n "$FROM_DATE" ] && args+=(--from-date "$FROM_DATE")
           [ -n "$TO_DATE" ] && args+=(--to-date "$TO_DATE")
           [ "$DRY_RUN" = "false" ] && args+=(--write)

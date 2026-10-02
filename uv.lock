@@ -343,6 +343,7 @@ dev = [
     { name = "jsonschema" },
     { name = "mypy" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "responses" },
     { name = "types-requests" },
 ]
@@ -360,6 +361,7 @@ dev = [
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "mypy" },
     { name = "pytest" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "responses" },
     { name = "types-requests", specifier = ">=2.33.0.20260408" },
 ]

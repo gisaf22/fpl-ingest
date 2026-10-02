@@ -30,6 +30,7 @@ dev = [
     "jsonschema>=4.26.0",
     "mypy",
     "pytest",
+    "pyyaml>=6.0",
     "responses",
     "types-requests>=2.33.0.20260408",
 ]

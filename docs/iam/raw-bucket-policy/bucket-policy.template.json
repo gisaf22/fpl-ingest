@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RawFplWritesOnlyFromCiRoles",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::fpl-data-safari/raw/fpl/*",
+      "Condition": {
+        "ArnNotEquals": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::${ACCT}:role/github-actions-fpl-ingest",
+            "${BACKFILL_ROLE_ARN}"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "RawAndHistoryImmutable",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": ["s3:DeleteObject", "s3:DeleteObjectVersion"],
+      "Resource": [
+        "arn:aws:s3:::fpl-data-safari/raw/*",
+        "arn:aws:s3:::fpl-data-safari/history/*"
+      ]
+    }
+  ]
+}

@@ -544,7 +544,7 @@ Sidecar object rather than S3 user metadata: user metadata is capped at 2 KB, is
 `GET` of the payload, and cannot be read by a dbt external-table scan. A sidecar is just
 another readable object.
 
-**Fields: `schemas/raw-contract/2.1.0/sidecar.schema.json` is the contract.** The field
+**Fields: `schemas/raw-contract/2.2.0/sidecar.schema.json` is the contract.** The field
 table that used to sit here drifted from the code and was replaced by the schema (#62). The
 reasons behind the fields stay here:
 
@@ -571,7 +571,7 @@ reasons behind the fields stay here:
 The `_manifests` prefix is a sibling of the endpoint prefixes, so a warehouse scanning
 `raw/fpl/bootstrap-static/**` never accidentally reads manifests as payloads.
 
-**Fields: `schemas/raw-contract/2.1.0/manifest.schema.json` is the contract**, replacing the
+**Fields: `schemas/raw-contract/2.2.0/manifest.schema.json` is the contract**, replacing the
 field table that used to sit here (#62). The reasons:
 
 - `run_id`, `source`, `extraction_date` are its identity. `started_at`, `ended_at` and
@@ -598,6 +598,11 @@ field table that used to sit here (#62). The reasons:
   settled **without opening any payload.**
 - `git_sha` and `ingest_version` record which code produced the run. `config` records the
   effective rate limit, concurrency, strict mode and `--force`; `trigger` what started it.
+- `origin` (since 2.2.0, #75) records where the run came from: `kind` (`ci` when
+  `GITHUB_ACTIONS` is `"true"`, else `local`), the Actions `workflow`, `ref` and
+  `github_run_id` (null for `local`), and `aws_principal`, the role or IAM user name from STS
+  `GetCallerIdentity` (never an ARN or account ID; null if the lookup failed). It records facts,
+  not a "production" verdict, and is written on every manifest, `IN_PROGRESS` included.
 
 **The manifest is the successor to `_runs` and `_stage_lineage`.** `_runs`
 (`store.py::_RUNS_DDL`) carries `started_at, stage, fetched, validated, written, skipped,

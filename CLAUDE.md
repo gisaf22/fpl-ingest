@@ -103,8 +103,17 @@ shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
 - **`season` is on every 2.1.0 sidecar and capture entry**, derived from the same run's
   bootstrap-static (the deadline year of its lowest-id event). It is `null`, logged at ERROR
   as `season_source=none`, when the run had no usable bootstrap; there is no fallback. The
-  field list for both files is `schemas/raw-contract/2.1.0/`, which replaces strategy doc
+  field list for both files is `schemas/raw-contract/2.2.0/`, which replaces strategy doc
   §A.5's tables.
+- **Tell a production run from a laptop run by the manifest's `origin`** (#75, contract
+  2.2.0), not by `git_sha` or `trigger`: a laptop run from a checkout records a real SHA, and
+  `--trigger` takes any value. `origin.kind` is `ci` or `local`; for `ci`, `workflow`, `ref`
+  and `github_run_id` link to the Actions run. These are self-reported from `GITHUB_*`
+  variables, so read them as audit, not proof. `aws_principal` is the role or IAM user name
+  STS resolved the run's credentials to (`"root"` for the root user, `null` if the lookup
+  failed). Production is the reader's call, e.g. `kind == "ci"` and
+  `ref == "refs/heads/main"`. Present on every 2.2.0 manifest, `IN_PROGRESS` included;
+  manifests before 2.2.0 have no `origin`, and their origin comes from Actions run history.
 - **Run `status` is SUCCESS / PARTIAL / FAILED by the same rule, over the whole run** (#48,
   contract 2.0.0): SUCCESS when every endpoint is SUCCESS, PARTIAL when something is usable
   and something failed, FAILED when nothing is usable (a run with no endpoints included). A

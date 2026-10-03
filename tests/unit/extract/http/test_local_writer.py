@@ -466,11 +466,11 @@ def test_naive_run_start_is_treated_as_utc(tmp_path: Path):
 
 @pytest.mark.covers("#48 AC5")
 @pytest.mark.covers("#62 AC5")
-def test_finalized_manifest_declares_contract_version_2_1_0(writer: LocalRawWriter):
-    # Was 2.0.0 (#48); #62 moves the pin to 2.1.0 by design.
+def test_finalized_manifest_declares_contract_version_2_2_0(writer: LocalRawWriter):
+    # Was 2.0.0 (#48), then 2.1.0 (#62); #75 moves the pin to 2.2.0 by design.
     _write_bootstrap(writer)
     manifest = writer.finalize(classify_run(writer.endpoint_outcomes)).manifest
-    assert manifest["raw_contract_version"] == "2.1.0"
+    assert manifest["raw_contract_version"] == "2.2.0"
 
 
 _SHAPE_INVALID = {"ok": False, "checks": ["top_level_is_list"], "failures": ["top_level_is_list: got dict"]}

@@ -209,6 +209,7 @@ class LocalRawWriter:
         started_at: datetime | None = None,
         extraction_date: str | None = None,
         backend: RawStorageBackend | None = None,
+        origin: Mapping[str, Any] | None = None,
     ) -> None:
         """Create a writer for one run of one source.
 
@@ -220,6 +221,10 @@ class LocalRawWriter:
                 id and the extraction date derive from it.
             extraction_date: Override for the derived ``YYYY-MM-DD`` date.
             backend: Storage backend; defaults to the local filesystem.
+            origin: Where the run came from, from ``orchestration.origin``
+                (#75). Written on every manifest, IN_PROGRESS included. The
+                runner always passes it; None leaves the manifest invalid
+                against the 2.2.0 schema rather than faking a value.
         """
         raw_keys.validate_source(source)
         self.source = source
@@ -235,6 +240,7 @@ class LocalRawWriter:
         self._markers_withheld: list[dict[str, Any]] = []
         self._captures: list[dict[str, Any]] = []
         self._season: str | None = None
+        self._origin: dict[str, Any] | None = dict(origin) if origin is not None else None
         self._finalized = False
 
     @property
@@ -581,6 +587,7 @@ class LocalRawWriter:
             "ingest_version": ingest_version,
             "config": dict(config) if config is not None else None,
             "trigger": trigger,
+            "origin": dict(self._origin) if self._origin is not None else None,
         }
         if finality is not None:
             manifest["finality"] = finality

@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 
+import pytest
+
 
 def pytest_pyfunc_call(pyfuncitem):
     if pyfuncitem.get_closest_marker("asyncio") is None:
@@ -27,3 +29,15 @@ def pytest_pyfunc_call(pyfuncitem):
     finally:
         loop.close()
     return True
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sts(monkeypatch):
+    """Keep every tier off real AWS: the runner's origin lookup (#75) would
+    otherwise call STS with whatever credentials the machine has. Tests that
+    exercise the lookup inject their own client."""
+
+    def _unavailable():
+        raise RuntimeError("real STS is disabled in tests")
+
+    monkeypatch.setattr("fpl_ingest.orchestration.origin._default_sts_client", _unavailable)

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gisaf22/fpl-ingest/schemas/raw-contract/2.2.0/backfill-catalog.schema.json",
+  "title": "Backfill catalog file, raw contract 2.2.0",
+  "description": "One per run captured before 2.1.0, plus the ported history run, under raw/{source}/_catalog/backfill/{run_id}.json (#63 D8). Written once, never overwritten. Each captures[] entry carries the manifest's captures[] fields, so a consumer can union the two, plus where its shape verdict came from. Strict at every level: a field not listed here is a contract change.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "source", "scope", "generated_at", "captures"],
+  "properties": {
+    "run_id": { "type": "string", "pattern": "^\\d{8}T\\d{6}Z-[0-9a-f]{6}$" },
+    "source": { "type": "string", "minLength": 1 },
+    "scope": { "enum": ["live", "history"] },
+    "generated_at": { "$ref": "#/$defs/utc_timestamp" },
+    "captures": {
+      "description": "One entry per payload in the run, each exactly once.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/capture" }
+    }
+  },
+  "$defs": {
+    "utc_timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key", "endpoint", "received_at", "content_sha256", "content_length",
+        "http_status", "shape_ok", "usable", "season", "shape_source", "validator_version"
+      ],
+      "properties": {
+        "key": {
+          "description": "Full object key under the bucket, no scheme. history/ for the ported season.",
+          "type": "string",
+          "pattern": "^(raw|history)/"
+        },
+        "endpoint": { "type": "string", "minLength": 1 },
+        "received_at": {
+          "description": "From the sidecar; for the history run, the synthetic run's instant (#63 D5).",
+          "$ref": "#/$defs/utc_timestamp"
+        },
+        "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "content_length": { "type": "integer", "minimum": 0 },
+        "http_status": {
+          "description": "null only where the capture never recorded one: the history run (#63 D5).",
+          "type": ["integer", "null"]
+        },
+        "shape_ok": { "type": "boolean" },
+        "usable": {
+          "description": "Written and shape_ok. Every entry was written, so this equals shape_ok.",
+          "type": "boolean"
+        },
+        "season": {
+          "description": "From this run's bootstrap-static; null when the run had no usable one (#63 D6).",
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}$"
+        },
+        "shape_source": { "enum": ["sidecar", "revalidated"] },
+        "validator_version": {
+          "description": "null when the sidecar's verdict was used; fpl-ingest/<version>+<sha7> when revalidated (#63 D7).",
+          "type": ["string", "null"],
+          "pattern": "^fpl-ingest/[^+]+\\+[0-9a-f]{7}$"
+        }
+      },
+      "if": { "properties": { "shape_source": { "const": "sidecar" } } },
+      "then": { "properties": { "validator_version": { "type": "null" } } },
+      "else": { "properties": { "validator_version": { "type": "string" } } }
+    }
+  }
+}

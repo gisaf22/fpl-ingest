@@ -27,19 +27,19 @@ def _event(id_: int, deadline: datetime | str | None, *, finished: bool = False)
 
 class TestWindowBoundaries:
 
-    def test_window_is_75_minutes(self):
-        assert PRE_DEADLINE_WINDOW == timedelta(minutes=75)
+    def test_window_is_120_minutes(self):
+        assert PRE_DEADLINE_WINDOW == timedelta(minutes=120)
 
-    def test_deadline_in_74_minutes_captures(self):
-        events = [_event(6, NOW + timedelta(minutes=74))]
+    def test_deadline_in_119_minutes_captures(self):
+        events = [_event(6, NOW + timedelta(minutes=119))]
         assert in_pre_deadline_window(events, now=NOW) is True
 
-    def test_deadline_in_exactly_75_minutes_captures(self):
-        events = [_event(6, NOW + timedelta(minutes=75))]
+    def test_deadline_in_exactly_120_minutes_captures(self):
+        events = [_event(6, NOW + timedelta(minutes=120))]
         assert in_pre_deadline_window(events, now=NOW) is True
 
-    def test_deadline_in_76_minutes_is_a_no_op(self):
-        events = [_event(6, NOW + timedelta(minutes=76))]
+    def test_deadline_in_121_minutes_is_a_no_op(self):
+        events = [_event(6, NOW + timedelta(minutes=121))]
         assert in_pre_deadline_window(events, now=NOW) is False
 
     def test_deadline_already_passed_is_a_no_op(self):
@@ -95,10 +95,10 @@ class TestDeadlineTimeIsUtc:
     @pytest.mark.parametrize(
         ("deadline", "minutes_before", "expected"),
         [
-            ("2026-10-23T17:30:00Z", 74, True),   # BST side
-            ("2026-10-23T17:30:00Z", 76, False),
-            ("2026-10-31T11:00:00Z", 74, True),   # GMT side
-            ("2026-10-31T11:00:00Z", 76, False),
+            ("2026-10-23T17:30:00Z", 119, True),   # BST side
+            ("2026-10-23T17:30:00Z", 121, False),
+            ("2026-10-31T11:00:00Z", 119, True),   # GMT side
+            ("2026-10-31T11:00:00Z", 121, False),
         ],
     )
     def test_either_side_of_the_clock_change(self, deadline, minutes_before, expected):

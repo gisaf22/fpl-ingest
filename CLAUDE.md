@@ -141,7 +141,7 @@ second case covers runs that never start and GitHub Actions outages.
 
 | Check | Workflow | Schedule | Timezone | Grace | Ping URL secret |
 |---|---|---|---|---|---|
-| `fpl-ingest pre-deadline` | `scheduled_run_pre_deadline.yml` | `*/30 9-19 * * *` | UTC | 1 h | `HEALTHCHECKS_PING_URL_PRE_DEADLINE` |
+| `fpl-ingest pre-deadline` | `scheduled_run_pre_deadline.yml` | `7,22,37,52 8-19 * * *` | UTC | 1 h | `HEALTHCHECKS_PING_URL_PRE_DEADLINE` |
 | `fpl-ingest daily` | `scheduled_run_daily.yml` | `0 7,19 * * *` | UTC | 1 h | `HEALTHCHECKS_PING_URL_DAILY` |
 
 fpl-warehouse's scheduled build has its own check, documented in that repo.

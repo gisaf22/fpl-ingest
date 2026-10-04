@@ -10,22 +10,24 @@
 # provided until 46d3c19, plus fixtures (#46) so fixture difficulty and
 # kickoff times are kept as they stood at each deadline — no match-window
 # pulls, no other endpoints. The `pre-deadline` command fetches
-# bootstrap-static and, only if the next deadline is within 75 minutes
+# bootstrap-static and, only if the next deadline is within 120 minutes
 # (orchestration/pre_deadline.py), writes it and fetches and writes fixtures
 # in the same run (payloads, sidecars, one manifest with trigger:
 # pre_deadline). Otherwise it exits 0 having written nothing. A failure of
 # either endpoint keeps the other and fails the run. There is no marker and
 # no state between runs.
 #
-# Cron covers 09:00-19:30 UTC every 30 minutes: that serves any deadline
-# between 09:00 and 20:45 UTC. deadline_time is UTC, so the UK clock change
+# Cron runs every 15 minutes at :07/:22/:37/:52 from 08:07 to 19:52 UTC, off
+# the busy :00/:30 minutes where GitHub's scheduler is most likely to delay or
+# drop a run. With the 120-minute window that serves any deadline between
+# 08:07 and 21:52 UTC, with up to eight ticks inside the window. deadline_time is UTC, so the UK clock change
 # does not move this window; FPL's 2026-27 deadlines are 10:00-18:30 UTC.
 
 name: Scheduled Ingestion — Pre-deadline
 
 on:
   schedule:
-    - cron: "*/30 9-19 * * *"
+    - cron: "7,22,37,52 8-19 * * *"
   workflow_dispatch:
     # Manual runs are gated the same way unless force is true; outside the
     # window they write nothing. force=true captures now, as trigger: manual.

@@ -18,10 +18,10 @@ from datetime import datetime, timedelta
 from typing import Any
 
 #: A capture is written when the next deadline is at most this far away. With
-#: the workflow's 30-minute cron, any scheduling lag under 30 minutes (GitHub's
-#: observed lag is 11-18) leaves at least two ticks inside the window for every
-#: 2026-27 deadline, the last landing 12-30 minutes before it.
-PRE_DEADLINE_WINDOW = timedelta(minutes=75)
+#: the workflow's 15-minute cron, eight ticks fall inside the window for every
+#: 2026-27 deadline, so several dropped or delayed runs (GitHub's observed lag
+#: is 8-22 minutes) still leave a capture shortly before it.
+PRE_DEADLINE_WINDOW = timedelta(minutes=120)
 
 #: The manifest ``trigger`` value for runs this gate lets through.
 PRE_DEADLINE_TRIGGER = "pre_deadline"

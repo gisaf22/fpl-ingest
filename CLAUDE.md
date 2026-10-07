@@ -59,6 +59,19 @@ stage's own capture succeeded," or one stage's success could vouch for the other
 
 ---
 
+## Payload baselines
+
+`schemas/payload-baseline/<endpoint>.json` lists every field path each endpoint's payload
+carries and its JSON type(s), plus the samples it was built from (#81; decisions on #80).
+Regenerate from live fetches, never from S3:
+`uv run fpl-ingest baseline <endpoint> [--players 1,2] [--gameweeks 5,6]`. By default the
+fetches are unioned with the committed file, so a rarely seen field never drops out;
+`--replace` builds from the fresh fetches only, and is the only way to remove a field.
+Accepting a drift means merging the regenerated file. Integer and decimal are one type,
+`number`.
+
+---
+
 ## Tooling
 
 Bare `gh` is the real GitHub CLI (`/opt/homebrew/bin/gh`). The pyenv shim that used to

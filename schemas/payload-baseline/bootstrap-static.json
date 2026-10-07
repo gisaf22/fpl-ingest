@@ -1,0 +1,1184 @@
+{
+  "endpoint": "bootstrap-static",
+  "paths": {
+    "$": [
+      "object"
+    ],
+    "$.chips": [
+      "array"
+    ],
+    "$.chips[]": [
+      "object"
+    ],
+    "$.chips[].chip_type": [
+      "string"
+    ],
+    "$.chips[].id": [
+      "number"
+    ],
+    "$.chips[].name": [
+      "string"
+    ],
+    "$.chips[].number": [
+      "number"
+    ],
+    "$.chips[].overrides": [
+      "object"
+    ],
+    "$.chips[].overrides.element_types": [
+      "array"
+    ],
+    "$.chips[].overrides.pick_multiplier": [
+      "null"
+    ],
+    "$.chips[].overrides.rules": [
+      "object"
+    ],
+    "$.chips[].overrides.scoring": [
+      "object"
+    ],
+    "$.chips[].start_event": [
+      "number"
+    ],
+    "$.chips[].stop_event": [
+      "number"
+    ],
+    "$.element_stats": [
+      "array"
+    ],
+    "$.element_stats[]": [
+      "object"
+    ],
+    "$.element_stats[].label": [
+      "string"
+    ],
+    "$.element_stats[].name": [
+      "string"
+    ],
+    "$.element_types": [
+      "array"
+    ],
+    "$.element_types[]": [
+      "object"
+    ],
+    "$.element_types[].element_count": [
+      "number"
+    ],
+    "$.element_types[].id": [
+      "number"
+    ],
+    "$.element_types[].plural_name": [
+      "string"
+    ],
+    "$.element_types[].plural_name_short": [
+      "string"
+    ],
+    "$.element_types[].singular_name": [
+      "string"
+    ],
+    "$.element_types[].singular_name_short": [
+      "string"
+    ],
+    "$.element_types[].squad_max_play": [
+      "number"
+    ],
+    "$.element_types[].squad_max_select": [
+      "null"
+    ],
+    "$.element_types[].squad_min_play": [
+      "number"
+    ],
+    "$.element_types[].squad_min_select": [
+      "null"
+    ],
+    "$.element_types[].squad_select": [
+      "number"
+    ],
+    "$.element_types[].sub_positions_locked": [
+      "array"
+    ],
+    "$.element_types[].sub_positions_locked[]": [
+      "number"
+    ],
+    "$.element_types[].ui_shirt_specific": [
+      "boolean"
+    ],
+    "$.elements": [
+      "array"
+    ],
+    "$.elements[]": [
+      "object"
+    ],
+    "$.elements[].assists": [
+      "number"
+    ],
+    "$.elements[].birth_date": [
+      "null",
+      "string"
+    ],
+    "$.elements[].bonus": [
+      "number"
+    ],
+    "$.elements[].bps": [
+      "number"
+    ],
+    "$.elements[].can_select": [
+      "boolean"
+    ],
+    "$.elements[].can_transact": [
+      "boolean"
+    ],
+    "$.elements[].chance_of_playing_next_round": [
+      "null",
+      "number"
+    ],
+    "$.elements[].chance_of_playing_this_round": [
+      "null",
+      "number"
+    ],
+    "$.elements[].clean_sheets": [
+      "number"
+    ],
+    "$.elements[].clean_sheets_per_90": [
+      "number"
+    ],
+    "$.elements[].clearances_blocks_interceptions": [
+      "number"
+    ],
+    "$.elements[].code": [
+      "number"
+    ],
+    "$.elements[].corners_and_indirect_freekicks_order": [
+      "null",
+      "number"
+    ],
+    "$.elements[].corners_and_indirect_freekicks_text": [
+      "string"
+    ],
+    "$.elements[].cost_change_event": [
+      "number"
+    ],
+    "$.elements[].cost_change_event_fall": [
+      "number"
+    ],
+    "$.elements[].cost_change_start": [
+      "number"
+    ],
+    "$.elements[].cost_change_start_fall": [
+      "number"
+    ],
+    "$.elements[].creativity": [
+      "string"
+    ],
+    "$.elements[].creativity_rank": [
+      "number"
+    ],
+    "$.elements[].creativity_rank_type": [
+      "number"
+    ],
+    "$.elements[].defensive_contribution": [
+      "number"
+    ],
+    "$.elements[].defensive_contribution_per_90": [
+      "number"
+    ],
+    "$.elements[].direct_freekicks_order": [
+      "null",
+      "number"
+    ],
+    "$.elements[].direct_freekicks_text": [
+      "string"
+    ],
+    "$.elements[].dreamteam_count": [
+      "number"
+    ],
+    "$.elements[].element_type": [
+      "number"
+    ],
+    "$.elements[].ep_next": [
+      "string"
+    ],
+    "$.elements[].ep_this": [
+      "string"
+    ],
+    "$.elements[].event_points": [
+      "number"
+    ],
+    "$.elements[].expected_assists": [
+      "string"
+    ],
+    "$.elements[].expected_assists_per_90": [
+      "number"
+    ],
+    "$.elements[].expected_goal_involvements": [
+      "string"
+    ],
+    "$.elements[].expected_goal_involvements_per_90": [
+      "number"
+    ],
+    "$.elements[].expected_goals": [
+      "string"
+    ],
+    "$.elements[].expected_goals_conceded": [
+      "string"
+    ],
+    "$.elements[].expected_goals_conceded_per_90": [
+      "number"
+    ],
+    "$.elements[].expected_goals_per_90": [
+      "number"
+    ],
+    "$.elements[].first_name": [
+      "string"
+    ],
+    "$.elements[].form": [
+      "string"
+    ],
+    "$.elements[].form_rank": [
+      "number"
+    ],
+    "$.elements[].form_rank_type": [
+      "number"
+    ],
+    "$.elements[].goals_conceded": [
+      "number"
+    ],
+    "$.elements[].goals_conceded_per_90": [
+      "number"
+    ],
+    "$.elements[].goals_scored": [
+      "number"
+    ],
+    "$.elements[].has_temporary_code": [
+      "boolean"
+    ],
+    "$.elements[].ict_index": [
+      "string"
+    ],
+    "$.elements[].ict_index_rank": [
+      "number"
+    ],
+    "$.elements[].ict_index_rank_type": [
+      "number"
+    ],
+    "$.elements[].id": [
+      "number"
+    ],
+    "$.elements[].in_dreamteam": [
+      "boolean"
+    ],
+    "$.elements[].influence": [
+      "string"
+    ],
+    "$.elements[].influence_rank": [
+      "number"
+    ],
+    "$.elements[].influence_rank_type": [
+      "number"
+    ],
+    "$.elements[].known_name": [
+      "string"
+    ],
+    "$.elements[].minutes": [
+      "number"
+    ],
+    "$.elements[].news": [
+      "string"
+    ],
+    "$.elements[].news_added": [
+      "null",
+      "string"
+    ],
+    "$.elements[].now_cost": [
+      "number"
+    ],
+    "$.elements[].now_cost_rank": [
+      "number"
+    ],
+    "$.elements[].now_cost_rank_type": [
+      "number"
+    ],
+    "$.elements[].opta_code": [
+      "string"
+    ],
+    "$.elements[].own_goals": [
+      "number"
+    ],
+    "$.elements[].penalties_missed": [
+      "number"
+    ],
+    "$.elements[].penalties_order": [
+      "null",
+      "number"
+    ],
+    "$.elements[].penalties_saved": [
+      "number"
+    ],
+    "$.elements[].penalties_text": [
+      "string"
+    ],
+    "$.elements[].photo": [
+      "string"
+    ],
+    "$.elements[].points_per_game": [
+      "string"
+    ],
+    "$.elements[].points_per_game_rank": [
+      "number"
+    ],
+    "$.elements[].points_per_game_rank_type": [
+      "number"
+    ],
+    "$.elements[].price_change_calibrating": [
+      "boolean"
+    ],
+    "$.elements[].price_change_hourly_rate": [
+      "number"
+    ],
+    "$.elements[].price_change_locked_until": [
+      "null"
+    ],
+    "$.elements[].price_change_percent": [
+      "string"
+    ],
+    "$.elements[].price_change_projections": [
+      "array"
+    ],
+    "$.elements[].price_change_projections[]": [
+      "object"
+    ],
+    "$.elements[].price_change_projections[].likelihood": [
+      "number"
+    ],
+    "$.elements[].price_change_projections[].offset": [
+      "number"
+    ],
+    "$.elements[].price_change_projections[].projected_percent": [
+      "string"
+    ],
+    "$.elements[].recoveries": [
+      "number"
+    ],
+    "$.elements[].red_cards": [
+      "number"
+    ],
+    "$.elements[].region": [
+      "null",
+      "number"
+    ],
+    "$.elements[].removed": [
+      "boolean"
+    ],
+    "$.elements[].saves": [
+      "number"
+    ],
+    "$.elements[].saves_per_90": [
+      "number"
+    ],
+    "$.elements[].scout_news_link": [
+      "string"
+    ],
+    "$.elements[].scout_risks": [
+      "array"
+    ],
+    "$.elements[].scout_risks[]": [
+      "object"
+    ],
+    "$.elements[].scout_risks[].gameweek": [
+      "number"
+    ],
+    "$.elements[].scout_risks[].notes": [
+      "string"
+    ],
+    "$.elements[].scout_risks[].property": [
+      "string"
+    ],
+    "$.elements[].scout_risks[].url": [
+      "null"
+    ],
+    "$.elements[].second_name": [
+      "string"
+    ],
+    "$.elements[].selected_by_percent": [
+      "string"
+    ],
+    "$.elements[].selected_rank": [
+      "number"
+    ],
+    "$.elements[].selected_rank_type": [
+      "number"
+    ],
+    "$.elements[].special": [
+      "boolean"
+    ],
+    "$.elements[].squad_number": [
+      "null"
+    ],
+    "$.elements[].starts": [
+      "number"
+    ],
+    "$.elements[].starts_per_90": [
+      "number"
+    ],
+    "$.elements[].status": [
+      "string"
+    ],
+    "$.elements[].tackles": [
+      "number"
+    ],
+    "$.elements[].team": [
+      "number"
+    ],
+    "$.elements[].team_code": [
+      "number"
+    ],
+    "$.elements[].team_join_date": [
+      "null",
+      "string"
+    ],
+    "$.elements[].threat": [
+      "string"
+    ],
+    "$.elements[].threat_rank": [
+      "number"
+    ],
+    "$.elements[].threat_rank_type": [
+      "number"
+    ],
+    "$.elements[].total_points": [
+      "number"
+    ],
+    "$.elements[].transfers_in": [
+      "number"
+    ],
+    "$.elements[].transfers_in_event": [
+      "number"
+    ],
+    "$.elements[].transfers_out": [
+      "number"
+    ],
+    "$.elements[].transfers_out_event": [
+      "number"
+    ],
+    "$.elements[].value_form": [
+      "string"
+    ],
+    "$.elements[].value_season": [
+      "string"
+    ],
+    "$.elements[].web_name": [
+      "string"
+    ],
+    "$.elements[].yellow_cards": [
+      "number"
+    ],
+    "$.events": [
+      "array"
+    ],
+    "$.events[]": [
+      "object"
+    ],
+    "$.events[].average_entry_score": [
+      "number"
+    ],
+    "$.events[].can_enter": [
+      "boolean"
+    ],
+    "$.events[].can_manage": [
+      "boolean"
+    ],
+    "$.events[].chip_plays": [
+      "array"
+    ],
+    "$.events[].chip_plays[]": [
+      "object"
+    ],
+    "$.events[].chip_plays[].chip_name": [
+      "string"
+    ],
+    "$.events[].chip_plays[].num_played": [
+      "number"
+    ],
+    "$.events[].cup_leagues_created": [
+      "boolean"
+    ],
+    "$.events[].data_checked": [
+      "boolean"
+    ],
+    "$.events[].deadline_time": [
+      "string"
+    ],
+    "$.events[].deadline_time_epoch": [
+      "number"
+    ],
+    "$.events[].deadline_time_game_offset": [
+      "number"
+    ],
+    "$.events[].finished": [
+      "boolean"
+    ],
+    "$.events[].h2h_ko_matches_created": [
+      "boolean"
+    ],
+    "$.events[].highest_score": [
+      "null",
+      "number"
+    ],
+    "$.events[].highest_scoring_entry": [
+      "null",
+      "number"
+    ],
+    "$.events[].id": [
+      "number"
+    ],
+    "$.events[].is_current": [
+      "boolean"
+    ],
+    "$.events[].is_next": [
+      "boolean"
+    ],
+    "$.events[].is_previous": [
+      "boolean"
+    ],
+    "$.events[].most_captained": [
+      "null",
+      "number"
+    ],
+    "$.events[].most_selected": [
+      "null",
+      "number"
+    ],
+    "$.events[].most_transferred_in": [
+      "null",
+      "number"
+    ],
+    "$.events[].most_vice_captained": [
+      "null",
+      "number"
+    ],
+    "$.events[].name": [
+      "string"
+    ],
+    "$.events[].overrides": [
+      "object"
+    ],
+    "$.events[].overrides.element_types": [
+      "array"
+    ],
+    "$.events[].overrides.pick_multiplier": [
+      "null"
+    ],
+    "$.events[].overrides.rules": [
+      "object"
+    ],
+    "$.events[].overrides.scoring": [
+      "object"
+    ],
+    "$.events[].ranked_count": [
+      "number"
+    ],
+    "$.events[].release_time": [
+      "null"
+    ],
+    "$.events[].released": [
+      "boolean"
+    ],
+    "$.events[].top_element": [
+      "null",
+      "number"
+    ],
+    "$.events[].top_element_info": [
+      "null",
+      "object"
+    ],
+    "$.events[].top_element_info.id": [
+      "number"
+    ],
+    "$.events[].top_element_info.points": [
+      "number"
+    ],
+    "$.events[].transfers_made": [
+      "number"
+    ],
+    "$.game_config": [
+      "object"
+    ],
+    "$.game_config.rules": [
+      "object"
+    ],
+    "$.game_config.rules.cup_qualifying_method": [
+      "null"
+    ],
+    "$.game_config.rules.cup_start_event_id": [
+      "null"
+    ],
+    "$.game_config.rules.cup_stop_event_id": [
+      "null"
+    ],
+    "$.game_config.rules.cup_type": [
+      "null"
+    ],
+    "$.game_config.rules.element_sell_at_purchase_price": [
+      "boolean"
+    ],
+    "$.game_config.rules.featured_entries": [
+      "array"
+    ],
+    "$.game_config.rules.league_h2h_tiebreak_stats": [
+      "array"
+    ],
+    "$.game_config.rules.league_h2h_tiebreak_stats[]": [
+      "string"
+    ],
+    "$.game_config.rules.league_join_private_max": [
+      "number"
+    ],
+    "$.game_config.rules.league_join_public_max": [
+      "number"
+    ],
+    "$.game_config.rules.league_ko_first_instead_of_random": [
+      "boolean"
+    ],
+    "$.game_config.rules.league_max_ko_rounds_private_h2h": [
+      "number"
+    ],
+    "$.game_config.rules.league_max_size_private_h2h": [
+      "number"
+    ],
+    "$.game_config.rules.league_max_size_public_classic": [
+      "number"
+    ],
+    "$.game_config.rules.league_max_size_public_h2h": [
+      "number"
+    ],
+    "$.game_config.rules.league_points_h2h_draw": [
+      "number"
+    ],
+    "$.game_config.rules.league_points_h2h_lose": [
+      "number"
+    ],
+    "$.game_config.rules.league_points_h2h_win": [
+      "number"
+    ],
+    "$.game_config.rules.league_prefix_public": [
+      "string"
+    ],
+    "$.game_config.rules.max_extra_free_transfers": [
+      "number"
+    ],
+    "$.game_config.rules.percentile_ranks": [
+      "array"
+    ],
+    "$.game_config.rules.percentile_ranks[]": [
+      "number"
+    ],
+    "$.game_config.rules.squad_special_max": [
+      "null"
+    ],
+    "$.game_config.rules.squad_special_min": [
+      "null"
+    ],
+    "$.game_config.rules.squad_squadplay": [
+      "number"
+    ],
+    "$.game_config.rules.squad_squadsize": [
+      "number"
+    ],
+    "$.game_config.rules.squad_team_limit": [
+      "number"
+    ],
+    "$.game_config.rules.squad_total_spend": [
+      "number"
+    ],
+    "$.game_config.rules.stats_form_days": [
+      "number"
+    ],
+    "$.game_config.rules.sys_vice_captain_enabled": [
+      "boolean"
+    ],
+    "$.game_config.rules.transfers_cap": [
+      "number"
+    ],
+    "$.game_config.rules.transfers_sell_on_fee": [
+      "number"
+    ],
+    "$.game_config.rules.ui_currency_multiplier": [
+      "number"
+    ],
+    "$.game_config.rules.ui_special_shirt_exclusions": [
+      "array"
+    ],
+    "$.game_config.rules.ui_use_special_shirts": [
+      "boolean"
+    ],
+    "$.game_config.rules.underdog_differential": [
+      "number"
+    ],
+    "$.game_config.scoring": [
+      "object"
+    ],
+    "$.game_config.scoring.assists": [
+      "number"
+    ],
+    "$.game_config.scoring.bonus": [
+      "number"
+    ],
+    "$.game_config.scoring.bps": [
+      "number"
+    ],
+    "$.game_config.scoring.clean_sheets": [
+      "object"
+    ],
+    "$.game_config.scoring.clean_sheets.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.clean_sheets.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.clean_sheets.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.clean_sheets.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.clearances_blocks_interceptions": [
+      "number"
+    ],
+    "$.game_config.scoring.creativity": [
+      "number"
+    ],
+    "$.game_config.scoring.defensive_contribution": [
+      "object"
+    ],
+    "$.game_config.scoring.defensive_contribution.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.defensive_contribution.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.defensive_contribution.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.defensive_contribution.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.expected_assists": [
+      "number"
+    ],
+    "$.game_config.scoring.expected_goal_involvements": [
+      "number"
+    ],
+    "$.game_config.scoring.expected_goals": [
+      "number"
+    ],
+    "$.game_config.scoring.expected_goals_conceded": [
+      "number"
+    ],
+    "$.game_config.scoring.goals_conceded": [
+      "object"
+    ],
+    "$.game_config.scoring.goals_conceded.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.goals_conceded.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.goals_conceded.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.goals_conceded.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.goals_scored": [
+      "object"
+    ],
+    "$.game_config.scoring.goals_scored.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.goals_scored.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.goals_scored.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.goals_scored.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.ict_index": [
+      "number"
+    ],
+    "$.game_config.scoring.influence": [
+      "number"
+    ],
+    "$.game_config.scoring.long_play": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_clean_sheets": [
+      "object"
+    ],
+    "$.game_config.scoring.mng_clean_sheets.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_clean_sheets.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_clean_sheets.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_clean_sheets.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_draw": [
+      "object"
+    ],
+    "$.game_config.scoring.mng_draw.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_draw.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_draw.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_draw.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_goals_scored": [
+      "object"
+    ],
+    "$.game_config.scoring.mng_goals_scored.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_goals_scored.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_goals_scored.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_goals_scored.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_loss": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_underdog_draw": [
+      "object"
+    ],
+    "$.game_config.scoring.mng_underdog_draw.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_underdog_draw.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_underdog_draw.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_underdog_draw.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_underdog_win": [
+      "object"
+    ],
+    "$.game_config.scoring.mng_underdog_win.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_underdog_win.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_underdog_win.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_underdog_win.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_win": [
+      "object"
+    ],
+    "$.game_config.scoring.mng_win.DEF": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_win.FWD": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_win.GKP": [
+      "number"
+    ],
+    "$.game_config.scoring.mng_win.MID": [
+      "number"
+    ],
+    "$.game_config.scoring.own_goals": [
+      "number"
+    ],
+    "$.game_config.scoring.penalties_missed": [
+      "number"
+    ],
+    "$.game_config.scoring.penalties_saved": [
+      "number"
+    ],
+    "$.game_config.scoring.recoveries": [
+      "number"
+    ],
+    "$.game_config.scoring.red_cards": [
+      "number"
+    ],
+    "$.game_config.scoring.saves": [
+      "number"
+    ],
+    "$.game_config.scoring.short_play": [
+      "number"
+    ],
+    "$.game_config.scoring.special_multiplier": [
+      "number"
+    ],
+    "$.game_config.scoring.starts": [
+      "number"
+    ],
+    "$.game_config.scoring.tackles": [
+      "number"
+    ],
+    "$.game_config.scoring.threat": [
+      "number"
+    ],
+    "$.game_config.scoring.yellow_cards": [
+      "number"
+    ],
+    "$.game_config.settings": [
+      "object"
+    ],
+    "$.game_config.settings.entry_per_event": [
+      "boolean"
+    ],
+    "$.game_config.settings.price_change_deadlines": [
+      "array"
+    ],
+    "$.game_config.settings.price_change_deadlines[]": [
+      "string"
+    ],
+    "$.game_config.settings.static_content_url": [
+      "string"
+    ],
+    "$.game_config.settings.timezone": [
+      "string"
+    ],
+    "$.game_config.status": [
+      "object"
+    ],
+    "$.game_config.status.price_change_last_updated": [
+      "string"
+    ],
+    "$.game_settings": [
+      "object"
+    ],
+    "$.game_settings.cup_qualifying_method": [
+      "null"
+    ],
+    "$.game_settings.cup_start_event_id": [
+      "null"
+    ],
+    "$.game_settings.cup_stop_event_id": [
+      "null"
+    ],
+    "$.game_settings.cup_type": [
+      "null"
+    ],
+    "$.game_settings.element_sell_at_purchase_price": [
+      "boolean"
+    ],
+    "$.game_settings.featured_entries": [
+      "array"
+    ],
+    "$.game_settings.league_h2h_tiebreak_stats": [
+      "array"
+    ],
+    "$.game_settings.league_h2h_tiebreak_stats[]": [
+      "string"
+    ],
+    "$.game_settings.league_join_private_max": [
+      "number"
+    ],
+    "$.game_settings.league_join_public_max": [
+      "number"
+    ],
+    "$.game_settings.league_ko_first_instead_of_random": [
+      "boolean"
+    ],
+    "$.game_settings.league_max_ko_rounds_private_h2h": [
+      "number"
+    ],
+    "$.game_settings.league_max_size_private_h2h": [
+      "number"
+    ],
+    "$.game_settings.league_max_size_public_classic": [
+      "number"
+    ],
+    "$.game_settings.league_max_size_public_h2h": [
+      "number"
+    ],
+    "$.game_settings.league_points_h2h_draw": [
+      "number"
+    ],
+    "$.game_settings.league_points_h2h_lose": [
+      "number"
+    ],
+    "$.game_settings.league_points_h2h_win": [
+      "number"
+    ],
+    "$.game_settings.league_prefix_public": [
+      "string"
+    ],
+    "$.game_settings.max_extra_free_transfers": [
+      "number"
+    ],
+    "$.game_settings.percentile_ranks": [
+      "array"
+    ],
+    "$.game_settings.percentile_ranks[]": [
+      "number"
+    ],
+    "$.game_settings.squad_special_max": [
+      "null"
+    ],
+    "$.game_settings.squad_special_min": [
+      "null"
+    ],
+    "$.game_settings.squad_squadplay": [
+      "number"
+    ],
+    "$.game_settings.squad_squadsize": [
+      "number"
+    ],
+    "$.game_settings.squad_team_limit": [
+      "number"
+    ],
+    "$.game_settings.squad_total_spend": [
+      "number"
+    ],
+    "$.game_settings.stats_form_days": [
+      "number"
+    ],
+    "$.game_settings.sys_vice_captain_enabled": [
+      "boolean"
+    ],
+    "$.game_settings.timezone": [
+      "string"
+    ],
+    "$.game_settings.transfers_cap": [
+      "number"
+    ],
+    "$.game_settings.transfers_sell_on_fee": [
+      "number"
+    ],
+    "$.game_settings.ui_currency_multiplier": [
+      "number"
+    ],
+    "$.game_settings.ui_special_shirt_exclusions": [
+      "array"
+    ],
+    "$.game_settings.ui_use_special_shirts": [
+      "boolean"
+    ],
+    "$.game_settings.underdog_differential": [
+      "number"
+    ],
+    "$.phases": [
+      "array"
+    ],
+    "$.phases[]": [
+      "object"
+    ],
+    "$.phases[].highest_score": [
+      "null",
+      "number"
+    ],
+    "$.phases[].id": [
+      "number"
+    ],
+    "$.phases[].name": [
+      "string"
+    ],
+    "$.phases[].start_event": [
+      "number"
+    ],
+    "$.phases[].stop_event": [
+      "number"
+    ],
+    "$.teams": [
+      "array"
+    ],
+    "$.teams[]": [
+      "object"
+    ],
+    "$.teams[].code": [
+      "number"
+    ],
+    "$.teams[].draw": [
+      "number"
+    ],
+    "$.teams[].form": [
+      "null"
+    ],
+    "$.teams[].id": [
+      "number"
+    ],
+    "$.teams[].link_url": [
+      "string"
+    ],
+    "$.teams[].loss": [
+      "number"
+    ],
+    "$.teams[].name": [
+      "string"
+    ],
+    "$.teams[].played": [
+      "number"
+    ],
+    "$.teams[].points": [
+      "number"
+    ],
+    "$.teams[].position": [
+      "number"
+    ],
+    "$.teams[].pulse_id": [
+      "number"
+    ],
+    "$.teams[].short_name": [
+      "string"
+    ],
+    "$.teams[].strength": [
+      "null"
+    ],
+    "$.teams[].strength_attack_away": [
+      "number"
+    ],
+    "$.teams[].strength_attack_home": [
+      "number"
+    ],
+    "$.teams[].strength_defence_away": [
+      "number"
+    ],
+    "$.teams[].strength_defence_home": [
+      "number"
+    ],
+    "$.teams[].strength_overall_away": [
+      "number"
+    ],
+    "$.teams[].strength_overall_home": [
+      "number"
+    ],
+    "$.teams[].team_division": [
+      "null"
+    ],
+    "$.teams[].unavailable": [
+      "boolean"
+    ],
+    "$.teams[].win": [
+      "number"
+    ],
+    "$.total_players": [
+      "number"
+    ]
+  },
+  "samples": [
+    "bootstrap-static"
+  ]
+}

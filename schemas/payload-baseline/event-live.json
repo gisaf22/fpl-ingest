@@ -1,0 +1,144 @@
+{
+  "endpoint": "event-live",
+  "paths": {
+    "$": [
+      "object"
+    ],
+    "$.elements": [
+      "array"
+    ],
+    "$.elements[]": [
+      "object"
+    ],
+    "$.elements[].explain": [
+      "array"
+    ],
+    "$.elements[].explain[]": [
+      "object"
+    ],
+    "$.elements[].explain[].fixture": [
+      "number"
+    ],
+    "$.elements[].explain[].stats": [
+      "array"
+    ],
+    "$.elements[].explain[].stats[]": [
+      "object"
+    ],
+    "$.elements[].explain[].stats[].identifier": [
+      "string"
+    ],
+    "$.elements[].explain[].stats[].points": [
+      "number"
+    ],
+    "$.elements[].explain[].stats[].points_modification": [
+      "number"
+    ],
+    "$.elements[].explain[].stats[].value": [
+      "number"
+    ],
+    "$.elements[].id": [
+      "number"
+    ],
+    "$.elements[].modified": [
+      "boolean"
+    ],
+    "$.elements[].stats": [
+      "object"
+    ],
+    "$.elements[].stats.assists": [
+      "number"
+    ],
+    "$.elements[].stats.bonus": [
+      "number"
+    ],
+    "$.elements[].stats.bps": [
+      "number"
+    ],
+    "$.elements[].stats.clean_sheets": [
+      "number"
+    ],
+    "$.elements[].stats.clearances_blocks_interceptions": [
+      "number"
+    ],
+    "$.elements[].stats.creativity": [
+      "string"
+    ],
+    "$.elements[].stats.defensive_contribution": [
+      "number"
+    ],
+    "$.elements[].stats.expected_assists": [
+      "string"
+    ],
+    "$.elements[].stats.expected_goal_involvements": [
+      "string"
+    ],
+    "$.elements[].stats.expected_goals": [
+      "string"
+    ],
+    "$.elements[].stats.expected_goals_conceded": [
+      "string"
+    ],
+    "$.elements[].stats.goals_conceded": [
+      "number"
+    ],
+    "$.elements[].stats.goals_scored": [
+      "number"
+    ],
+    "$.elements[].stats.ict_index": [
+      "string"
+    ],
+    "$.elements[].stats.in_dreamteam": [
+      "boolean"
+    ],
+    "$.elements[].stats.influence": [
+      "string"
+    ],
+    "$.elements[].stats.minutes": [
+      "number"
+    ],
+    "$.elements[].stats.own_goals": [
+      "number"
+    ],
+    "$.elements[].stats.penalties_missed": [
+      "number"
+    ],
+    "$.elements[].stats.penalties_saved": [
+      "number"
+    ],
+    "$.elements[].stats.played": [
+      "boolean"
+    ],
+    "$.elements[].stats.recoveries": [
+      "number"
+    ],
+    "$.elements[].stats.red_cards": [
+      "number"
+    ],
+    "$.elements[].stats.saves": [
+      "number"
+    ],
+    "$.elements[].stats.starts": [
+      "number"
+    ],
+    "$.elements[].stats.tackles": [
+      "number"
+    ],
+    "$.elements[].stats.threat": [
+      "string"
+    ],
+    "$.elements[].stats.total_points": [
+      "number"
+    ],
+    "$.elements[].stats.yellow_cards": [
+      "number"
+    ]
+  },
+  "samples": [
+    "event-live/1",
+    "event-live/2",
+    "event-live/3",
+    "event-live/4",
+    "event-live/5"
+  ]
+}

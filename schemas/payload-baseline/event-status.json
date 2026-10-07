@@ -1,0 +1,32 @@
+{
+  "endpoint": "event-status",
+  "paths": {
+    "$": [
+      "object"
+    ],
+    "$.leagues": [
+      "string"
+    ],
+    "$.status": [
+      "array"
+    ],
+    "$.status[]": [
+      "object"
+    ],
+    "$.status[].bonus_added": [
+      "boolean"
+    ],
+    "$.status[].date": [
+      "string"
+    ],
+    "$.status[].event": [
+      "number"
+    ],
+    "$.status[].points": [
+      "string"
+    ]
+  },
+  "samples": [
+    "event-status"
+  ]
+}

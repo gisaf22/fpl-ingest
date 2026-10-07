@@ -427,3 +427,32 @@ def test_the_same_key_twice_in_one_report_opens_one_issue(tmp_path, monkeypatch,
     _run(report, tmp_path, capsys)
 
     assert len(gh.created()) == 1
+
+
+@pytest.mark.covers("#83 AC5")
+def test_gh_missing_from_path_warns_and_opens_nothing(tmp_path, monkeypatch, capsys):
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    report = _write_report(tmp_path, {"fixtures": _drift("drift", [_entry("$[].a")])})
+
+    code, summary, warnings = _run(report, tmp_path, capsys)
+
+    assert code == 0
+    assert "not opened" in summary
+    assert any("gh issue list" in w for w in warnings)
+
+
+@pytest.mark.covers("#83 AC5")
+def test_gh_timing_out_warns_and_opens_nothing(tmp_path, monkeypatch, capsys):
+    gh = Gh(tmp_path, monkeypatch)
+    stub = gh.dir / "gh"
+    stub.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(10)\n")
+    monkeypatch.setattr("fpl_ingest.orchestration.drift_report._GH_TIMEOUT_SECONDS", 0.5)
+    report = _write_report(tmp_path, {"fixtures": _drift("drift", [_entry("$[].a")])})
+
+    code, summary, warnings = _run(report, tmp_path, capsys)
+
+    assert code == 0
+    assert "not opened" in summary
+    assert any("gh issue list" in w and "timed out" in w for w in warnings)

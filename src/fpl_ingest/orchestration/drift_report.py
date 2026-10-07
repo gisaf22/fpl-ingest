@@ -31,6 +31,7 @@ from typing import Any
 LABEL = "schema-drift"
 _KEY_MARKER = re.compile(r"<!-- drift-key: ([0-9a-f]+) -->")
 _NOT_OPENED = "not opened"
+_GH_TIMEOUT_SECONDS = 60
 
 
 @dataclass
@@ -87,7 +88,7 @@ def _gh(*args: str, stdin: str | None = None) -> str | None:
     """Run ``gh``; on any failure warn and return None."""
     try:
         done = subprocess.run(
-            ["gh", *args], input=stdin, capture_output=True, text=True, timeout=60, check=False
+            ["gh", *args], input=stdin, capture_output=True, text=True, timeout=_GH_TIMEOUT_SECONDS, check=False
         )
     except (OSError, subprocess.SubprocessError) as exc:
         _warn(f"gh {' '.join(args[:2])} failed: {exc}")

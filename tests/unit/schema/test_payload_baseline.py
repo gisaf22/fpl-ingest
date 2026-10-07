@@ -28,12 +28,12 @@ AT = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
 REPO_BASELINE_DIR = Path(__file__).resolve().parents[3] / "schemas" / "payload-baseline"
 
 
-def _raw(payload, status: int = 200) -> RawResponse:
+def _raw(payload, status: int = 200, body: bytes | None = None) -> RawResponse:
     return RawResponse(
         url="https://fantasy.premierleague.com/api/x/",
         status=status,
         headers={},
-        body=json.dumps(payload).encode(),
+        body=json.dumps(payload).encode() if body is None else body,
         requested_at=AT,
         received_at=AT,
     )
@@ -42,10 +42,11 @@ def _raw(payload, status: int = 200) -> RawResponse:
 class FakeClient:
     """Stands in for AsyncFPLClient's raw fetches."""
 
-    def __init__(self, payloads: dict, *, fail: bool = False, status: int = 200):
+    def __init__(self, payloads: dict, *, fail: bool = False, status: int = 200, body: bytes | None = None):
         self._payloads = payloads
         self._fail = fail
         self._status = status
+        self._body = body
 
     async def __aenter__(self):
         return self
@@ -59,7 +60,7 @@ class FakeClient:
     def _get(self, key):
         if self._fail or key not in self._payloads:
             raise FPLClientError(f"no response for {key}")
-        return _raw(self._payloads[key], status=self._status)
+        return _raw(self._payloads[key], status=self._status, body=self._body)
 
     async def get_bootstrap_raw(self):
         return self._get("bootstrap-static")
@@ -214,6 +215,37 @@ def test_one_failed_sample_among_several_writes_nothing(tmp_path):
     assert not (tmp_path / "element-summary.json").exists()
 
 
+@pytest.mark.covers("#81 AC1")
+def test_a_non_json_body_exits_non_zero_and_writes_nothing(tmp_path):
+    client = FakeClient({"fixtures": None}, body=b"<html>maintenance</html>")
+
+    rc = _run(tmp_path, ["fixtures"], client)
+
+    assert rc != 0
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.covers("#81 AC1")
+@pytest.mark.parametrize(
+    ("argv", "client", "reason"),
+    [
+        (["fixtures"], FakeClient({}, fail=True), "fixtures: no response for fixtures"),
+        (["fixtures"], FakeClient({"fixtures": {}}, status=503), "fixtures: HTTP 503"),
+        (["fixtures"], FakeClient({"fixtures": None}, body=b"<html>"), "fixtures: body is not valid JSON"),
+        (
+            ["element-summary", "--players", "1,2"],
+            FakeClient({"element-summary/1": {"history": []}}),
+            "element-summary/2: no response for element-summary/2",
+        ),
+    ],
+)
+def test_every_fetch_failure_logs_the_failing_sample_and_its_reason(tmp_path, caplog, argv, client, reason):
+    with caplog.at_level("ERROR", logger="fpl_ingest"):
+        assert _run(tmp_path, argv, client) != 0
+
+    assert any(reason in r.getMessage() for r in caplog.records if r.levelname == "ERROR"), caplog.text
+
+
 # ---------------------------------------------------------------------------
 # AC2 — byte-identical output for the same input
 # ---------------------------------------------------------------------------
@@ -361,6 +393,15 @@ def test_a_per_sample_endpoint_without_samples_exits_non_zero_and_writes_nothing
 
     assert rc != 0
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.covers("#81 AC5")
+@pytest.mark.parametrize(("endpoint", "flag"), [("element-summary", "--players"), ("event-live", "--gameweeks")])
+def test_a_missing_sample_flag_logs_which_flag_is_needed(tmp_path, caplog, endpoint, flag):
+    with caplog.at_level("ERROR", logger="fpl_ingest"):
+        assert _run(tmp_path, [endpoint], FakeClient({})) != 0
+
+    assert any(f"{endpoint} needs {flag}" in r.getMessage() for r in caplog.records), caplog.text
 
 
 # ---------------------------------------------------------------------------

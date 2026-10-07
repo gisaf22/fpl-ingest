@@ -401,6 +401,7 @@ class LocalRawWriter:
         family = baseline_family(endpoint)
         if self.source != "fpl" or family is None:
             return None
+        drift: dict[str, Any] | None
         if self._baseline_dir is None:
             # Never a silent skip: a run without baselines says so on every capture.
             drift = {"status": "unavailable", "reason": "no baseline directory configured", "entries": []}

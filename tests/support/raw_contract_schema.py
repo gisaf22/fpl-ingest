@@ -7,7 +7,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas" / "raw-contract" / "2.2.0"
+SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas" / "raw-contract" / "2.3.0"
 
 
 def validator(name: str) -> Draft202012Validator:

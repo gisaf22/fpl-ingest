@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from fpl_ingest.schema.payload_baseline import BASELINE_DIR
+
 DEFAULT_STALE_AFTER_HOURS: float = 26.0
 
 _DEFAULT_RAW_DIR = Path.home() / ".fpl" / "raw"
@@ -27,6 +29,7 @@ class IngestConfig:
     raw_dir: Path            # Directory for raw JSON cache files from the API
     storage_backend: str     # "local" or "s3" — selects the RawStorageBackend
     s3_bucket: str | None    # Destination bucket when storage_backend == "s3"
+    baseline_dir: Path | None  # Payload baselines for drift (#82); None records "unavailable"
 
 
 def load_fpl_config() -> dict:
@@ -98,6 +101,20 @@ def resolve_s3_bucket() -> str | None:
     return cfg.get("s3_bucket")
 
 
+#: Payload baselines the drift check compares against (#82). Tests replace this
+#: with None so only the drift tests depend on baseline files; a None directory
+#: records drift ``unavailable``, never a silent skip.
+_DEFAULT_BASELINE_DIR: Path | None = BASELINE_DIR
+
+
+def resolve_baseline_dir() -> Path | None:
+    """Return ``FPL_BASELINE_DIR`` if set, else the committed baselines."""
+    env_val = os.environ.get("FPL_BASELINE_DIR")
+    if env_val:
+        return Path(env_val).expanduser().resolve()
+    return _DEFAULT_BASELINE_DIR
+
+
 def default_config() -> IngestConfig:
     """Build config from environment variables, falling back to defaults.
 
@@ -109,6 +126,7 @@ def default_config() -> IngestConfig:
         raw_dir=resolve_raw_dir(),
         storage_backend=resolve_storage_backend(),
         s3_bucket=resolve_s3_bucket(),
+        baseline_dir=resolve_baseline_dir(),
     )
 
 
@@ -130,4 +148,5 @@ def resolve_config(
         raw_dir=resolve_raw_dir(str(raw_dir) if raw_dir is not None else None),
         storage_backend=resolve_storage_backend(),
         s3_bucket=resolve_s3_bucket(),
+        baseline_dir=resolve_baseline_dir(),
     )

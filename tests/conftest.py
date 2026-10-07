@@ -41,3 +41,13 @@ def _no_real_sts(monkeypatch):
         raise RuntimeError("real STS is disabled in tests")
 
     monkeypatch.setattr("fpl_ingest.orchestration.origin._default_sts_client", _unavailable)
+
+
+@pytest.fixture(autouse=True)
+def _no_committed_baselines(monkeypatch):
+    """Keep runs off the committed payload baselines (#82): with no baseline
+    directory the writer records drift ``unavailable``, so unrelated tests never
+    depend on baseline files. The drift tests supply their own baselines through
+    ``FPL_BASELINE_DIR``."""
+    monkeypatch.setattr("fpl_ingest.config._DEFAULT_BASELINE_DIR", None)
+    monkeypatch.delenv("FPL_BASELINE_DIR", raising=False)

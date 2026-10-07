@@ -432,7 +432,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     # manifest behind, matching the status the runner reports.
     raw_writer = LocalRawWriter(
         config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend,
-        origin=detect_origin(logger=logger),
+        origin=detect_origin(logger=logger), baseline_dir=getattr(config, "baseline_dir", None),
     )
 
     applied_rate = _resolve_applied_rate(logger, args.rate)
@@ -632,7 +632,7 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
             config.raw_dir.mkdir(parents=True, exist_ok=True)
         raw_writer = LocalRawWriter(
             config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend,
-            origin=detect_origin(logger=logger),
+            origin=detect_origin(logger=logger), baseline_dir=getattr(config, "baseline_dir", None),
         )
         raw_writer.set_season(season_for_bootstrap(raw, logger))
         stage_results: list[StageResult] = []

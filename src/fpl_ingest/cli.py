@@ -1,6 +1,7 @@
 """CLI entry point and command dispatcher for fpl-ingest.
 
-Exposes the ``run``, ``pre-deadline``, ``smoke-test``, ``inspect`` and ``backfill`` sub-commands.
+Exposes the ``run``, ``pre-deadline``, ``smoke-test``, ``inspect``, ``backfill`` and ``baseline``
+sub-commands.
 Each command handler resolves configuration, delegates to the appropriate
 orchestration or extract function, and exits with a meaningful code.
 This module contains no business logic — all behaviour lives in the imported
@@ -38,6 +39,13 @@ from fpl_ingest.orchestration.runner import run_pipeline as execute_pipeline
 from fpl_ingest.orchestration.runner import run_pre_deadline_capture
 from fpl_ingest.extract.http.rate_config import DEFAULT_RATE, MAX_RATE
 from fpl_ingest.extract.http.sync_http import FPLClientError
+from fpl_ingest.schema.payload_baseline import (
+    BASELINE_DIR,
+    ENDPOINTS,
+    build_baseline,
+    load_baseline,
+    render_baseline,
+)
 from fpl_ingest.schema.validation import (
     SmokeTestFailure,
     run_smoke_test as execute_smoke_test,
@@ -173,6 +181,34 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
     )
     backfill_parser.add_argument("--report-json", type=Path, required=True, help="Where to write the JSON report.")
     backfill_parser.add_argument("--summary", type=Path, required=True, help="Where to write the Markdown summary.")
+
+    def id_list(value: str) -> list[int]:
+        try:
+            return [int(part) for part in value.split(",") if part]
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"expected comma-separated integers, got {value!r}") from exc
+
+    baseline_parser = subparsers.add_parser(
+        "baseline",
+        help="Regenerate an endpoint's payload baseline from live fetches (#81).",
+    )
+    baseline_parser.add_argument("endpoint", choices=ENDPOINTS)
+    baseline_parser.add_argument(
+        "--players", type=id_list, default=None, metavar="ID,ID",
+        help="element-summary: the player ids to sample (required for that endpoint).",
+    )
+    baseline_parser.add_argument(
+        "--gameweeks", type=id_list, default=None, metavar="GW,GW",
+        help="event-live: the ratified gameweeks to sample (required for that endpoint).",
+    )
+    baseline_parser.add_argument(
+        "--replace", action="store_true",
+        help="Build from these fetches only, instead of unioning with the committed baseline.",
+    )
+    baseline_parser.add_argument(
+        "--out-dir", type=Path, default=BASELINE_DIR,
+        help=f"Baseline directory (default: {BASELINE_DIR}).",
+    )
     return parser
 
 
@@ -272,6 +308,83 @@ def run_backfill(args: argparse.Namespace, *, client: Any | None = None) -> int:
     return 0
 
 
+def run_baseline(args: argparse.Namespace, *, client: Any | None = None) -> int:
+    """Fetch an endpoint's samples live and write its baseline (#81).
+
+    Every sample is fetched before anything is written, so a failed fetch
+    leaves the existing baseline untouched and exits 1.
+    """
+    log = configure_logging(getattr(args, "verbose", False))
+    samples = _baseline_samples(args)
+    if not samples:
+        flag = "--players" if args.endpoint == "element-summary" else "--gameweeks"
+        log.error("%s needs %s", args.endpoint, flag)
+        return 1
+
+    try:
+        payloads = asyncio.run(_fetch_baseline_samples(samples, client))
+    except BaselineFetchError as exc:
+        log.error("baseline not written: %s", exc)
+        return 1
+
+    target = args.out_dir / f"{args.endpoint}.json"
+    existing = load_baseline(target)
+    baseline = build_baseline(
+        args.endpoint, payloads, samples=samples, existing=existing, replace=args.replace
+    )
+    before = set(existing["paths"]) if existing else set()
+    after = set(baseline["paths"])
+    log.info(
+        "%s: %d sample(s), %d path(s); added %s; removed %s",
+        args.endpoint, len(samples), len(after),
+        sorted(after - before) or "none", sorted(before - after) or "none",
+    )
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(render_baseline(baseline), encoding="utf-8")
+    tmp.replace(target)
+    return 0
+
+
+class BaselineFetchError(RuntimeError):
+    """A baseline sample could not be fetched or decoded."""
+
+
+def _baseline_samples(args: argparse.Namespace) -> list[str]:
+    if args.endpoint == "element-summary":
+        return [f"element-summary/{p}" for p in args.players or ()]
+    if args.endpoint == "event-live":
+        return [f"event-live/{gw}" for gw in args.gameweeks or ()]
+    return [args.endpoint]
+
+
+async def _fetch_baseline_samples(samples: list[str], client: Any | None) -> list[Any]:
+    from fpl_ingest.extract.http.client import AsyncFPLClient
+
+    async with (client if client is not None else AsyncFPLClient()) as fpl:
+        payloads = []
+        for sample in samples:
+            endpoint, _, sample_id = sample.partition("/")
+            fetch = {
+                "bootstrap-static": fpl.get_bootstrap_raw,
+                "fixtures": fpl.get_fixtures_raw,
+                "event-status": fpl.get_event_status_raw,
+                "event-live": lambda: fpl.get_gameweek_live_raw(int(sample_id)),
+                "element-summary": lambda: fpl.get_element_summary_raw(int(sample_id)),
+            }[endpoint]
+            try:
+                raw = await fetch()
+            except FPLClientError as exc:
+                raise BaselineFetchError(f"{sample}: {exc}") from exc
+            if not 200 <= raw.status < 300:
+                raise BaselineFetchError(f"{sample}: HTTP {raw.status}")
+            payload = raw.json()
+            if payload is None:
+                raise BaselineFetchError(f"{sample}: body is not valid JSON")
+            payloads.append(payload)
+        return payloads
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -291,6 +404,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(run_backfill(args))
     if args.command == "pre-deadline":
         sys.exit(run_pre_deadline(args))
+    if args.command == "baseline":
+        sys.exit(run_baseline(args))
     sys.exit(run_pipeline(args))
 
 

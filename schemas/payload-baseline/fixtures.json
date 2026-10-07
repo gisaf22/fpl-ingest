@@ -1,0 +1,97 @@
+{
+  "endpoint": "fixtures",
+  "paths": {
+    "$": [
+      "array"
+    ],
+    "$[]": [
+      "object"
+    ],
+    "$[].code": [
+      "number"
+    ],
+    "$[].event": [
+      "number"
+    ],
+    "$[].finished": [
+      "boolean"
+    ],
+    "$[].finished_provisional": [
+      "boolean"
+    ],
+    "$[].id": [
+      "number"
+    ],
+    "$[].kickoff_time": [
+      "string"
+    ],
+    "$[].minutes": [
+      "number"
+    ],
+    "$[].provisional_start_time": [
+      "boolean"
+    ],
+    "$[].pulse_id": [
+      "number"
+    ],
+    "$[].started": [
+      "boolean"
+    ],
+    "$[].stats": [
+      "array"
+    ],
+    "$[].stats[]": [
+      "object"
+    ],
+    "$[].stats[].a": [
+      "array"
+    ],
+    "$[].stats[].a[]": [
+      "object"
+    ],
+    "$[].stats[].a[].element": [
+      "number"
+    ],
+    "$[].stats[].a[].value": [
+      "number"
+    ],
+    "$[].stats[].h": [
+      "array"
+    ],
+    "$[].stats[].h[]": [
+      "object"
+    ],
+    "$[].stats[].h[].element": [
+      "number"
+    ],
+    "$[].stats[].h[].value": [
+      "number"
+    ],
+    "$[].stats[].identifier": [
+      "string"
+    ],
+    "$[].team_a": [
+      "number"
+    ],
+    "$[].team_a_difficulty": [
+      "number"
+    ],
+    "$[].team_a_score": [
+      "null",
+      "number"
+    ],
+    "$[].team_h": [
+      "number"
+    ],
+    "$[].team_h_difficulty": [
+      "number"
+    ],
+    "$[].team_h_score": [
+      "null",
+      "number"
+    ]
+  },
+  "samples": [
+    "fixtures"
+  ]
+}

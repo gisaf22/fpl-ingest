@@ -1,0 +1,292 @@
+{
+  "endpoint": "element-summary",
+  "paths": {
+    "$": [
+      "object"
+    ],
+    "$.fixtures": [
+      "array"
+    ],
+    "$.fixtures[]": [
+      "object"
+    ],
+    "$.fixtures[].code": [
+      "number"
+    ],
+    "$.fixtures[].difficulty": [
+      "number"
+    ],
+    "$.fixtures[].event": [
+      "number"
+    ],
+    "$.fixtures[].event_name": [
+      "string"
+    ],
+    "$.fixtures[].finished": [
+      "boolean"
+    ],
+    "$.fixtures[].id": [
+      "number"
+    ],
+    "$.fixtures[].is_home": [
+      "boolean"
+    ],
+    "$.fixtures[].kickoff_time": [
+      "string"
+    ],
+    "$.fixtures[].minutes": [
+      "number"
+    ],
+    "$.fixtures[].provisional_start_time": [
+      "boolean"
+    ],
+    "$.fixtures[].team_a": [
+      "number"
+    ],
+    "$.fixtures[].team_a_score": [
+      "null"
+    ],
+    "$.fixtures[].team_h": [
+      "number"
+    ],
+    "$.fixtures[].team_h_score": [
+      "null"
+    ],
+    "$.history": [
+      "array"
+    ],
+    "$.history[]": [
+      "object"
+    ],
+    "$.history[].assists": [
+      "number"
+    ],
+    "$.history[].bonus": [
+      "number"
+    ],
+    "$.history[].bps": [
+      "number"
+    ],
+    "$.history[].clean_sheets": [
+      "number"
+    ],
+    "$.history[].clearances_blocks_interceptions": [
+      "number"
+    ],
+    "$.history[].creativity": [
+      "string"
+    ],
+    "$.history[].defensive_contribution": [
+      "number"
+    ],
+    "$.history[].element": [
+      "number"
+    ],
+    "$.history[].expected_assists": [
+      "string"
+    ],
+    "$.history[].expected_goal_involvements": [
+      "string"
+    ],
+    "$.history[].expected_goals": [
+      "string"
+    ],
+    "$.history[].expected_goals_conceded": [
+      "string"
+    ],
+    "$.history[].fixture": [
+      "number"
+    ],
+    "$.history[].goals_conceded": [
+      "number"
+    ],
+    "$.history[].goals_scored": [
+      "number"
+    ],
+    "$.history[].ict_index": [
+      "string"
+    ],
+    "$.history[].influence": [
+      "string"
+    ],
+    "$.history[].kickoff_time": [
+      "string"
+    ],
+    "$.history[].minutes": [
+      "number"
+    ],
+    "$.history[].modified": [
+      "boolean"
+    ],
+    "$.history[].opponent_team": [
+      "number"
+    ],
+    "$.history[].own_goals": [
+      "number"
+    ],
+    "$.history[].penalties_missed": [
+      "number"
+    ],
+    "$.history[].penalties_saved": [
+      "number"
+    ],
+    "$.history[].recoveries": [
+      "number"
+    ],
+    "$.history[].red_cards": [
+      "number"
+    ],
+    "$.history[].round": [
+      "number"
+    ],
+    "$.history[].saves": [
+      "number"
+    ],
+    "$.history[].selected": [
+      "number"
+    ],
+    "$.history[].starts": [
+      "number"
+    ],
+    "$.history[].tackles": [
+      "number"
+    ],
+    "$.history[].team_a_score": [
+      "number"
+    ],
+    "$.history[].team_h_score": [
+      "number"
+    ],
+    "$.history[].threat": [
+      "string"
+    ],
+    "$.history[].total_points": [
+      "number"
+    ],
+    "$.history[].transfers_balance": [
+      "number"
+    ],
+    "$.history[].transfers_in": [
+      "number"
+    ],
+    "$.history[].transfers_out": [
+      "number"
+    ],
+    "$.history[].value": [
+      "number"
+    ],
+    "$.history[].was_home": [
+      "boolean"
+    ],
+    "$.history[].yellow_cards": [
+      "number"
+    ],
+    "$.history_past": [
+      "array"
+    ],
+    "$.history_past[]": [
+      "object"
+    ],
+    "$.history_past[].assists": [
+      "number"
+    ],
+    "$.history_past[].bonus": [
+      "number"
+    ],
+    "$.history_past[].bps": [
+      "number"
+    ],
+    "$.history_past[].clean_sheets": [
+      "number"
+    ],
+    "$.history_past[].clearances_blocks_interceptions": [
+      "number"
+    ],
+    "$.history_past[].creativity": [
+      "string"
+    ],
+    "$.history_past[].defensive_contribution": [
+      "number"
+    ],
+    "$.history_past[].element_code": [
+      "number"
+    ],
+    "$.history_past[].end_cost": [
+      "number"
+    ],
+    "$.history_past[].expected_assists": [
+      "string"
+    ],
+    "$.history_past[].expected_goal_involvements": [
+      "string"
+    ],
+    "$.history_past[].expected_goals": [
+      "string"
+    ],
+    "$.history_past[].expected_goals_conceded": [
+      "string"
+    ],
+    "$.history_past[].goals_conceded": [
+      "number"
+    ],
+    "$.history_past[].goals_scored": [
+      "number"
+    ],
+    "$.history_past[].ict_index": [
+      "string"
+    ],
+    "$.history_past[].influence": [
+      "string"
+    ],
+    "$.history_past[].minutes": [
+      "number"
+    ],
+    "$.history_past[].own_goals": [
+      "number"
+    ],
+    "$.history_past[].penalties_missed": [
+      "number"
+    ],
+    "$.history_past[].penalties_saved": [
+      "number"
+    ],
+    "$.history_past[].recoveries": [
+      "number"
+    ],
+    "$.history_past[].red_cards": [
+      "number"
+    ],
+    "$.history_past[].saves": [
+      "number"
+    ],
+    "$.history_past[].season_name": [
+      "string"
+    ],
+    "$.history_past[].start_cost": [
+      "number"
+    ],
+    "$.history_past[].starts": [
+      "number"
+    ],
+    "$.history_past[].tackles": [
+      "number"
+    ],
+    "$.history_past[].threat": [
+      "string"
+    ],
+    "$.history_past[].total_points": [
+      "number"
+    ],
+    "$.history_past[].yellow_cards": [
+      "number"
+    ]
+  },
+  "samples": [
+    "element-summary/1",
+    "element-summary/29",
+    "element-summary/4",
+    "element-summary/411",
+    "element-summary/658",
+    "element-summary/98"
+  ]
+}

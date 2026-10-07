@@ -347,3 +347,58 @@ def test_each_endpoint_has_a_committed_canonical_baseline(endpoint):
     assert len(baseline["paths"]) > 1, "a baseline with only the root was not built from a real payload"
     as_sets = {**baseline, "paths": {k: set(v) for k, v in baseline["paths"].items()}}
     assert render_baseline(as_sets) == text, "committed file is not in the CLI's canonical form"
+
+
+# ---------------------------------------------------------------------------
+# AC5 — sample flags required where the endpoint is per-sample
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.covers("#81 AC5")
+@pytest.mark.parametrize("endpoint", ["element-summary", "event-live"])
+def test_a_per_sample_endpoint_without_samples_exits_non_zero_and_writes_nothing(tmp_path, endpoint):
+    rc = _run(tmp_path, [endpoint], FakeClient({}))
+
+    assert rc != 0
+    assert list(tmp_path.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# AC6 — the file lists the samples it was built from
+# ---------------------------------------------------------------------------
+
+
+def _samples(tmp_path: Path, endpoint: str) -> list:
+    return json.loads((tmp_path / f"{endpoint}.json").read_text())["samples"]
+
+
+@pytest.mark.covers("#81 AC6")
+def test_the_baseline_lists_its_sample_ids_sorted(tmp_path):
+    client = FakeClient({f"element-summary/{p}": {"history": []} for p in (12, 3)})
+
+    assert _run(tmp_path, ["element-summary", "--players", "12,3"], client) == 0
+
+    assert _samples(tmp_path, "element-summary") == ["element-summary/12", "element-summary/3"]
+
+
+@pytest.mark.covers("#81 AC6")
+def test_a_single_fetch_endpoint_lists_itself_as_the_sample(tmp_path):
+    assert _run(tmp_path, ["fixtures"], FakeClient({"fixtures": []})) == 0
+    assert _samples(tmp_path, "fixtures") == ["fixtures"]
+
+
+@pytest.mark.covers("#81 AC6")
+def test_samples_are_unioned_with_the_committed_baseline_unless_replaced(tmp_path):
+    assert _run(tmp_path, ["event-live", "--gameweeks", "5"], FakeClient({"event-live/5": {"elements": []}})) == 0
+    assert _run(tmp_path, ["event-live", "--gameweeks", "6"], FakeClient({"event-live/6": {"elements": []}})) == 0
+    assert _samples(tmp_path, "event-live") == ["event-live/5", "event-live/6"]
+
+    client = FakeClient({"event-live/7": {"elements": []}})
+    assert _run(tmp_path, ["event-live", "--gameweeks", "7", "--replace"], client) == 0
+    assert _samples(tmp_path, "event-live") == ["event-live/7"]
+
+
+@pytest.mark.covers("#81 AC6")
+def test_the_baseline_carries_no_timestamp():
+    baseline = build_baseline("fixtures", [[{"id": 1}]], samples=["fixtures"])
+    assert set(json.loads(render_baseline(baseline))) == {"endpoint", "samples", "paths"}

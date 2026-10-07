@@ -29,7 +29,7 @@ class IngestConfig:
     raw_dir: Path            # Directory for raw JSON cache files from the API
     storage_backend: str     # "local" or "s3" — selects the RawStorageBackend
     s3_bucket: str | None    # Destination bucket when storage_backend == "s3"
-    baseline_dir: Path | None = None  # Payload baselines for drift (#82); None disables the check
+    baseline_dir: Path | None  # Payload baselines for drift (#82); None records "unavailable"
 
 
 def load_fpl_config() -> dict:
@@ -102,7 +102,8 @@ def resolve_s3_bucket() -> str | None:
 
 
 #: Payload baselines the drift check compares against (#82). Tests replace this
-#: with None so only the drift tests depend on baseline files.
+#: with None so only the drift tests depend on baseline files; a None directory
+#: records drift ``unavailable``, never a silent skip.
 _DEFAULT_BASELINE_DIR: Path | None = BASELINE_DIR
 
 

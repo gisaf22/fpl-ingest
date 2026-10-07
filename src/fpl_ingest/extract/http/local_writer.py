@@ -53,7 +53,7 @@ from fpl_ingest.orchestration.run_status import (
     RUN_STATUS_SUCCESS,
     RunStatus,
 )
-from fpl_ingest.schema.payload_drift import check_drift
+from fpl_ingest.schema.payload_drift import baseline_family, check_drift
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ class LocalRawWriter:
                 against the 2.2.0 schema rather than faking a value.
             baseline_dir: Payload baselines to check FPL payloads against
                 (#82). The runner passes the configured directory; None
-                skips the check and writes no ``drift`` block.
+                records drift ``unavailable`` on every FPL capture.
         """
         raw_keys.validate_source(source)
         self.source = source
@@ -251,6 +251,7 @@ class LocalRawWriter:
         self._origin: dict[str, Any] | None = dict(origin) if origin is not None else None
         self._baseline_dir = Path(baseline_dir) if baseline_dir is not None else None
         self._baseline_cache: dict[str, Any] = {}
+        self._unavailable_warned: set[tuple[str, str]] = set()
         self._finalized = False
 
     @property
@@ -397,18 +398,26 @@ class LocalRawWriter:
         broken check records ``unavailable`` rather than costing the capture
         (#80 D7).
         """
-        if self._baseline_dir is None or self.source != "fpl":
+        family = baseline_family(endpoint)
+        if self.source != "fpl" or family is None:
             return None
-        try:
-            drift = check_drift(
-                endpoint, payload_bytes, baseline_dir=self._baseline_dir, cache=self._baseline_cache
-            )
-        except Exception as exc:  # noqa: BLE001 - belt and braces: check_drift already fails open
-            drift = {"status": "unavailable", "reason": f"drift check failed: {exc!r}", "entries": []}
+        if self._baseline_dir is None:
+            # Never a silent skip: a run without baselines says so on every capture.
+            drift = {"status": "unavailable", "reason": "no baseline directory configured", "entries": []}
+        else:
+            try:
+                drift = check_drift(
+                    endpoint, payload_bytes, baseline_dir=self._baseline_dir, cache=self._baseline_cache
+                )
+            except Exception as exc:  # noqa: BLE001 - belt and braces: check_drift already fails open
+                drift = {"status": "unavailable", "reason": f"drift check failed: {exc!r}", "entries": []}
         if drift is None:
             return None
         if drift["status"] == "unavailable":
-            logger.warning("drift check unavailable for %s: %s", endpoint, drift["reason"])
+            # Once per family and reason, not once per element-summary player.
+            if (family, drift["reason"]) not in self._unavailable_warned:
+                self._unavailable_warned.add((family, drift["reason"]))
+                logger.warning("drift check unavailable for %s: %s", family, drift["reason"])
         elif drift["status"] == "drift":
             logger.warning(
                 "payload drift in %s: %d change(s), first %s",

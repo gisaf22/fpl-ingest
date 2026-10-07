@@ -20,6 +20,7 @@ from fpl_ingest.cli import main
 from fpl_ingest.schema.payload_baseline import build_baseline, render_baseline
 from tests.factories import event_row, fixture_row, player_row, team_row
 from tests.support.cli_fakes import _raw_response
+from tests.support import raw_contract_schema
 from tests.support.run_helpers import _manifest
 
 GW = 1
@@ -105,7 +106,7 @@ def baselines(tmp_path, monkeypatch) -> Path:
     directory.mkdir()
     for endpoint, payload in CLEAN.items():
         (directory / f"{endpoint}.json").write_text(render_baseline(build_baseline(endpoint, [payload])))
-    monkeypatch.setattr("fpl_ingest.schema.payload_drift.BASELINE_DIR", directory)
+    monkeypatch.setenv("FPL_BASELINE_DIR", str(directory))
     return directory
 
 
@@ -366,3 +367,24 @@ def test_the_sidecar_block_carries_status_reason_and_full_entries(tmp_path, base
         "observed_types": ["string"],
         "count": 2,
     }
+
+
+# ---------------------------------------------------------------------------
+# AC10 — sidecars written by this version validate against contract 2.3.0
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.covers("#82 AC10")
+@pytest.mark.parametrize("case", ["ok", "drift", "unavailable"])
+def test_written_sidecars_validate_against_the_2_3_0_schema(tmp_path, baselines, case):
+    payloads = _with_drift("fixtures", "rename") if case == "drift" else _payloads()
+    if case == "unavailable":
+        (baselines / "fixtures.json").unlink()
+
+    rc, raw = _run(tmp_path, payloads)
+
+    for endpoint in ENDPOINTS:
+        for sidecar in _sidecars(raw, endpoint):
+            assert sidecar["raw_contract_version"] == "2.3.0"
+            assert raw_contract_schema.errors("sidecar", sidecar) == [], endpoint
+    assert raw_contract_schema.errors("manifest", _manifest(raw)) == []

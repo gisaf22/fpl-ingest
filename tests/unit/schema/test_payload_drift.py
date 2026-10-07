@@ -277,3 +277,32 @@ def test_the_block_reports_status_and_entries_against_the_endpoint_baseline(tmp_
     assert drift["entries"][0]["endpoint"] == baseline
     assert set(drift["entries"][0]) == {"endpoint", "path", "kind", "baseline_types", "observed_types", "count"}
 
+
+
+# ---------------------------------------------------------------------------
+# AC11 — endpoints outside the five FPL families get no drift block
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.covers("#82 AC11")
+@pytest.mark.parametrize("endpoint_key", ["understat/match", "reep/players", "entry/1"])
+def test_an_endpoint_without_a_baseline_family_is_not_checked(tmp_path, endpoint_key):
+    assert check_drift(endpoint_key, b"{}", baseline_dir=tmp_path) is None
+
+
+@pytest.mark.covers("#82 AC11")
+def test_a_non_fpl_source_writes_no_drift_block(tmp_path):
+    from datetime import datetime, timezone
+
+    from fpl_ingest.extract.http.local_writer import LocalRawWriter
+
+    _write_baseline(tmp_path / "baselines", "fixtures", [])
+    writer = LocalRawWriter(tmp_path / "raw", "understat", baseline_dir=tmp_path / "baselines")
+    at = datetime(2026, 10, 6, tzinfo=timezone.utc)
+    result = writer.write_object(
+        "fixtures", b"[]", request_url="u", requested_at=at, received_at=at, http_status=200,
+        shape_validation={"ok": True, "checks": [], "failures": []},
+    )
+
+    sidecar = json.loads((tmp_path / "raw" / result.metadata_key).read_text())
+    assert "drift" not in sidecar

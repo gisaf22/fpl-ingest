@@ -18,7 +18,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-RAW_CONTRACT_VERSION = "2.2.0"
+RAW_CONTRACT_VERSION = "2.3.0"
 
 #: Prefix every key carries in the capture bucket. The keys built here are
 #: relative to it; ``bucket_key`` adds it, whatever the storage backend.

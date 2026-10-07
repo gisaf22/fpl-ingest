@@ -118,6 +118,13 @@ shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
   as `season_source=none`, when the run had no usable bootstrap; there is no fallback. The
   field list for both files is `schemas/raw-contract/2.2.0/`, which replaces strategy doc
   §A.5's tables.
+- **Payload drift is in each FPL sidecar's `drift` block** (#82, contract 2.3.0):
+  `{status, reason, entries}`, status `ok` / `drift` / `unavailable`. Each entry has
+  `endpoint` (baseline family), `path`, `kind` (`added` / `removed` / `type_changed`),
+  `baseline_types`, `observed_types` and `count`. It is warn-only: it never changes
+  `usable`, run status, the exit code or a `_settlement` marker. `unavailable` (missing or
+  corrupt baseline, non-JSON payload, internal error) carries a `reason` and is logged at
+  WARNING. Sidecars from other sources, and sidecars before 2.3.0, have no `drift` key.
 - **Tell a production run from a laptop run by the manifest's `origin`** (#75, contract
   2.2.0), not by `git_sha` or `trigger`: a laptop run from a checkout records a real SHA, and
   `--trigger` takes any value. `origin.kind` is `ci` or `local`; for `ci`, `workflow`, `ref`

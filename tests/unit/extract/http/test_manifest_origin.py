@@ -2,7 +2,7 @@
 
 Every manifest records where its run came from: CI or local, the Actions run
 it belongs to, and the AWS principal its credentials resolve to. Contract
-2.2.0 makes the block required.
+2.2.0 makes the block required; 2.3.0 (#82) keeps it.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ USER_ARN = "arn:aws:iam::111122223333:user/safari-admin"
 ROOT_ARN = "arn:aws:iam::111122223333:root"
 
 SCHEMA_PATH = (
-    Path(__file__).resolve().parents[4] / "schemas" / "raw-contract" / "2.2.0" / "manifest.schema.json"
+    Path(__file__).resolve().parents[4] / "schemas" / "raw-contract" / "2.3.0" / "manifest.schema.json"
 )
 
 logger = logging.getLogger("test_manifest_origin")
@@ -187,10 +187,10 @@ def test_the_manifest_snapshot_carries_the_origin(tmp_path):
 
 @pytest.mark.covers("#75 AC4")
 @pytest.mark.parametrize("env", [CI_ENV, {}], ids=["ci", "local"])
-def test_finalized_manifests_validate_against_2_2_0(tmp_path, env):
+def test_finalized_manifests_validate_against_the_current_contract(tmp_path, env):
     manifest = _finalized(tmp_path, _origin(env))
 
-    assert manifest["raw_contract_version"] == "2.2.0"
+    assert manifest["raw_contract_version"] == "2.3.0"
     assert _schema_errors(manifest) == []
 
 

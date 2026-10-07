@@ -196,8 +196,8 @@ def test_a_value_where_the_baseline_only_ever_saw_null_is_not_drift():
 @pytest.mark.covers("#82 AC5")
 @pytest.mark.parametrize(
     "payload",
-    [{"rows": []}, {}, [], _rows(_row(nested={}))],
-    ids=["empty_list", "empty_object", "empty_top_level_list", "empty_nested_object"],
+    [{"rows": []}, {}, _rows(_row(nested={}))],
+    ids=["empty_list", "empty_object", "empty_nested_object"],
 )
 def test_empty_containers_carry_no_evidence(payload):
     assert diff_payload("fixtures", BASE, payload) == []

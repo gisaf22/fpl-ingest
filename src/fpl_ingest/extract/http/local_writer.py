@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -52,6 +53,9 @@ from fpl_ingest.orchestration.run_status import (
     RUN_STATUS_SUCCESS,
     RunStatus,
 )
+from fpl_ingest.schema.payload_drift import check_drift
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "LocalRawWriter",
@@ -210,6 +214,7 @@ class LocalRawWriter:
         extraction_date: str | None = None,
         backend: RawStorageBackend | None = None,
         origin: Mapping[str, Any] | None = None,
+        baseline_dir: Path | None = None,
     ) -> None:
         """Create a writer for one run of one source.
 
@@ -225,6 +230,9 @@ class LocalRawWriter:
                 (#75). Written on every manifest, IN_PROGRESS included. The
                 runner always passes it; None leaves the manifest invalid
                 against the 2.2.0 schema rather than faking a value.
+            baseline_dir: Payload baselines to check FPL payloads against
+                (#82). The runner passes the configured directory; None
+                skips the check and writes no ``drift`` block.
         """
         raw_keys.validate_source(source)
         self.source = source
@@ -241,6 +249,8 @@ class LocalRawWriter:
         self._captures: list[dict[str, Any]] = []
         self._season: str | None = None
         self._origin: dict[str, Any] | None = dict(origin) if origin is not None else None
+        self._baseline_dir = Path(baseline_dir) if baseline_dir is not None else None
+        self._baseline_cache: dict[str, Any] = {}
         self._finalized = False
 
     @property
@@ -349,6 +359,9 @@ class LocalRawWriter:
             companion_files=sorted(companion_keys),
             season=self._season if season is _RUN_SEASON else season,
         )
+        drift = self._check_drift(endpoint, payload_bytes)
+        if drift is not None:
+            sidecar["drift"] = drift
         self._backend.put_bytes(m_key, _json_bytes(sidecar))
         self._captures.append(_capture_entry(p_key, sidecar))
 
@@ -376,6 +389,33 @@ class LocalRawWriter:
             content_sha256=digest,
             companion_keys=companion_keys,
         )
+
+    def _check_drift(self, endpoint: str, payload_bytes: bytes) -> dict[str, Any] | None:
+        """Compare an FPL payload with its baseline; warn-only and fail-open (#82).
+
+        Drift never touches usability, status or markers (#80 D1), and a
+        broken check records ``unavailable`` rather than costing the capture
+        (#80 D7).
+        """
+        if self._baseline_dir is None or self.source != "fpl":
+            return None
+        try:
+            drift = check_drift(
+                endpoint, payload_bytes, baseline_dir=self._baseline_dir, cache=self._baseline_cache
+            )
+        except Exception as exc:  # noqa: BLE001 - belt and braces: check_drift already fails open
+            drift = {"status": "unavailable", "reason": f"drift check failed: {exc!r}", "entries": []}
+        if drift is None:
+            return None
+        if drift["status"] == "unavailable":
+            logger.warning("drift check unavailable for %s: %s", endpoint, drift["reason"])
+        elif drift["status"] == "drift":
+            logger.warning(
+                "payload drift in %s: %d change(s), first %s",
+                endpoint, len(drift["entries"]),
+                ", ".join(f"{e['kind']} {e['path']}" for e in drift["entries"][:3]),
+            )
+        return drift
 
     def record_failure(
         self,

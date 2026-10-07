@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gisaf22/fpl-ingest/schemas/raw-contract/2.4.0/manifest.schema.json",
+  "title": "Per-run manifest (manifest.json), raw contract 2.4.0",
+  "description": "One per run, under raw/{source}/_manifests/{extraction_date}/{run_id}/. Strict at the top level and on each captures[] entry: a field not listed here is a contract change. objects, totals, endpoints, config and finality stay free-form, except each endpoint's optional drift block (2.4.0, #85), which is strict. captures is present only once the run is finalized; consumers must ignore IN_PROGRESS manifests.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "raw_contract_version", "run_id", "source", "extraction_date", "started_at", "ended_at",
+    "duration_seconds", "status", "objects", "totals", "failures", "endpoints", "git_sha",
+    "ingest_version", "config", "trigger", "origin"
+  ],
+  "properties": {
+    "raw_contract_version": { "const": "2.4.0" },
+    "run_id": { "type": "string", "pattern": "^\\d{8}T\\d{6}Z-[0-9a-f]{6}$" },
+    "source": { "type": "string", "minLength": 1 },
+    "extraction_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "started_at": { "$ref": "#/$defs/utc_timestamp" },
+    "ended_at": { "anyOf": [{ "$ref": "#/$defs/utc_timestamp" }, { "type": "null" }] },
+    "duration_seconds": { "type": ["number", "null"] },
+    "status": { "enum": ["SUCCESS", "PARTIAL", "FAILED", "IN_PROGRESS"] },
+    "objects": { "type": "object" },
+    "totals": { "type": "object" },
+    "failures": { "type": "array", "items": { "type": "object" } },
+    "endpoints": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": { "drift": { "$ref": "#/$defs/endpoint_drift" } }
+      }
+    },
+    "git_sha": { "type": ["string", "null"] },
+    "ingest_version": { "type": ["string", "null"] },
+    "config": { "type": ["object", "null"] },
+    "trigger": { "type": ["string", "null"] },
+    "origin": { "$ref": "#/$defs/origin" },
+    "finality": { "type": "object" },
+    "markers_withheld": { "type": "array", "items": { "type": "object" } },
+    "captures": {
+      "description": "One entry per payload written in the run. Fetch failures have no payload and no entry.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/capture" }
+    }
+  },
+  "if": { "properties": { "status": { "const": "IN_PROGRESS" } } },
+  "then": { "not": { "required": ["captures"] } },
+  "else": { "required": ["captures"] },
+  "$defs": {
+    "endpoint_drift": {
+      "description": "Payload drift aggregated over the endpoint's captures (#85). Finalized manifests only; warn-only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checked", "reasons", "entries"],
+      "properties": {
+        "status": { "enum": ["ok", "drift", "unavailable"] },
+        "checked": { "type": "integer", "minimum": 1 },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "kind", "baseline_types", "observed_types", "payloads"],
+            "properties": {
+              "path": { "type": "string", "pattern": "^\\$" },
+              "kind": { "enum": ["added", "removed", "type_changed"] },
+              "baseline_types": { "type": "array", "items": { "enum": ["object", "array", "string", "number", "boolean", "null"] } },
+              "observed_types": { "type": "array", "items": { "enum": ["object", "array", "string", "number", "boolean", "null"] } },
+              "payloads": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "origin": {
+      "description": "Where the run came from (#75). kind is ci when GITHUB_ACTIONS is \"true\", else local; workflow, ref and github_run_id are the Actions run's values for ci and null for local. These are a self-report, not proof. aws_principal is the role or IAM user name STS resolved the run's credentials to, \"root\" for the root user, null when the lookup failed; never an ARN, account ID or session name. Production is the consumer's call, e.g. kind == ci and ref == refs/heads/main.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "workflow", "ref", "github_run_id", "aws_principal"],
+      "properties": {
+        "kind": { "enum": ["ci", "local"] },
+        "workflow": { "type": ["string", "null"] },
+        "ref": { "type": ["string", "null"] },
+        "github_run_id": { "type": ["string", "null"] },
+        "aws_principal": { "type": ["string", "null"], "pattern": "^[^:]+$" }
+      },
+      "if": { "properties": { "kind": { "const": "ci" } } },
+      "then": {
+        "properties": {
+          "workflow": { "type": "string" },
+          "ref": { "type": "string" },
+          "github_run_id": { "type": "string" }
+        }
+      },
+      "else": {
+        "properties": {
+          "workflow": { "type": "null" },
+          "ref": { "type": "null" },
+          "github_run_id": { "type": "null" }
+        }
+      }
+    },
+    "utc_timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key", "endpoint", "received_at", "content_sha256", "content_length",
+        "http_status", "shape_ok", "usable", "season"
+      ],
+      "properties": {
+        "key": {
+          "description": "Full object key under the bucket, no scheme.",
+          "type": "string",
+          "pattern": "^raw/"
+        },
+        "endpoint": { "type": "string", "minLength": 1 },
+        "received_at": { "$ref": "#/$defs/utc_timestamp" },
+        "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "content_length": { "type": "integer", "minimum": 0 },
+        "http_status": { "type": "integer" },
+        "shape_ok": { "type": "boolean" },
+        "usable": {
+          "description": "Written and shape_ok. Every entry was written, so this equals shape_ok.",
+          "type": "boolean"
+        },
+        "season": {
+          "description": "From this run's bootstrap-static; null when the run had no usable one.",
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}$"
+        }
+      }
+    }
+  }
+}

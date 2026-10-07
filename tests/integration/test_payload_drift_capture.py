@@ -370,13 +370,14 @@ def test_the_sidecar_block_carries_status_reason_and_full_entries(tmp_path, base
 
 
 # ---------------------------------------------------------------------------
-# AC10 — sidecars written by this version validate against contract 2.3.0
+# AC10 — written sidecars validate against the current contract (2.3.0's
+# sidecar shape, unchanged in 2.4.0 by #85)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.covers("#82 AC10")
 @pytest.mark.parametrize("case", ["ok", "drift", "unavailable"])
-def test_written_sidecars_validate_against_the_2_3_0_schema(tmp_path, baselines, case):
+def test_written_sidecars_validate_against_the_current_schema(tmp_path, baselines, case):
     payloads = _with_drift("fixtures", "rename") if case == "drift" else _payloads()
     if case == "unavailable":
         (baselines / "fixtures.json").unlink()
@@ -385,7 +386,7 @@ def test_written_sidecars_validate_against_the_2_3_0_schema(tmp_path, baselines,
 
     for endpoint in ENDPOINTS:
         for sidecar in _sidecars(raw, endpoint):
-            assert sidecar["raw_contract_version"] == "2.3.0"
+            assert sidecar["raw_contract_version"] == "2.4.0"
             assert raw_contract_schema.errors("sidecar", sidecar) == [], endpoint
     assert raw_contract_schema.errors("manifest", _manifest(raw)) == []
 

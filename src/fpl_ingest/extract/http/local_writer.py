@@ -252,6 +252,7 @@ class LocalRawWriter:
         self._baseline_dir = Path(baseline_dir) if baseline_dir is not None else None
         self._baseline_cache: dict[str, Any] = {}
         self._unavailable_warned: set[tuple[str, str]] = set()
+        self._drift_totals: dict[str, dict[str, Any]] = {}
         self._finalized = False
 
     @property
@@ -414,6 +415,7 @@ class LocalRawWriter:
                 drift = {"status": "unavailable", "reason": f"drift check failed: {exc!r}", "entries": []}
         if drift is None:
             return None
+        self._tally_drift(family, drift)
         if drift["status"] == "unavailable":
             # Once per family and reason, not once per element-summary player.
             if (family, drift["reason"]) not in self._unavailable_warned:
@@ -426,6 +428,42 @@ class LocalRawWriter:
                 ", ".join(f"{e['kind']} {e['path']}" for e in drift["entries"][:3]),
             )
         return drift
+
+    def _tally_drift(self, family: str, drift: Mapping[str, Any]) -> None:
+        """Fold one capture's drift block into its endpoint's run totals (#85)."""
+        totals = self._drift_totals.setdefault(
+            family, {"checked": 0, "unavailable": False, "reasons": set(), "entries": {}}
+        )
+        totals["checked"] += 1
+        if drift["status"] == "unavailable":
+            totals["unavailable"] = True
+            totals["reasons"].add(drift["reason"])
+        for e in drift["entries"]:
+            key = (e["path"], e["kind"], tuple(e["baseline_types"]), tuple(e["observed_types"]))
+            totals["entries"][key] = totals["entries"].get(key, 0) + 1
+
+    def _endpoint_drift(self, family: str) -> dict[str, Any] | None:
+        """The manifest's ``endpoints[family].drift`` block, or None when nothing was checked."""
+        totals = self._drift_totals.get(family)
+        if totals is None:
+            return None
+        entries = [
+            {
+                "path": path,
+                "kind": kind,
+                "baseline_types": list(baseline),
+                "observed_types": list(observed),
+                "payloads": payloads,
+            }
+            for (path, kind, baseline, observed), payloads in sorted(totals["entries"].items())
+        ]
+        status = "unavailable" if totals["unavailable"] else ("drift" if entries else "ok")
+        return {
+            "status": status,
+            "checked": totals["checked"],
+            "reasons": sorted(totals["reasons"]),
+            "entries": entries,
+        }
 
     def record_failure(
         self,
@@ -647,6 +685,11 @@ class LocalRawWriter:
         # re-written after every object, carries none (#62 D4).
         if status != MANIFEST_STATUS_IN_PROGRESS:
             manifest["captures"] = [dict(entry) for entry in self._captures]
+            # Drift totals likewise appear only once the run is complete (#85).
+            for name, outcome in manifest["endpoints"].items():
+                drift = self._endpoint_drift(name)
+                if drift is not None:
+                    outcome["drift"] = drift
         return manifest
 
     def _totals(self) -> dict[str, int]:

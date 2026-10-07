@@ -56,7 +56,7 @@ def test_capture_entry_fields(writer):
 
     manifest = _finalize(writer)
 
-    assert manifest["raw_contract_version"] == "2.3.0"
+    assert manifest["raw_contract_version"] == "2.4.0"
     (entry,) = manifest["captures"]
     assert set(entry) == CAPTURE_FIELDS
     assert entry == {

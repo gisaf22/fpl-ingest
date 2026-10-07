@@ -87,7 +87,7 @@ class TestOneCapturePerPayload:
         raw = tmp_path / "raw"
         manifest = _mixed_run(raw)
 
-        assert manifest["raw_contract_version"] == "2.3.0"
+        assert manifest["raw_contract_version"] == "2.4.0"
         assert manifest["status"] != "IN_PROGRESS"
         keys = [c["key"] for c in manifest["captures"]]
         assert len(keys) == len(set(keys)), "a payload is indexed twice"

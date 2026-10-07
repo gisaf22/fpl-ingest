@@ -125,6 +125,13 @@ shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
   `usable`, run status, the exit code or a `_settlement` marker. `unavailable` (missing or
   corrupt baseline, non-JSON payload, internal error) carries a `reason` and is logged at
   WARNING. Sidecars from other sources, and sidecars before 2.3.0, have no `drift` key.
+- **Per-endpoint drift is in the finalized manifest's `endpoints[...].drift`** (#85,
+  contract 2.4.0): `{status, checked, reasons, entries}`, with each entry `{path, kind,
+  baseline_types, observed_types, payloads}` grouped across the endpoint's payloads.
+  `status` is the worst case (`unavailable` > `drift` > `ok`), and an `unavailable`
+  endpoint can still carry entries, so act on `entries` whatever the status. There's no
+  block on `IN_PROGRESS` manifests, on endpoints whose captures all failed to fetch, or on
+  manifests before 2.4.0.
 - **Tell a production run from a laptop run by the manifest's `origin`** (#75, contract
   2.2.0), not by `git_sha` or `trigger`: a laptop run from a checkout records a real SHA, and
   `--trigger` takes any value. `origin.kind` is `ci` or `local`; for `ci`, `workflow`, `ref`

@@ -408,3 +408,18 @@ def test_entries_on_an_unavailable_endpoint_are_surfaced_like_drift(tmp_path, mo
     assert len(titles) == 2
     assert any("$.history[].new" in t for t in titles)
     assert any("unavailable" in t for t in titles)
+
+
+# -- AC14 -----------------------------------------------------------------------
+
+
+@pytest.mark.covers("#83 AC14")
+def test_the_same_key_twice_in_one_report_opens_one_issue(tmp_path, monkeypatch, capsys):
+    gh = Gh(tmp_path, monkeypatch)
+    report = _write_report(tmp_path, {
+        "fixtures": _drift("drift", [_entry("$[].a"), _entry("$[].a")]),
+    })
+
+    _run(report, tmp_path, capsys)
+
+    assert len(gh.created()) == 1

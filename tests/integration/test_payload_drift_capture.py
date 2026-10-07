@@ -388,3 +388,34 @@ def test_written_sidecars_validate_against_the_2_3_0_schema(tmp_path, baselines,
             assert sidecar["raw_contract_version"] == "2.3.0"
             assert raw_contract_schema.errors("sidecar", sidecar) == [], endpoint
     assert raw_contract_schema.errors("manifest", _manifest(raw)) == []
+
+
+# ---------------------------------------------------------------------------
+# AC8 — no configured baseline directory is never a silent skip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.covers("#82 AC8")
+def test_a_run_with_no_baseline_directory_records_unavailable_on_every_fpl_capture(tmp_path, caplog):
+    # No `baselines` fixture: the config resolves no baseline directory.
+    with caplog.at_level(logging.WARNING):
+        rc, raw = _run(tmp_path, _payloads())
+
+    assert rc == 0
+    for endpoint in ENDPOINTS:
+        for sidecar in _sidecars(raw, endpoint):
+            assert sidecar["drift"]["status"] == "unavailable", endpoint
+            assert "no baseline directory" in sidecar["drift"]["reason"]
+    assert "drift check unavailable" in caplog.text
+
+
+@pytest.mark.covers("#82 AC8")
+def test_a_config_without_a_baseline_dir_attribute_records_unavailable(tmp_path):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(raw_dir=tmp_path / "raw", storage_backend="local", s3_bucket=None)
+    with patch("fpl_ingest.cli.resolve_config", return_value=config):
+        rc, raw = _run(tmp_path, _payloads())
+
+    (sidecar,) = _sidecars(raw, "fixtures")
+    assert sidecar["drift"]["status"] == "unavailable"

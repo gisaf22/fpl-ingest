@@ -62,7 +62,11 @@ def _drift(status, entries=(), checked=1, reasons=()):
 def _write_report(tmp_path: Path, endpoints: dict) -> Path:
     path = tmp_path / "drift-report.json"
     path.write_text(
-        json.dumps({"run_id": "run-1", "raw_contract_version": "2.4.0", "endpoints": endpoints})
+        json.dumps({
+            "run_id": "run-1",
+            "raw_contract_version": "2.4.0",
+            "endpoints": {name: {"drift": block} for name, block in endpoints.items()},
+        })
     )
     return path
 

@@ -72,7 +72,18 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
       - name: Capture bootstrap-static and fixtures if a deadline is near
-        run: uv run fpl-ingest pre-deadline ${{ inputs.force && '--force' || '' }}
+        run: uv run fpl-ingest pre-deadline --drift-report drift-report.json ${{ inputs.force && '--force' || '' }}
+
+      # Hand the finalized manifest's drift to report-drift (#83). The file
+      # exists only when a manifest was finalized; a no-op tick uploads nothing.
+      - name: Upload drift report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report
+          path: drift-report.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Heartbeat to healthchecks.io (#57). The last step, on every outcome of
       # a scheduled run, and it can never change the job's conclusion.
@@ -86,3 +97,40 @@ jobs:
           HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL_PRE_DEADLINE }}
           JOB_STATUS: ${{ job.status }}
         run: bash .github/scripts/healthchecks_ping.sh "$JOB_STATUS"
+
+  # Surfaces drift: job summary, annotations, one issue per new drift (#83).
+  # The only job with issues: write; it holds no AWS credentials (#80 D5).
+  # continue-on-error keeps a failure here from turning the workflow red, and
+  # the healthchecks.io ping above follows the capture job alone.
+  report-drift:
+    needs: capture
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync
+
+      # Absent when the run wrote no manifest; report-drift then says so.
+      - name: Download drift report
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: drift-report
+          path: drift-report
+
+      - name: Surface drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run fpl-ingest report-drift --report drift-report/drift-report.json

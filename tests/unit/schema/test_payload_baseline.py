@@ -402,3 +402,9 @@ def test_samples_are_unioned_with_the_committed_baseline_unless_replaced(tmp_pat
 def test_the_baseline_carries_no_timestamp():
     baseline = build_baseline("fixtures", [[{"id": 1}]], samples=["fixtures"])
     assert set(json.loads(render_baseline(baseline))) == {"endpoint", "samples", "paths"}
+
+
+@pytest.mark.covers("#81 AC6")
+def test_rendering_sorts_samples_whatever_order_they_arrive_in():
+    baseline = {"endpoint": "event-live", "samples": ["event-live/9", "event-live/1", "event-live/5"], "paths": {}}
+    assert json.loads(render_baseline(baseline))["samples"] == ["event-live/1", "event-live/5", "event-live/9"]

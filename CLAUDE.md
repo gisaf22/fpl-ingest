@@ -77,6 +77,12 @@ Accepting a drift means merging the regenerated file. Integer and decimal are on
 Bare `gh` is the real GitHub CLI (`/opt/homebrew/bin/gh`). The pyenv shim that used to
 shadow it (`~/.pyenv/shims/gh`) was removed on 2026-09-24.
 
+The local shell is **zsh**, not bash. An unquoted `$var` is not word-split, so
+`fpl-ingest baseline $a` passes `event-live --gameweeks 1,2` as one argument and argparse
+rejects it (#86). An unmatched glob such as `docs/*.md` or `--include=*` is an error, not a
+literal. Use arrays or `${=var}`, quote globs, and never filter `error:` out of a command's
+output.
+
 ---
 
 ## Reading captures

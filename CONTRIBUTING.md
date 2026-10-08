@@ -12,10 +12,12 @@ uv sync
 
 2. Run the tests (see [Tests](#tests)).
 
-3. Run the upstream smoke test when touching API-facing code:
+3. When touching API-facing code, check live payloads against the committed baseline
+   (see `CLAUDE.md`, *Payload baselines*). A non-empty `git diff schemas/payload-baseline/`
+   afterwards is drift:
 
 ```bash
-uv run fpl-ingest smoke-test
+uv run fpl-ingest baseline <endpoint>
 ```
 
 ## Tests
@@ -51,7 +53,8 @@ Treat these as higher-risk changes:
 
 - changing the S3 key layout (`raw/{source}/{endpoint}/{extraction_date}/{run_id}/payload.*`)
 - changing the manifest or per-object `metadata.json` schema
-- changing the shape checks in `src/fpl_ingest/schema/validation.py`
+- changing a stage's shape check (`validate_*_shape` in `src/fpl_ingest/extract/stages/`) or the
+  payload drift check (`src/fpl_ingest/schema/payload_drift.py`)
 - removing or renaming CLI flags or environment variables
 
 When making those changes:

@@ -193,16 +193,6 @@ class TestCliLifecycle:
 
         assert raw.exists(), "--raw-dir passed before the subcommand must be honored"
 
-    def test_smoke_test_command_runs_without_triggering_ingestion(self, tmp_path):
-        with patch("fpl_ingest.cli.execute_smoke_test") as run_smoke_test:
-            run_smoke_test.return_value.endpoints_checked = ("bootstrap-static", "fixtures", "element-summary")
-            run_smoke_test.return_value.sample_size = 5
-
-            with pytest.raises(SystemExit) as exc:
-                main(["--raw-dir", str(tmp_path / "raw"), "smoke-test"])
-
-        assert exc.value.code == 0
-
     @pytest.mark.integration
     def test_main_runs_real_stages_with_mocked_client(self, tmp_path):
         raw = tmp_path / "raw"

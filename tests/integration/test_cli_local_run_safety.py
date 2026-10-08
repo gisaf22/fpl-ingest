@@ -76,14 +76,12 @@ class TestStrictParsing:
             # scheduled_run_pre_deadline.yml, both expansions of its force expression
             ["pre-deadline"],
             ["pre-deadline", "--force"],
-            ["smoke-test"],
             ["inspect"],
             ["inspect", "--list", "--last", "3"],
             ["--raw-dir", "/tmp/x", "--strict"],
             ["--raw-dir", "/tmp/x", "run", "--strict", "--verbose"],
             ["run", "--raw-dir", "/tmp/x", "--rate", "5"],
             ["--rate", "99"],
-            ["--raw-dir", "/tmp/x", "smoke-test"],
             ["--raw-dir", "/tmp/x", "pre-deadline", "-v"],
         ],
     )

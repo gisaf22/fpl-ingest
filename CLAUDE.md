@@ -191,6 +191,16 @@ fpl-warehouse's scheduled build has its own check, documented in that repo.
   minutes after their cron time and take at most 37 s. Daily runs finish at most 35 minutes
   after cron. The daily job has no `timeout-minutes`, so a hung run alerts through absence
   after 1 h.
+- **Drift issues** (#83). Each scheduled workflow has a `report-drift` job. It reads
+  `drift-report.json`, which the capture writes from its finalized manifest, and adds the
+  drift to the job summary, raises one `::warning::` per drifted endpoint, and opens one
+  `schema-drift` issue per new drift. Its dedup key is in the issue body. An issue with that
+  key, open or closed, suppresses a new one, and a repeat sighting adds no comment. To
+  accept a drift, regenerate the baseline and open a PR that closes the issue; to dismiss it,
+  close the issue as not planned. **Close drift issues; never remove their label.** Lookup
+  is by label, so an unlabelled issue is opened again on the next run. The job alone holds
+  `issues: write` and is `continue-on-error`, so drift never turns a run red or changes its
+  ping.
 - **healthchecks.io is the only failure alert.** The SMTP "Email on failure" steps were
   removed once its alerts had been seen working (#58), so each failure raises one alert.
 

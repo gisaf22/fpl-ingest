@@ -20,10 +20,12 @@ only for SUCCESS, so any failure still fails the workflow and alerts.
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from collections.abc import Awaitable, Iterable
 from datetime import datetime, timezone
+from pathlib import Path
 from time import perf_counter
 from typing import Any, TypeVar
 
@@ -259,6 +261,7 @@ def _finalize_raw_manifest(
     ingest_version: str | None = None,
     config: dict[str, Any] | None = None,
     trigger: str | None = None,
+    drift_report: Path | None = None,
 ) -> None:
     """Stamp the run's raw manifest with the same status the runner reports.
 
@@ -272,6 +275,11 @@ def _finalize_raw_manifest(
     that capture failed or did not validate — becomes the manifest's
     ``finality`` block (strategy doc A.5). It is omitted, not faked, when
     unavailable; a consumer must not read a missing block as "settled."
+
+    ``drift_report``, when given, receives the finalized manifest's
+    ``run_id``, ``raw_contract_version`` and each endpoint's ``drift`` block
+    for the ``report-drift`` job (#83). It is written only once the manifest
+    is, so its absence means drift was not checked.
     """
     status: RunStatus = classify_run(raw_writer.endpoint_outcomes)
     try:
@@ -287,6 +295,26 @@ def _finalize_raw_manifest(
         logger.error("Failed to finalize raw manifest: %s", exc)
         return
     logger.info("Raw manifest %s written to %s", status, result.manifest_location)
+    if drift_report is not None:
+        _write_drift_report(drift_report, result.manifest, logger)
+
+
+def _write_drift_report(path: Path, manifest: dict[str, Any], logger: logging.Logger) -> None:
+    """Write the drift hand-off file; like finalisation, it must never fail the run."""
+    report = {
+        "run_id": manifest.get("run_id"),
+        "raw_contract_version": manifest.get("raw_contract_version"),
+        "endpoints": {
+            endpoint: {"drift": outcome["drift"]}
+            for endpoint, outcome in (manifest.get("endpoints") or {}).items()
+            if "drift" in outcome
+        },
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.error("Failed to write drift report %s: %s", path, exc)
 
 
 def _record_stage(
@@ -535,7 +563,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
         _finalize_raw_manifest(
             raw_writer, logger, event_finality=event_finality,
             git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,
-            trigger=trigger,
+            trigger=trigger, drift_report=getattr(args, "drift_report", None),
         )
         return exit_code
     except StrictRunFailure as exc:
@@ -544,7 +572,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
         _finalize_raw_manifest(
             raw_writer, logger, event_finality=event_finality,
             git_sha=git_sha, ingest_version=INGEST_VERSION, config=run_config,
-            trigger=trigger,
+            trigger=trigger, drift_report=getattr(args, "drift_report", None),
         )
         endpoints = raw_writer.endpoint_outcomes
         _log_run_summary(logger, status=classify_run(endpoints), results=stage_results)
@@ -655,5 +683,6 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
         raw_writer, logger,
         git_sha=_current_git_sha(logger), ingest_version=INGEST_VERSION,
         config=_effective_run_config(args), trigger="manual" if force else PRE_DEADLINE_TRIGGER,
+        drift_report=getattr(args, "drift_report", None),
     )
     return exit_code

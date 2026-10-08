@@ -15,7 +15,11 @@ _WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 def _run_lines(name: str) -> list[str]:
     text = (_WORKFLOWS / name).read_text()
-    return [line.strip() for line in text.splitlines() if "uv run fpl-ingest" in line]
+    # report-drift (#83) is not a capture, so it stamps no manifest.
+    return [
+        line.strip() for line in text.splitlines()
+        if "uv run fpl-ingest" in line and "fpl-ingest report-drift" not in line
+    ]
 
 
 def test_daily_workflow_passes_a_trigger():
@@ -29,4 +33,7 @@ def test_pre_deadline_workflow_runs_the_gated_subcommand():
     # --force is passed only when the dispatch input is true; a schedule event
     # has no inputs, so it always runs gated.
     lines = _run_lines("scheduled_run_pre_deadline.yml")
-    assert lines == ["run: uv run fpl-ingest pre-deadline ${{ inputs.force && '--force' || '' }}"]
+    assert lines == [
+        "run: uv run fpl-ingest pre-deadline --drift-report drift-report.json "
+        "${{ inputs.force && '--force' || '' }}"
+    ]

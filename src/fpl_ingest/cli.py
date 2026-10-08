@@ -107,6 +107,10 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
             "--verbose", "-v", action="store_true", default=default,
             help="Enable debug logging.",
         )
+        target.add_argument(
+            "--drift-report", type=Path, default=default, metavar="PATH",
+            help="Write the finalized manifest's per-endpoint drift here for report-drift (#83).",
+        )
 
     parser = argparse.ArgumentParser(prog="fpl-ingest", description="Collect and store FPL API data.")
     add_shared_arguments(parser, suppress_defaults=False)
@@ -127,6 +131,18 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
     pre_deadline_parser.add_argument(
         "--force", action="store_true",
         help="Skip the deadline gate and capture now; the manifest records trigger: manual.",
+    )
+
+    report_drift_parser = subparsers.add_parser(
+        "report-drift",
+        help="Surface a capture's drift report: job summary, annotations, one issue per new drift (#83).",
+    )
+    report_drift_parser.add_argument(
+        "--report", type=Path, required=True, help="The drift-report.json a capture wrote; may be absent."
+    )
+    report_drift_parser.add_argument(
+        "--summary", type=Path, default=None,
+        help="Markdown summary file (default: $GITHUB_STEP_SUMMARY, else drift-summary.md).",
     )
 
     subparsers.add_parser("smoke-test", help="Run a lightweight upstream API structural drift check.")
@@ -346,6 +362,14 @@ def run_baseline(args: argparse.Namespace, *, client: Any | None = None) -> int:
     return 0
 
 
+def run_report_drift(args: argparse.Namespace) -> int:
+    """Surface drift from a capture's report (#83); always exits 0."""
+    from fpl_ingest.orchestration.drift_report import report_drift
+
+    summary = args.summary or Path(os.environ.get("GITHUB_STEP_SUMMARY") or "drift-summary.md")
+    return report_drift(args.report, summary)
+
+
 class BaselineFetchError(RuntimeError):
     """A baseline sample could not be fetched or decoded."""
 
@@ -406,6 +430,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(run_pre_deadline(args))
     if args.command == "baseline":
         sys.exit(run_baseline(args))
+    if args.command == "report-drift":
+        sys.exit(run_report_drift(args))
     sys.exit(run_pipeline(args))
 
 

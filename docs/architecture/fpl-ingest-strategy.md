@@ -697,7 +697,7 @@ in fpl-warehouse staging) · **DELETE**.
 | `extract/http/client.py` | 356 | **KEEP.** Session lifecycle, retry classification, rate-limiter integration, the sleep-outside-the-limiter design. All of it survives. Two edits: return raw bytes alongside decoded JSON (§A.1); expose response headers for the sidecar (§A.5). |
 | `extract/http/rate_limiter.py`, `rate_config.py` | 160 | **KEEP verbatim.** Nothing about token-bucket rate limiting changes when the sink changes. |
 | `extract/http/sync_http.py` | 232 | **KEEP.** Holds the shared retry primitives (`compute_retry_delay`, `parse_retry_after`, `RETRYABLE_STATUS_CODES`, `FPLClientError`) that `client.py` imports. Genuinely shared despite the name. |
-| `extract/http/sync_client.py` | 194 | **DELETE. FACT — it has no production caller.** `FPLClient` is imported only by `extract/http/__init__.py` (a re-export, docstring: *"kept for backwards-compatible callers"*) and by its own test, `tests/extract/http/test_sync_client.py`. Every stage and the smoke test use `AsyncFPLClient`. It is 194 lines of duplicate HTTP surface; do not port it through the redirect. |
+| `extract/http/sync_client.py` | 194 | **DELETE. FACT — it has no production caller.** `FPLClient` is imported only by `extract/http/__init__.py` (a re-export, docstring: *"kept for backwards-compatible callers"*) and by its own test, `tests/extract/http/test_sync_client.py`. Every stage and the smoke test (retired in #84, superseded by the payload drift check; see the note in §B.2) use `AsyncFPLClient`. It is 194 lines of duplicate HTTP surface; do not port it through the redirect. |
 | `extract/stages/bootstrap.py` | 173 | **SPLIT.** The fetch half (`client.get_bootstrap()` + write) is **REDIRECT**. `process_core_payload`, `ingest_players/teams/events/element_types`, and `_assert_store_validation_consistency` are flatten-and-upsert — **MOVE** to warehouse staging. Each stage collapses from ~170 lines to roughly 15. |
 | `extract/stages/fixtures.py` | 118 | **SPLIT**, same way. `process_fixtures_payload`, `upsert_fixtures`, `flatten_fixture_stat_rows`, `upsert_fixture_stats` → **MOVE**. |
 | `extract/stages/gameweeks.py` | 251 | **SPLIT.** `_collect_gameweeks` (strict-mode concurrent fetch with cancellation) is real, well-tested machinery — **KEEP**. `_select_gameweeks_to_fetch` is **REWRITE**: its file-existence heuristic (line 139) must become an `event-status` finality check (§4.2). `upsert_gameweek_rows` and `process_gameweek_payloads` → **MOVE**. |
@@ -734,7 +734,7 @@ reintroduce bugs this repo already fixed.
 | `schema/compiler.py` | 226 | **DELETE.** It compiles Pydantic models into SQLite DDL. With no SQLite there is nothing to compile. §B.3 covers the CI artifact check. |
 | `schema/ddl.py` | 28 | **DELETE.** |
 | `schema/test_data.py` | 54 | **DELETE** with the compiler (it generates fixtures from compiled tables). |
-| `schema/validation.py` | 386 | **SPLIT — and this is the important one.** The file merges two unrelated concerns, as its own docstring says. **Section 1** (`validate_contract`, PRAGMA introspection, `TypeMismatch`, `ConstraintMismatch`) — **DELETE**, it validates a SQLite database. **Section 2** (`run_smoke_test`, `_check_bootstrap`, `_check_fixtures`, `_check_player_history`, `_check_record_list`, `_require_key/_require_mapping/_require_list`, `SmokeTestFailure`) — **KEEP and PROMOTE**. This *is* the source-shape validation the target contract calls for. See §B.2. |
+| `schema/validation.py` | 386 | **SPLIT — and this is the important one.** The file merges two unrelated concerns, as its own docstring says. **Section 1** (`validate_contract`, PRAGMA introspection, `TypeMismatch`, `ConstraintMismatch`) — **DELETE**, it validates a SQLite database. **Section 2** (`run_smoke_test`, `_check_bootstrap`, `_check_fixtures`, `_check_player_history`, `_check_record_list`, `_require_key/_require_mapping/_require_list`, `SmokeTestFailure`) — **KEEP and PROMOTE**. This *is* the source-shape validation the target contract calls for. See §B.2. *Later: Section 2 was retired in #84, superseded by the payload drift check; see the note in §B.2.* |
 
 ### `orchestration/` — KEEP, redirected
 
@@ -750,8 +750,8 @@ reintroduce bugs this repo already fixed.
 
 | Module | Lines | Disposition |
 |---|---|---|
-| `cli.py` | 238 | **REDIRECT.** `run` survives with new flags (`--bucket`, `--run-id`). `smoke-test` **KEEPs** and gains prominence (§B.2). `status` **REDIRECTs** to read manifests instead of `_runs`. `replay`, `schema export` / `schema validate` — **DELETE** (§B.3). |
-| `cli_formatters.py` | 209 | **KEEP**, minus the `format_schema_output` path. |
+| `cli.py` | 238 | **REDIRECT.** `run` survives with new flags (`--bucket`, `--run-id`). `smoke-test` **KEEPs** and gains prominence (§B.2; later retired in #84, superseded by the payload drift check; see the note in §B.2). `status` **REDIRECTs** to read manifests instead of `_runs`. `replay`, `schema export` / `schema validate` — **DELETE** (§B.3). |
+| `cli_formatters.py` | 209 | **KEEP**, minus the `format_schema_output` path. *Later: its smoke-test formatters went with `smoke-test` (#84).* |
 | `config.py` | 130 | **REDIRECT.** The flag → env → `~/.fpl/config.yaml` → default chain is good and should be preserved exactly. `db_path` → `bucket` + `prefix`; `raw_dir` survives as an optional local mirror (§C). `resolve_db_path_with_source` — the *source*-reporting idea is genuinely useful for debugging and should be kept for the bucket. |
 
 ### fpl-ingest disposition summary
@@ -771,6 +771,12 @@ smaller demolition than "remove SQLite as the ingestion boundary" sounds like, b
 restructure (`1134a88`) turns out to have been good preparation for this.
 
 ## B.2 What SHOULD be validated at a raw-capture boundary
+
+> **Update (#84):** `fpl-ingest smoke-test` and `schema/validation.py` were removed. The
+> structural checks below live in each stage's `validate_*_shape`, run on every capture, and
+> the payload drift check (#80: `schema/payload_baseline.py`, `schema/payload_drift.py`,
+> baselines in `schemas/payload-baseline/`) reports field-level drift against a committed
+> baseline. The recommendation to schedule `smoke-test` below is superseded.
 
 **FACT — what is validated today, at three distinct layers:**
 
@@ -1076,7 +1082,7 @@ training everyone to ignore this workflow's status; and re-enabling is a one-lin
 Keeping `workflow_dispatch` preserves manual testing.
 
 **The counter-argument, which I do not find persuasive:** the daily run currently proves the
-API is reachable and the pipeline executes — a crude uptime check. But `smoke-test` does that
+API is reachable and the pipeline executes — a crude uptime check. But `smoke-test` (retired in #84, superseded by the payload drift check; see the note in §B.2) did that
 in four requests instead of ~800, and §B.2 already recommends scheduling it. **If a daily
 signal is wanted during the migration, schedule `fpl-ingest smoke-test` and disable
 `fpl-ingest run`.** That keeps the canary and drops the waste.

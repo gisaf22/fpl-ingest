@@ -1,6 +1,6 @@
 """CLI entry point and command dispatcher for fpl-ingest.
 
-Exposes the ``run``, ``pre-deadline``, ``smoke-test``, ``inspect``, ``backfill`` and ``baseline``
+Exposes the ``run``, ``pre-deadline``, ``inspect``, ``backfill`` and ``baseline``
 sub-commands.
 Each command handler resolves configuration, delegates to the appropriate
 orchestration or extract function, and exits with a meaningful code.
@@ -30,8 +30,6 @@ from typing import Any
 from fpl_ingest.cli_formatters import (
     format_run_detail,
     format_run_list,
-    format_smoke_test_failure,
-    format_smoke_test_success,
 )
 from fpl_ingest.config import IngestConfig, default_config, resolve_config
 from fpl_ingest.orchestration.inspect import most_recent_run, recent_runs
@@ -45,10 +43,6 @@ from fpl_ingest.schema.payload_baseline import (
     build_baseline,
     load_baseline,
     render_baseline,
-)
-from fpl_ingest.schema.validation import (
-    SmokeTestFailure,
-    run_smoke_test as execute_smoke_test,
 )
 
 
@@ -144,8 +138,6 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
         "--summary", type=Path, default=None,
         help="Markdown summary file (default: $GITHUB_STEP_SUMMARY, else drift-summary.md).",
     )
-
-    subparsers.add_parser("smoke-test", help="Run a lightweight upstream API structural drift check.")
 
     inspect_parser = subparsers.add_parser(
         "inspect", help="Print a run summary read from manifests (replaces the old status command)."
@@ -257,16 +249,6 @@ def run_pre_deadline(args: argparse.Namespace) -> int:
     config = resolve_config(raw_dir=args.raw_dir)
     logger = configure_logging(args.verbose)
     return asyncio.run(run_pre_deadline_capture(args=args, config=config, logger=logger))
-
-
-def run_smoke_test(_: argparse.Namespace | None = None) -> int:
-    try:
-        result = execute_smoke_test()
-    except (SmokeTestFailure, FPLClientError) as exc:
-        sys.stdout.write(f"{format_smoke_test_failure(exc)}\n")
-        return 1
-    sys.stdout.write(f"{format_smoke_test_success(result)}\n")
-    return 0
 
 
 def run_inspect(args: argparse.Namespace) -> int:
@@ -420,8 +402,6 @@ def main(argv: list[str] | None = None) -> None:
     # non-zero before any work. On 2026-09-23 a removed flag was silently
     # ignored and a full ingest ran instead.
     args = build_parser().parse_args(argv)
-    if args.command == "smoke-test":
-        sys.exit(run_smoke_test(args))
     if args.command == "inspect":
         sys.exit(run_inspect(args))
     if args.command == "backfill":

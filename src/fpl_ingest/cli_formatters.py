@@ -1,6 +1,6 @@
 """Human-readable output formatters for the fpl-ingest CLI.
 
-Converts structured data from the store and smoke test into terminal-safe
+Converts structured data from run manifests into terminal-safe
 strings. Each formatter is a pure function: no I/O, no logging, no side
 effects. All CLI output paths pass through this module so formatting changes
 stay localised here.
@@ -9,10 +9,7 @@ stay localised here.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from fpl_ingest.schema.validation import SmokeTestResult
+from typing import Any
 
 
 def format_run_detail(manifest: Mapping[str, Any]) -> str:
@@ -86,17 +83,3 @@ def format_run_list(manifests: Sequence[Mapping[str, Any]]) -> str:
         for row in rows_data
     ]
     return "\n".join(table_lines)
-
-
-def format_smoke_test_success(result: SmokeTestResult) -> str:
-    return "\n".join(
-        [
-            "Smoke test passed.",
-            f"Checked endpoints: {', '.join(result.endpoints_checked)}",
-            f"Sample size: {result.sample_size}",
-        ]
-    )
-
-
-def format_smoke_test_failure(exc: BaseException) -> str:
-    return f"Smoke test failed: {exc}"

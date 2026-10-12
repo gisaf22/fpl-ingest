@@ -74,7 +74,7 @@ jobs:
           fi
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.BACKFILL_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}

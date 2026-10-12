@@ -1036,8 +1036,9 @@ credential this repo has ever needed.
 **Recommendation: GitHub OIDC federation to an AWS IAM role. No long-lived access keys.**
 
 - Add `permissions: {id-token: write, contents: read}` to the job and use
-  `aws-actions/configure-aws-credentials@v4` with `role-to-assume`. GitHub mints a short-lived
-  OIDC token; AWS exchanges it for temporary credentials scoped to that repo and branch.
+  `aws-actions/configure-aws-credentials` v6.3.0, pinned by commit SHA, with `role-to-assume`.
+  GitHub mints a short-lived OIDC token; AWS exchanges it for temporary credentials scoped to
+  that repo and branch.
 - No `AWS_SECRET_ACCESS_KEY` in repository secrets. Nothing to rotate, nothing to leak, nothing
   to accidentally print. Given that this repo's own `SECURITY.md` exists and the global policy
   is explicit about not exposing credentials, storing a static key pair when federation is

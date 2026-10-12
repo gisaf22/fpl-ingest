@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   ingest:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     env:
       FPL_STORAGE_BACKEND: s3
@@ -89,7 +89,7 @@ jobs:
   report-drift:
     needs: ingest
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     continue-on-error: true
     permissions:

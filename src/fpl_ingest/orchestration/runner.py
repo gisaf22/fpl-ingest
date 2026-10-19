@@ -48,6 +48,7 @@ from fpl_ingest.extract.stages.bootstrap import (
 )
 from fpl_ingest.extract.stages.event_status import Finality, ingest_event_status
 from fpl_ingest.extract.stages.fixtures import RAW_SOURCE, ingest_fixtures
+from fpl_ingest.extract.stages.manager_panel import default_seed, ingest_manager_panel, read_panel
 from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
 from fpl_ingest.extract.stages.element_summary import ingest_player_histories
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
@@ -686,3 +687,77 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
         drift_report=getattr(args, "drift_report", None),
     )
     return exit_code
+
+
+async def run_manager_panel_capture(*, args, config, logger: logging.Logger) -> int:
+    """Draw the season's manager panel and capture each kept manager's history (#102).
+
+    Captures bootstrap-static first, for the season and ``total_players``, then
+    draws once: if a panel already exists for the season the run fetches no
+    history. A failed bootstrap-static fetch writes nothing and returns 1, since
+    the season is unknown without it. A run that cannot draw (no season, no
+    ``total_players``) records the failure under ``manager-panel`` and exits
+    non-zero rather than writing a partial panel. The seed defaults to the
+    season's, so a rerun after a failure redraws the same ids (P3, P5).
+    """
+    storage_backend = _build_storage_backend(config)
+    run_start = datetime.now(timezone.utc)
+    applied_rate = _resolve_applied_rate(logger, args.rate)
+    rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)
+
+    async with AsyncFPLClient(
+        rate_limiter=rate_limiter,
+        connector_limit=_MAX_CONCURRENT_REQUESTS,
+    ) as client:
+        try:
+            raw = await client.get_bootstrap_raw()
+        except FPLClientError as exc:
+            logger.error("manager-panel: bootstrap-static fetch failed; nothing written: %s", exc)
+            return 1
+
+        if storage_backend is None:
+            config.raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_writer = LocalRawWriter(
+            config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend,
+            origin=detect_origin(logger=logger), baseline_dir=getattr(config, "baseline_dir", None),
+        )
+        season = season_for_bootstrap(raw, logger)
+        raw_writer.set_season(season)
+        stage_results: list[StageResult] = []
+        _record_stage(stage_results, logger, capture_bootstrap_raw(raw, raw_writer).result, strict=False)
+
+        total_players = _total_players(raw)
+        reason = None
+        if season is None:
+            reason = "no season: bootstrap-static had no usable events"
+        elif read_panel(raw_writer.backend, season) is None and total_players is None:
+            reason = "bootstrap-static carries no usable total_players"
+        if reason is not None or season is None:
+            reason = reason or "no season"
+            logger.error("manager-panel: cannot draw: %s", reason)
+            raw_writer.record_failure(
+                "manager-panel", request_url=_ENDPOINTS["bootstrap"], error_class="CannotDraw", message=reason
+            )
+            _record_stage(stage_results, logger, StageResult(stage="manager_panel", errors=1), strict=False)
+        else:
+            seed = args.seed if args.seed is not None else default_seed(season)
+            outcome = await ingest_manager_panel(
+                client, raw_writer, season=season, total_players=total_players or 0, seed=seed
+            )
+            _record_stage(stage_results, logger, outcome.result, strict=False)
+
+    exit_code = _exit_code(logger, raw_writer, stage_results)
+    _finalize_raw_manifest(
+        raw_writer, logger,
+        git_sha=_current_git_sha(logger), ingest_version=INGEST_VERSION,
+        config=_effective_run_config(args), trigger="manual",
+        drift_report=getattr(args, "drift_report", None),
+    )
+    return exit_code
+
+
+def _total_players(raw: RawResponse) -> int | None:
+    """``total_players`` from a bootstrap-static response, or None if absent or not a positive int."""
+    payload = raw.json()
+    value = payload.get("total_players") if isinstance(payload, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None

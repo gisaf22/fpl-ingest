@@ -16,7 +16,9 @@ than dual-written during the migration (`src/fpl_ingest/extract/stages/fixtures.
 module docstring; `PUBLIC_TABLES` is now empty — `src/fpl_ingest/schema/__init__.py`).
 
 Stages live in `src/fpl_ingest/extract/stages/`: `bootstrap.py`, `fixtures.py`,
-`event_status.py`, `gameweeks.py` (the `event-live/{gw:02d}` endpoint), `element_summary.py`.
+`event_status.py`, `gameweeks.py` (the `event-live/{gw:02d}` endpoint), `element_summary.py`,
+`manager_panel.py` (the seeded manager panel and each kept manager's `entry-history`, #102;
+`fpl-ingest manager-panel`).
 
 ---
 
@@ -43,6 +45,12 @@ The only read the protocol offers is `exists_prefix`, an existence check
 as existence checks against the active backend, never as content reads — checking a
 hardcoded local path instead of the active backend was a real bug (commit `8f6b7bb`).
 
+**The one exception is the manager panel file** (#100 D5, #102): `read_panel_bytes` reads back
+`fpl/_panels/{season}/manager-panel.json`, the job's own panel, and refuses any other key
+(`raw_keys.validate_panel_key`). Only `stages/manager_panel.py` calls it. Tests fail if any
+other module reads through the backend, or if the ingestion package reads S3 outside
+`s3_backend.py`. (`backfill.py` is a separate catalog tool with its own client, outside this rule.)
+
 **Endpoint refetch policy.**
 
 | Endpoint | Policy |
@@ -52,6 +60,7 @@ hardcoded local path instead of the active backend was a real bug (commit `8f6b7
 | `bootstrap-static` | Always refetch every run |
 | `fixtures` | Always refetch every run |
 | `event-status` | Always refetch every run — it is the finality signal |
+| `entry-history/{season}/{entry}` | Once per kept manager, at panel draw. The panel is drawn once per season; a run that finds the panel file fetches nothing. A drawn id with an existing capture counts as kept and is not refetched, so a rerun after a failed draw resumes (#102 P6) |
 
 The two `_settlement` markers are separate on purpose: different keys, written and checked
 independently. Never merge them into one shared flag — each must only ever mean "this

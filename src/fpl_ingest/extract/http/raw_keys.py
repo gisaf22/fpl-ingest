@@ -29,6 +29,9 @@ SETTLEMENT_PREFIX = "_settlement"
 #: Backfill catalogs for runs captured before 2.1.0 (#63 D8). Reserved like
 #: ``_manifests``: no endpoint segment can start with an underscore.
 CATALOG_PREFIX = "_catalog"
+#: The job's own panel files (#102). The only prefix a backend may read back.
+PANELS_PREFIX = "_panels"
+PANEL_FILENAME = "manager-panel.json"
 PAYLOAD_STEM = "payload"
 METADATA_FILENAME = "metadata.json"
 MANIFEST_FILENAME = "manifest.json"
@@ -37,6 +40,7 @@ SETTLEMENT_MARKER_FILENAME = "marker.json"
 _RUN_ID_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
 _RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}$")
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SEASON_RE = re.compile(r"^\d{4}-\d{2}$")
 
 
 class RawKeyError(ValueError):
@@ -124,6 +128,32 @@ def backfill_catalog_key(source: str, run_id: str) -> str:
     return f"{source}/{CATALOG_PREFIX}/backfill/{run_id}.json"
 
 
+def panel_key(source: str, season: str) -> str:
+    """Return the key for a season's manager panel file (#102 D3).
+
+    ``_panels`` is a reserved sibling of the endpoint prefixes, like
+    ``_manifests``. Its files are the one thing storage may be read back for.
+    """
+    validate_source(source)
+    if not _SEASON_RE.match(season):
+        raise RawKeyError(f"invalid season: {season!r}")
+    return f"{source}/{PANELS_PREFIX}/{season}/{PANEL_FILENAME}"
+
+
+def validate_panel_key(key: str) -> None:
+    """Reject any key that is not exactly a ``panel_key``.
+
+    The guard behind the backends' single read (#102 D5): a key outside
+    ``{source}/_panels/{season}/manager-panel.json`` — including a ``..``
+    traversal — is refused before storage is touched.
+    """
+    parts = key.split("/")
+    if len(parts) != 4 or parts[1] != PANELS_PREFIX or parts[3] != PANEL_FILENAME:
+        raise RawKeyError(f"not a panel key: {key!r}")
+    if key != panel_key(parts[0], parts[2]):
+        raise RawKeyError(f"not a panel key: {key!r}")
+
+
 def bucket_key(key: str) -> str:
     """Return ``key`` as the full object key under the bucket, without a scheme.
 
@@ -189,3 +219,4 @@ def _as_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc)
+

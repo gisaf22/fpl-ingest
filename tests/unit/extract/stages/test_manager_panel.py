@@ -70,6 +70,16 @@ def _client(responses: dict[int, str] | None = None, default: str = ACTIVE) -> M
     return client
 
 
+def _modules_using(root: Path, attributes: set[str]) -> set[Path]:
+    """Modules under ``root`` that access any of ``attributes`` (an AST scan)."""
+    return {
+        path
+        for path in root.rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Attribute) and node.attr in attributes
+    }
+
+
 def _writer(root: Path) -> LocalRawWriter:
     return LocalRawWriter(root, "fpl", started_at=datetime(2026, 10, 19, 4, 30, tzinfo=timezone.utc))
 
@@ -166,7 +176,7 @@ class TestUnknownIdsAreSkipped:
         assert panel["kept"] == 0
         assert panel["drawn_not_kept"]["not_found"] == 10
         assert outcome.result.errors == 0
-        assert writer.manifest_snapshot()["failures"] == []
+        assert writer.manifest_snapshot["failures"] == []
 
 
 class TestKeepRule:
@@ -245,18 +255,19 @@ class TestOnlyThePanelCanBeRead:
         assert backend.read_panel_bytes(key) == b'{"season": "2026-27"}'
 
     @pytest.mark.covers("#102 AC7")
-    def test_no_module_but_the_panel_stage_and_the_backends_reads_storage(self):
+    def test_only_the_panel_stage_and_the_backends_read_through_the_backend(self):
         allowed = {
             SRC / "extract" / "stages" / "manager_panel.py",
             SRC / "extract" / "http" / "local_writer.py",
             SRC / "extract" / "http" / "s3_backend.py",
         }
-        readers = set()
-        for path in SRC.rglob("*.py"):
-            for node in ast.walk(ast.parse(path.read_text())):
-                if isinstance(node, ast.Attribute) and node.attr in {"read_panel_bytes", "get_object"}:
-                    readers.add(path)
-        assert readers - allowed == set()
+        assert _modules_using(SRC, {"read_panel_bytes"}) - allowed == set()
+
+    @pytest.mark.covers("#102 AC7")
+    def test_nothing_in_the_ingestion_package_reads_s3_but_the_s3_backend(self):
+        # backfill.py is a separate catalog tool with its own client, outside ingestion.
+        allowed = {SRC / "extract" / "http" / "s3_backend.py"}
+        assert _modules_using(SRC / "extract", {"get_object"}) - allowed == set()
 
     @pytest.mark.covers("#102 AC7")
     @pytest.mark.asyncio

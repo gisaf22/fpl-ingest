@@ -732,7 +732,8 @@ async def run_manager_panel_capture(*, args, config, logger: logging.Logger) -> 
             reason = "no season: bootstrap-static had no usable events"
         elif read_panel(raw_writer.backend, season) is None and total_players is None:
             reason = "bootstrap-static carries no usable total_players"
-        if reason is not None:
+        if reason is not None or season is None:
+            reason = reason or "no season"
             logger.error("manager-panel: cannot draw: %s", reason)
             raw_writer.record_failure(
                 "manager-panel", request_url=_ENDPOINTS["bootstrap"], error_class="CannotDraw", message=reason

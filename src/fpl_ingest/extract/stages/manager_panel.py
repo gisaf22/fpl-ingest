@@ -182,7 +182,8 @@ async def _capture_one(
             message="; ".join(shape["failures"]),
         )
         return "error"
-    if cohort == COHORT_RANDOM and not raw.json()["current"]:
+    payload = raw.json()
+    if cohort == COHORT_RANDOM and isinstance(payload, dict) and not payload["current"]:
         return "no_picks"
     raw_writer.write_object(
         endpoint, raw.body, request_url=raw.url, requested_at=raw.requested_at,

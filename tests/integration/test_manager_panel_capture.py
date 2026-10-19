@@ -24,7 +24,7 @@ SEASON = "2026-27"
 SELF_IDS = (8450051, 4685107)
 BOOTSTRAP = {
     **MINIMAL_BOOTSTRAP,
-    "total_players": 3000,
+    "total_players": 300,  # fewer than the panel size, so the draw takes every id
     "events": [
         {"id": 1, "finished": True, "data_checked": True, "is_current": False,
          "deadline_time": "2026-08-14T17:30:00Z"},
@@ -122,7 +122,7 @@ class TestLayout:
         assert _manager_panel(raw, _client()) == 0
 
         stored = {int(p.name) for p in (raw / "fpl" / "entry-history" / SEASON).iterdir()}
-        assert not any(i % 7 == 0 or (i % 5 == 0 and i not in SELF_IDS) for i in stored)
+        assert not any((i % 7 == 0 or i % 5 == 0) and i not in SELF_IDS for i in stored)
 
 
 class TestDrawnOnce:

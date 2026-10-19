@@ -34,7 +34,7 @@ from fpl_ingest.cli_formatters import (
 from fpl_ingest.config import IngestConfig, default_config, resolve_config
 from fpl_ingest.orchestration.inspect import most_recent_run, recent_runs
 from fpl_ingest.orchestration.runner import run_pipeline as execute_pipeline
-from fpl_ingest.orchestration.runner import run_pre_deadline_capture
+from fpl_ingest.orchestration.runner import run_manager_panel_capture, run_pre_deadline_capture
 from fpl_ingest.extract.http.rate_config import DEFAULT_RATE, MAX_RATE
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.schema.payload_baseline import (
@@ -125,6 +125,16 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
     pre_deadline_parser.add_argument(
         "--force", action="store_true",
         help="Skip the deadline gate and capture now; the manifest records trigger: manual.",
+    )
+
+    manager_panel_parser = subparsers.add_parser(
+        "manager-panel",
+        help="Draw the season's manager panel once and capture each kept manager's history (#102).",
+    )
+    add_shared_arguments(manager_panel_parser, suppress_defaults=True)
+    manager_panel_parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Seed for the draw (default: derived from the season, so a rerun redraws the same ids).",
     )
 
     report_drift_parser = subparsers.add_parser(
@@ -249,6 +259,12 @@ def run_pre_deadline(args: argparse.Namespace) -> int:
     config = resolve_config(raw_dir=args.raw_dir)
     logger = configure_logging(args.verbose)
     return asyncio.run(run_pre_deadline_capture(args=args, config=config, logger=logger))
+
+
+def run_manager_panel(args: argparse.Namespace) -> int:
+    config = resolve_config(raw_dir=args.raw_dir)
+    logger = configure_logging(args.verbose)
+    return asyncio.run(run_manager_panel_capture(args=args, config=config, logger=logger))
 
 
 def run_inspect(args: argparse.Namespace) -> int:
@@ -408,6 +424,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(run_backfill(args))
     if args.command == "pre-deadline":
         sys.exit(run_pre_deadline(args))
+    if args.command == "manager-panel":
+        sys.exit(run_manager_panel(args))
     if args.command == "baseline":
         sys.exit(run_baseline(args))
     if args.command == "report-drift":

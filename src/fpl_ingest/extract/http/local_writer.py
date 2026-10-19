@@ -101,8 +101,10 @@ class RawStorageBackend(Protocol):
     Deliberately narrow: writes never read back what they wrote, and the only
     read this surface offers is ``exists_prefix``, an existence check used by
     stages that decide whether a player has already been captured or whether
-    a stage's per-gameweek ``_settlement`` marker has been written. An S3
-    backend needs the same methods and no more.
+    a stage's per-gameweek ``_settlement`` marker has been written. The one
+    exception is ``read_panel_bytes``, limited to the job's own panel file
+    under ``_panels/`` (#102 D5). An S3 backend needs the same methods and no
+    more.
     """
 
     def put_bytes(self, key: str, data: bytes, *, overwrite: bool = False) -> str:
@@ -113,6 +115,13 @@ class RawStorageBackend(Protocol):
 
     def exists_prefix(self, prefix: str) -> bool:
         """Return whether any object has ever been written under ``prefix``."""
+
+    def read_panel_bytes(self, key: str) -> bytes | None:
+        """Return the panel file at ``key``, or None if it was never written.
+
+        The one exception to write-only (#102 D5): refuses, with RawKeyError,
+        any key that is not a ``raw_keys.panel_key``.
+        """
 
 
 class LocalFilesystemBackend:
@@ -154,6 +163,14 @@ class LocalFilesystemBackend:
     def exists_prefix(self, prefix: str) -> bool:
         """Return whether ``root/prefix`` exists as a directory."""
         return self._path_for(prefix).is_dir()
+
+    def read_panel_bytes(self, key: str) -> bytes | None:
+        """Return the panel file at ``key``, or None if it does not exist."""
+        raw_keys.validate_panel_key(key)
+        try:
+            return self._path_for(key).read_bytes()
+        except FileNotFoundError:
+            return None
 
     def _write_tmp(self, tmp: Path, data: bytes) -> None:
         """Write and flush the temporary file. Overridden in tests to fail."""

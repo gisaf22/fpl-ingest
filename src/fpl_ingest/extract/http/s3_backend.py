@@ -30,6 +30,7 @@ from typing import Any
 
 from fpl_ingest.extract.http.local_writer import RawObjectExistsError
 from fpl_ingest.extract.http.raw_keys import BUCKET_KEY_PREFIX as _KEY_PREFIX
+from fpl_ingest.extract.http.raw_keys import validate_panel_key
 
 #: Setting this to ``1`` allows S3 writes from outside CI.
 LOCAL_S3_OVERRIDE_ENV = "FPL_ALLOW_LOCAL_S3"
@@ -117,6 +118,21 @@ class S3Backend:
             Bucket=self.bucket, Prefix=full_prefix, MaxKeys=1
         )
         return bool(response.get("Contents"))
+
+    def read_panel_bytes(self, key: str) -> bytes | None:
+        """Return ``s3://bucket/raw/{key}`` if ``key`` is a panel key, else None if absent.
+
+        The one read this backend offers (#102 D5); any other key raises
+        ``RawKeyError`` without touching S3.
+        """
+        validate_panel_key(key)
+        try:
+            response = self._client.get_object(Bucket=self.bucket, Key=_KEY_PREFIX + key)
+        except Exception as exc:  # noqa: BLE001 - boto3 raises botocore.exceptions.ClientError
+            if getattr(exc, "response", {}).get("Error", {}).get("Code") in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise
+        return response["Body"].read()
 
     def _object_exists(self, full_key: str) -> bool:
         try:

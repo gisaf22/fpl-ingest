@@ -1,0 +1,60 @@
+# One-off scheduled run of `fpl-ingest manager-panel` (#102, R6).
+#
+# Production writes come only from scheduled runs, so the first live draw of
+# the 2026-27 manager panel gets two single-date cron slots:
+#   - 2026-10-21 20:30 UTC: slot 1, draws the panel and captures each kept
+#     manager's entry-history.
+#   - 2026-10-22 20:30 UTC: slot 2, the rerun check. It must make zero
+#     entry-history requests and leave the panel object unchanged.
+#
+# DELETE THIS FILE by 2026-10-23 (cleanup PR, tracked on #102). A day-month
+# cron fires every year: left in place it would draw the 2027-28 panel
+# unattended on 2027-10-21.
+#
+# No workflow_dispatch trigger on purpose: a dispatch must not publish (R6).
+# No healthchecks.io ping and no report-drift job: this is a one-off, and
+# entry-history has no payload baseline yet.
+
+name: Scheduled Ingestion — Manager Panel (one-off, #102)
+
+on:
+  schedule:
+    - cron: "30 20 21 10 *"
+    - cron: "30 20 22 10 *"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  manager-panel:
+    # Scheduled runs always execute on the default branch; the ref check is a second guard.
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # Measured run is ~200 s; this bounds a hang well before the next slot.
+    timeout-minutes: 15
+
+    env:
+      FPL_STORAGE_BACKEND: s3
+      FPL_S3_BUCKET: ${{ vars.FPL_S3_BUCKET || 'fpl-data-safari' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::737634035092:role/github-actions-fpl-ingest
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Draw manager panel
+        run: uv run fpl-ingest manager-panel

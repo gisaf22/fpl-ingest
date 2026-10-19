@@ -1,0 +1,49 @@
+{
+  "current": [
+    {
+      "event": 1,
+      "points": 57,
+      "total_points": 57,
+      "rank": 2434400,
+      "rank_sort": 2664656,
+      "overall_rank": 2434397,
+      "percentile_rank": 30,
+      "overall_rank_percentage": "27",
+      "bank": 0,
+      "value": 1000,
+      "event_transfers": 0,
+      "event_transfers_cost": 0,
+      "points_on_bench": 12
+    },
+    {
+      "event": 2,
+      "points": 98,
+      "total_points": 155,
+      "rank": 1866638,
+      "rank_sort": 1937994,
+      "overall_rank": 1474311,
+      "percentile_rank": 20,
+      "overall_rank_percentage": "15",
+      "bank": 0,
+      "value": 1002,
+      "event_transfers": 0,
+      "event_transfers_cost": 0,
+      "points_on_bench": 4
+    }
+  ],
+  "past": [
+    {
+      "season_name": "2025/26",
+      "total_points": 593,
+      "rank": 12792612,
+      "rank_percentage": "98"
+    }
+  ],
+  "chips": [
+    {
+      "name": "freehit",
+      "time": "2026-08-28T17:02:24.251744Z",
+      "event": 2
+    }
+  ]
+}

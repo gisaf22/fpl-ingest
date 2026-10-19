@@ -65,10 +65,11 @@ def _client(*, fail_for: int | None = None):
     return client
 
 
-def _manager_panel(raw: Path, client, *extra: str) -> int:
+def _manager_panel(raw: Path, client, *extra: str, seed: str | None = "5") -> int:
+    seed_args = ["--seed", seed] if seed is not None else []
     with patch("fpl_ingest.orchestration.runner.AsyncFPLClient", return_value=client):
         with pytest.raises(SystemExit) as exc:
-            main(["--raw-dir", str(raw), "manager-panel", "--seed", "5", *extra])
+            main(["--raw-dir", str(raw), "manager-panel", *seed_args, *extra])
     return int(exc.value.code or 0)
 
 
@@ -139,6 +140,69 @@ class TestDrawnOnce:
         again.get_entry_history_raw.assert_not_awaited()
         assert _panel_path(raw).read_bytes() == panel_before
         assert _files_under(raw, "fpl/entry-history") == history_before
+
+
+def _history_ids(raw: Path) -> set[int]:
+    root = raw / "fpl" / "entry-history" / SEASON
+    return {int(p.name) for p in root.iterdir()} if root.exists() else set()
+
+
+def _fetched_ids(client) -> list[int]:
+    return [call.args[0] for call in client.get_entry_history_raw.await_args_list]
+
+
+class TestResumeAfterAFailedRun:
+
+    @pytest.mark.covers("#102 AC11")
+    def test_a_rerun_after_a_partial_failure_leaves_one_capture_per_kept_id(self, tmp_path):
+        raw = tmp_path / "raw"
+        assert _manager_panel(raw, _client(fail_for=SELF_IDS[0]), seed=None) != 0
+        already = _history_ids(raw)
+        assert already, "ids fetched before the failure keep their history capture"
+
+        rerun = _client()
+        assert _manager_panel(raw, rerun, seed=None) == 0
+
+        panel = json.loads(_panel_path(raw).read_text())
+        kept = {e["entry_id"] for e in panel["entries"]}
+        assert _history_ids(raw) == kept
+        for entry_id in kept:
+            payloads = list((raw / "fpl" / "entry-history" / SEASON / str(entry_id)).rglob("payload.json"))
+            assert len(payloads) == 1, entry_id
+
+    @pytest.mark.covers("#102 AC11")
+    def test_ids_already_captured_are_not_fetched_again(self, tmp_path):
+        raw = tmp_path / "raw"
+        assert _manager_panel(raw, _client(fail_for=SELF_IDS[0]), seed=None) != 0
+        already = _history_ids(raw)
+
+        rerun = _client()
+        assert _manager_panel(raw, rerun, seed=None) == 0
+
+        assert not already & set(_fetched_ids(rerun))
+        assert SELF_IDS[0] in _fetched_ids(rerun)
+
+    @pytest.mark.covers("#102 AC11")
+    def test_the_rerun_draws_the_same_ids_as_a_clean_run(self, tmp_path):
+        failed_then_rerun = tmp_path / "resumed"
+        assert _manager_panel(failed_then_rerun, _client(fail_for=SELF_IDS[0]), seed=None) != 0
+        assert _manager_panel(failed_then_rerun, _client(), seed=None) == 0
+        clean = tmp_path / "clean"
+        assert _manager_panel(clean, _client(), seed=None) == 0
+
+        resumed_panel = json.loads(_panel_path(failed_then_rerun).read_text())
+        clean_panel = json.loads(_panel_path(clean).read_text())
+        assert resumed_panel["entries"] == clean_panel["entries"]
+        assert resumed_panel["seed"] == clean_panel["seed"]
+
+    @pytest.mark.covers("#102 AC12")
+    def test_the_panel_records_the_season_derived_default_seed(self, tmp_path):
+        from fpl_ingest.extract.stages.manager_panel import default_seed
+
+        raw = tmp_path / "raw"
+        assert _manager_panel(raw, _client(), seed=None) == 0
+
+        assert json.loads(_panel_path(raw).read_text())["seed"] == default_seed(SEASON)
 
 
 class TestFailsLoud:

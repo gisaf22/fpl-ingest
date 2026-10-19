@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -29,6 +32,7 @@ from fpl_ingest.extract.http.local_writer import (
 from fpl_ingest.extract.http.raw_keys import RawKeyError, panel_key
 from fpl_ingest.extract.http.s3_backend import S3Backend
 from fpl_ingest.extract.stages.manager_panel import (
+    default_seed,
     ingest_manager_panel,
     read_panel,
 )
@@ -122,6 +126,29 @@ class TestPanelIsReproducible:
         await _draw(tmp_path / "b", _client(), seed=12, total_players=10_000)
 
         assert _kept(_panel(tmp_path / "a"), "random") != _kept(_panel(tmp_path / "b"), "random")
+
+
+class TestDefaultSeed:
+
+    @pytest.mark.covers("#102 AC12")
+    def test_the_default_seed_is_identical_across_calls_for_one_season(self):
+        assert default_seed("2026-27") == default_seed("2026-27")
+
+    @pytest.mark.covers("#102 AC12")
+    def test_the_default_seed_differs_across_seasons(self):
+        assert default_seed("2026-27") != default_seed("2027-28")
+
+    @pytest.mark.covers("#102 AC12")
+    def test_the_default_seed_does_not_depend_on_pythons_per_process_string_hash(self):
+        code = "from fpl_ingest.extract.stages.manager_panel import default_seed; print(default_seed('2026-27'))"
+        seeds = {
+            subprocess.run(
+                [sys.executable, "-c", code], env={**os.environ, "PYTHONHASHSEED": hash_seed},
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            for hash_seed in ("1", "2")
+        }
+        assert len(seeds) == 1
 
 
 class TestUnknownIdsAreSkipped:

@@ -189,3 +189,8 @@ def _as_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc)
+
+
+def panel_key(source: str, season: str) -> str:
+    """Return the key for a season's manager panel file (#102). Stub."""
+    raise NotImplementedError("#102")

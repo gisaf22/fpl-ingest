@@ -24,6 +24,7 @@ from typing import Any
 
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.http.response_router import ResponseClass, record_fetch_failed, route_response
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.stage_result import (
@@ -100,32 +101,29 @@ async def ingest_event_status(
         await before_write()
 
     shape = validate_event_status_shape(raw)
-    if not shape["ok"]:
+    routed = route_response(raw_writer, RAW_ENDPOINT, raw, shape)
+    write = routed.write
+    if write is None:  # a 429 or 5xx that outlived the client's retries
+        logger.error("Failed to fetch event-status: HTTP %d", raw.status)
+        record_fetch_failed(raw_writer, RAW_ENDPOINT, raw)
+        return StageOutcome(result=StageResult(stage="event_status", errors=1), output=None)
+
+    ok = routed.response_class is ResponseClass.VALID
+    if ok:
+        logger.info(
+            "Captured event-status: %d bytes -> %s", write.content_length, write.payload_key
+        )
+    else:
         logger.error(
-            "event-status payload failed shape validation (%s); writing it anyway",
+            "event-status response is %s (%s); kept at %s, not as a payload",
+            routed.response_class.value,
             ", ".join(shape["failures"]),
+            write.payload_key,
         )
 
-    write = raw_writer.write_object(
-        RAW_ENDPOINT,
-        raw.body,
-        request_url=raw.url,
-        requested_at=raw.requested_at,
-        received_at=raw.received_at,
-        http_status=raw.status,
-        response_headers=raw.headers,
-        attempt_count=raw.attempt_count,
-        shape_validation=shape,
-    )
-    logger.info(
-        "Captured event-status: %d bytes -> %s", write.content_length, write.payload_key
-    )
-
     # StageResult counts objects here, not rows: one captured object per run.
-    # A shape failure must be reported as validated=0/written=0 even though
-    # the payload was deliberately still written to raw storage — the
-    # sidecar's shape_validation field is where that fact lives.
-    ok = bool(shape["ok"])
+    # An invalid response is reported as validated=0/written=0 and skipped=1,
+    # and yields no finality: it is kept under ``fpl/_invalid/``, never trusted.
     finality = _parse_finality(raw) if ok else None
     result = StageResult(
         stage="event_status",
@@ -137,7 +135,7 @@ async def ingest_event_status(
     return StageOutcome(
         result=result,
         lineage=StageLineage.from_metadata(
-            EVENT_STATUS_STAGE, raw_artifacts=(write.payload_key,)
+            EVENT_STATUS_STAGE, raw_artifacts=(write.payload_key,) if ok else ()
         ),
         output=finality,
     )

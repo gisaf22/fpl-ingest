@@ -500,8 +500,8 @@ class TestRatificationMarker:
 
     @pytest.mark.asyncio
     async def test_shape_failure_withholds_the_marker(self, tmp_path):
-        """The payload is still written, but it has not earned the marker, so
-        the next run retries the gameweek."""
+        """The body is kept under _invalid, not as a payload, so it earns no
+        marker and the next run retries the gameweek."""
         await ingest_gameweeks(
             _client({1: _raw(gw=1, body=b"<html>502</html>")}),
             _writer(tmp_path),
@@ -707,12 +707,13 @@ class TestErrorHandling:
         assert outcome.result.skipped == 1
 
         manifest = writer.manifest_snapshot
-        assert manifest["totals"]["written"] == 3, "every payload is written, good or bad"
+        assert manifest["totals"]["written"] == 3, "every body is stored, the bad one apart from payload.json"
         assert _read(
             raw_dir, f"fpl/event-live/01/{writer.extraction_date}/{writer.run_id}/metadata.json"
         )["shape_validation"]["ok"] is True
         assert _read(
-            raw_dir, f"fpl/event-live/02/{writer.extraction_date}/{writer.run_id}/metadata.json"
+            raw_dir,
+            f"fpl/_invalid/shape_invalid/event-live/02/{writer.extraction_date}/{writer.run_id}/metadata.json",
         )["shape_validation"]["ok"] is False
 
     @pytest.mark.asyncio

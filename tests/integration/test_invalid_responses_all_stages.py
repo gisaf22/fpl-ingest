@@ -250,3 +250,39 @@ def test_valid_responses_are_written_as_payload_json_and_nothing_is_invalid(tmp_
     for endpoint in (BOOTSTRAP, EVENT_STATUS, EVENT_LIVE, ELEMENT_SUMMARY):
         assert manifest["endpoints"][endpoint]["outcome"] == "SUCCESS"
     assert manifest["status"] == "SUCCESS"
+
+
+# ---------------------------------------------------------------------------
+# AC8 (proposed) - a 429 or 5xx that outlived the client's retries stores nothing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.covers("#55 AC8")
+@pytest.mark.parametrize("status", [429, 503])
+@pytest.mark.parametrize(
+    "overrides, endpoint, family",
+    [
+        pytest.param({BOOTSTRAP: None}, f"{BOOTSTRAP}", BOOTSTRAP, id="bootstrap-static"),
+        pytest.param({EVENT_STATUS: None}, f"{EVENT_STATUS}", EVENT_STATUS, id="event-status"),
+        pytest.param({EVENT_LIVE: None}, f"{EVENT_LIVE}/{GW:02d}", EVENT_LIVE, id="event-live"),
+        pytest.param({ELEMENT_SUMMARY: {1: None}}, f"{ELEMENT_SUMMARY}/1", ELEMENT_SUMMARY, id="element-summary"),
+    ],
+)
+def test_a_failed_fetch_stores_nothing_and_is_recorded_as_a_failure(
+    tmp_path, status, overrides, endpoint, family
+):
+    if isinstance(overrides[family], dict):
+        overrides = {family: {1: (status, b"")}}
+    else:
+        overrides = {family: (status, b"")}
+
+    code, raw, manifest = _run(tmp_path, _client(**overrides))
+
+    assert _payloads(raw, endpoint) == []
+    assert _files(raw, "fpl/_invalid") == []
+    failures = manifest["endpoints"][family]["failures"]
+    assert any(f["endpoint"] == endpoint for f in failures)
+    assert manifest["status"] in ("PARTIAL", "FAILED")
+    assert code != 0
+    if family == EVENT_LIVE:
+        assert _marker(raw, EVENT_LIVE) == []

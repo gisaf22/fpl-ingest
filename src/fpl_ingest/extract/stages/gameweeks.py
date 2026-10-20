@@ -28,7 +28,7 @@ A.5, ``event_status.py``) against a per-gameweek ratification marker under
 once, and the marker is written only after that gameweek's capture completed,
 passed shape validation, and carries published ICT (``readiness.ict_ready``:
 a capture taken before FPL populates influence/creativity/threat/ict_index is
-still written, but earns no marker, so the next run fetches it again). A
+still written as a payload, but earns no marker, so the next run fetches it again). A
 provisional gameweek is not fetched, and an
 unknown finality signal fetches nothing — a missed run leaves the marker
 absent, so the next run with a known signal catches up.
@@ -58,6 +58,7 @@ from fpl_ingest.extract.http.local_writer import (
     RawObjectExistsError,
     RawStorageBackend,
 )
+from fpl_ingest.extract.http.response_router import ResponseClass, record_fetch_failed, route_response
 from fpl_ingest.extract.http.raw_keys import (
     SETTLEMENT_PREFIX,
     iso_utc,
@@ -142,8 +143,8 @@ async def ingest_gameweeks(
         validation contributes one ``skipped`` (strict mode aborts on it) and
         is counted as not usable by the writer, while every other gameweek
         still counts as written;
-        the payload is written either way, but only a clean capture earns
-        its gameweek's ratification marker.
+        an invalid body is kept under ``fpl/_invalid/``, never as ``payload.json``,
+        and only a valid capture earns its gameweek's ratification marker.
     """
     if execution_state is not None and execution_state.is_failed:
         logger.info("Fail-fast tripped; skipping gameweek capture")
@@ -178,29 +179,29 @@ async def ingest_gameweeks(
 
     payload_keys: list[str] = []
     validated = 0
+    fetch_failed = 0
     for gameweek_id in sorted(fetched):
         raw = fetched[gameweek_id]
         endpoint = raw_endpoint(gameweek_id)
         shape = validate_gameweek_shape(raw)
-        if not shape["ok"]:
+        routed = route_response(raw_writer, endpoint, raw, shape)
+        write = routed.write
+        if write is None:  # a 429 or 5xx that outlived the client's retries
+            logger.error("Failed to fetch gameweek %d: HTTP %d", gameweek_id, raw.status)
+            record_fetch_failed(raw_writer, endpoint, raw)
+            fetch_failed += 1
+            continue
+        if routed.response_class is not ResponseClass.VALID:
             logger.error(
-                "Gameweek %d payload failed shape validation (%s); writing it anyway",
+                "Gameweek %d response is %s (%s); kept at %s, not as a payload; "
+                "ratification marker withheld, the next run retries it",
                 gameweek_id,
+                routed.response_class.value,
                 ", ".join(shape["failures"]),
+                write.payload_key,
             )
-        else:
-            validated += 1
-        write = raw_writer.write_object(
-            endpoint,
-            raw.body,
-            request_url=raw.url,
-            requested_at=raw.requested_at,
-            received_at=raw.received_at,
-            http_status=raw.status,
-            response_headers=raw.headers,
-            attempt_count=raw.attempt_count,
-            shape_validation=shape,
-        )
+            continue
+        validated += 1
         payload_keys.append(write.payload_key)
         logger.info(
             "Captured gameweek %d: %d bytes -> %s",
@@ -208,7 +209,7 @@ async def ingest_gameweeks(
             write.content_length,
             write.payload_key,
         )
-        if shape["ok"] and not ict_ready(_live_stats_rows(raw)):
+        if not ict_ready(_live_stats_rows(raw)):
             logger.warning(
                 "Gameweek %d captured but ICT not yet populated; ratification marker "
                 "withheld, the next run retries",
@@ -217,23 +218,17 @@ async def ingest_gameweeks(
             raw_writer.record_marker_withheld(
                 _MARKER_ENDPOINT, event=gameweek_id, reason=ICT_NOT_READY_REASON
             )
-        elif shape["ok"]:
-            _record_ratified_capture(raw_writer, gameweek_id, write.payload_key)
         else:
-            logger.warning(
-                "Gameweek %d ratification marker withheld; the next run retries it",
-                gameweek_id,
-            )
+            _record_ratified_capture(raw_writer, gameweek_id, write.payload_key)
 
     # StageResult counts objects here, not rows: one captured object per
-    # gameweek. Its invariants (fetched >= validated >= written, skipped ==
-    # fetched - validated) mean a shape failure must be reported as not
-    # validated and not written even though the payload was deliberately still
-    # written to raw storage — the sidecar's shape_validation field is where
-    # that fact lives. Run status comes from the writer, which counts those
-    # payloads as not usable without discounting the gameweeks that captured
-    # cleanly; skipped > 0 is what strict mode aborts on.
-    fetched_count = len(fetched)
+    # gameweek. An invalid response is reported as not validated and not
+    # written (it is kept under ``fpl/_invalid/``, never as ``payload.json``);
+    # run status comes from the writer, which counts it as failed without
+    # discounting the gameweeks that captured cleanly. skipped > 0 is what
+    # strict mode aborts on. A failed fetch is an error, not a fetched object.
+    error_count += fetch_failed
+    fetched_count = len(fetched) - fetch_failed
     return StageOutcome(
         result=StageResult(
             stage="gameweeks",

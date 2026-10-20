@@ -78,6 +78,7 @@ from fpl_ingest.extract.http.client import (
     cancel_pending_tasks,
 )
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
+from fpl_ingest.extract.http.response_router import ResponseClass, record_fetch_failed, route_response
 from fpl_ingest.extract.http.raw_keys import (
     SETTLEMENT_PREFIX,
     iso_utc,
@@ -152,8 +153,8 @@ async def ingest_player_histories(
         stage no longer produces rows. Each player whose payload fails shape
         validation contributes one ``skipped`` (strict mode aborts on it) and
         is counted as not usable by the writer, while every other player
-        still counts as written;
-        the payload is written either way.
+        still counts as written; an invalid body is kept under
+        ``fpl/_invalid/``, never as ``payload.json``.
     """
     if execution_state is not None and execution_state.is_failed:
         logger.info("Fail-fast tripped; skipping element-summary capture")
@@ -231,46 +232,43 @@ async def ingest_player_histories(
 
     payload_keys: list[str] = []
     validated = 0
+    fetch_failed = 0
     for player_id in sorted(fetched):
         raw = fetched[player_id]
         endpoint = raw_endpoint(player_id)
         shape = validate_element_summary_shape(raw)
-        if not shape["ok"]:
+        routed = route_response(raw_writer, endpoint, raw, shape)
+        write = routed.write
+        if write is None:  # a 429 or 5xx that outlived the client's retries
+            logger.error("Failed to fetch player %d: HTTP %d", player_id, raw.status)
+            record_fetch_failed(raw_writer, endpoint, raw)
+            fetch_failed += 1
+        elif routed.response_class is not ResponseClass.VALID:
             logger.error(
-                "Player %d payload failed shape validation (%s); writing it anyway",
+                "Player %d response is %s (%s); kept at %s, not as a payload",
                 player_id,
+                routed.response_class.value,
                 ", ".join(shape["failures"]),
+                write.payload_key,
             )
         else:
             validated += 1
-        write = raw_writer.write_object(
-            endpoint,
-            raw.body,
-            request_url=raw.url,
-            requested_at=raw.requested_at,
-            received_at=raw.received_at,
-            http_status=raw.status,
-            response_headers=raw.headers,
-            attempt_count=raw.attempt_count,
-            shape_validation=shape,
-        )
-        payload_keys.append(write.payload_key)
-        logger.debug(
-            "Captured player %d: %d bytes -> %s",
-            player_id,
-            write.content_length,
-            write.payload_key,
-        )
+            payload_keys.append(write.payload_key)
+            logger.debug(
+                "Captured player %d: %d bytes -> %s",
+                player_id,
+                write.content_length,
+                write.payload_key,
+            )
 
     # StageResult counts objects here, not rows: one captured object per
-    # player. Its invariants (fetched >= validated >= written, skipped ==
-    # fetched - validated) mean a shape failure must be reported as not
-    # validated and not written even though the payload was deliberately
-    # still written to raw storage — the sidecar's shape_validation field is
-    # where that fact lives. Run status comes from the writer, which counts
-    # those payloads as not usable without discounting the players that
-    # captured cleanly; skipped > 0 is what strict mode aborts on.
-    fetched_count = len(fetched)
+    # player. An invalid response is reported as not validated and not written
+    # (it is kept under ``fpl/_invalid/``, never as ``payload.json``); run
+    # status comes from the writer, which counts it as failed without
+    # discounting the players that captured cleanly. skipped > 0 is what
+    # strict mode aborts on. A failed fetch is an error, not a fetched object.
+    error_count += fetch_failed
+    fetched_count = len(fetched) - fetch_failed
     if settlement_event_id is not None:
         complete = error_count == 0 and validated == len(player_ids_to_fetch)
         if complete and not ict_ready(_history_rows(fetched.values(), settlement_event_id)):

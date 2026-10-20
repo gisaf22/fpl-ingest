@@ -2,12 +2,14 @@
 #
 # Production writes come only from scheduled runs, so the first live draw of
 # the 2026-27 manager panel gets two single-date cron slots:
-#   - 2026-10-20 09:30 UTC: slot 1, draws the panel and captures each kept
+#   - 2026-10-20 03:30 UTC: slot 1, draws the panel and captures each kept
 #     manager's entry-history.
-#   - 2026-10-21 09:30 UTC: slot 2, the rerun check. It must make zero
+#   - 2026-10-20 03:45 UTC: slot 2, the rerun check. It must make zero
 #     entry-history requests and leave the panel object unchanged.
+#     The slots share one concurrency group (queued, never cancelled), so a
+#     late-starting slot 1 cannot be overlapped by slot 2.
 #
-# DELETE THIS FILE by 2026-10-22 (cleanup PR, tracked on #102). A day-month
+# DELETE THIS FILE by 2026-10-21 (cleanup PR, tracked on #102). A day-month
 # cron fires every year: left in place it would draw the 2027-28 panel
 # unattended on 2027-10-20.
 #
@@ -19,8 +21,8 @@ name: Scheduled Ingestion — Manager Panel (one-off, #102)
 
 on:
   schedule:
-    - cron: "30 9 20 10 *"
-    - cron: "30 9 21 10 *"
+    - cron: "30 3 20 10 *"
+    - cron: "45 3 20 10 *"
 
 permissions:
   id-token: write
@@ -35,7 +37,7 @@ jobs:
     # Scheduled runs always execute on the default branch; the ref check is a second guard.
     if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Measured run is ~200 s; this bounds a hang well before the next slot.
+    # Measured run is ~200 s; 15 min bounds a hang. A queued slot 2 waits for it.
     timeout-minutes: 15
 
     env:

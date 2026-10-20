@@ -109,13 +109,14 @@ class TestSomethingUsableSomethingFailedIsPartial:
         assert _manifest(raw)["status"] == "PARTIAL"
 
     @pytest.mark.covers("#48 AC2")
-    def test_shape_invalid_payload_alongside_valid_captures_is_partial_and_is_kept(self, tmp_path):
+    def test_shape_invalid_payload_alongside_valid_captures_is_partial_and_is_kept_apart(self, tmp_path):
         raw = tmp_path / "raw"
         client = _make_async_client()
         _shape_invalid_fixtures(client)
         _run(raw, client)
 
-        assert sorted((raw / "fpl" / "fixtures").rglob("payload.json"))
+        assert not sorted((raw / "fpl" / "fixtures").rglob("payload.json"))
+        assert sorted((raw / "fpl" / "_invalid" / "shape_invalid" / "fixtures").rglob("response.body"))
         assert _manifest(raw)["status"] == "PARTIAL"
 
     @pytest.mark.covers("#48 AC2")
@@ -166,7 +167,7 @@ class TestNothingUsableIsFailed:
         assert _manifest(raw)["status"] == "FAILED"
 
     @pytest.mark.covers("#48 AC3")
-    def test_run_whose_only_written_payload_fails_its_shape_check_is_failed(self, tmp_path):
+    def test_run_whose_only_stored_response_fails_its_shape_check_is_failed(self, tmp_path):
         raw = tmp_path / "raw"
         client = _make_async_client()
         client.get_bootstrap_raw = AsyncMock(side_effect=FPLClientError("503 after retries"))
@@ -174,7 +175,8 @@ class TestNothingUsableIsFailed:
 
         _run(raw, client, "pre-deadline", "--force")
 
-        assert len(sorted((raw / "fpl").rglob("payload.json"))) == 1
+        assert sorted((raw / "fpl").rglob("payload.json")) == []
+        assert len(sorted((raw / "fpl").rglob("response.body"))) == 1
         assert _manifest(raw)["status"] == "FAILED"
 
 

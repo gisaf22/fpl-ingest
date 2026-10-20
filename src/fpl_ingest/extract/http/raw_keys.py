@@ -18,7 +18,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-RAW_CONTRACT_VERSION = "2.4.0"
+RAW_CONTRACT_VERSION = "2.5.0"
 
 #: Prefix every key carries in the capture bucket. The keys built here are
 #: relative to it; ``bucket_key`` adds it, whatever the storage backend.
@@ -32,6 +32,15 @@ CATALOG_PREFIX = "_catalog"
 #: The job's own panel files (#102). The only prefix a backend may read back.
 PANELS_PREFIX = "_panels"
 PANEL_FILENAME = "manager-panel.json"
+#: Reserved sibling of the endpoint prefixes holding responses that are not a
+#: valid capture, one subtree per class (#54). No endpoint segment can start
+#: with an underscore, and the body is never named ``payload.*``, so a glob for
+#: payloads cannot match anything here.
+INVALID_PREFIX = "_invalid"
+INVALID_CLASSES = ("not_found", "shape_invalid", "http_error")
+#: The verbatim body of an invalid response. No extension: its content type is
+#: in the sidecar, and it need not be JSON.
+INVALID_BODY_FILENAME = "response.body"
 PAYLOAD_STEM = "payload"
 METADATA_FILENAME = "metadata.json"
 MANIFEST_FILENAME = "manifest.json"
@@ -86,6 +95,22 @@ def payload_key(
 def metadata_key(source: str, endpoint: str, extraction_date: str, run_id: str) -> str:
     """Return the key for an object's per-object metadata sidecar."""
     return f"{object_prefix(source, endpoint, extraction_date, run_id)}/{METADATA_FILENAME}"
+
+
+def invalid_prefix(
+    source: str, response_class: str, endpoint: str, extraction_date: str, run_id: str
+) -> str:
+    """Return the key prefix holding one invalid response of ``endpoint``.
+
+    Mirrors the endpoint's own key tail under ``{source}/_invalid/{class}/``.
+    """
+    if response_class not in INVALID_CLASSES:
+        raise RawKeyError(f"not an invalid-response class: {response_class!r}")
+    validate_source(source)
+    validate_endpoint(endpoint)
+    validate_extraction_date(extraction_date)
+    validate_run_id(run_id)
+    return f"{source}/{INVALID_PREFIX}/{response_class}/{endpoint}/{extraction_date}/{run_id}"
 
 
 def manifest_key(source: str, extraction_date: str, run_id: str) -> str:

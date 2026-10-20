@@ -20,6 +20,7 @@ from typing import Any
 
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.http.response_router import ResponseClass, route_response
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.stage_result import (
@@ -62,9 +63,10 @@ async def ingest_fixtures(
 
     Returns:
         StageOutcome whose result counts captured objects, not rows — this
-        stage no longer produces rows. A shape-validation failure reports
-        ``skipped=1``, which strict mode aborts on; the payload is written
-        regardless, and the writer counts it as not usable.
+        stage no longer produces rows. An invalid response (a non-2xx status or
+        a failed shape check) reports ``skipped=1``, which strict mode aborts
+        on; it is kept under ``fpl/_invalid/``, never as ``payload.json``, and
+        the writer counts the endpoint as failed.
     """
     if execution_state is not None and execution_state.is_failed:
         logger.info("Fail-fast tripped; skipping fixtures capture")
@@ -84,42 +86,38 @@ async def ingest_fixtures(
         return StageOutcome(result=StageResult(stage="fixtures", errors=1))
 
     shape = validate_fixtures_shape(raw)
-    if not shape["ok"]:
+    routed = route_response(raw_writer, RAW_ENDPOINT, raw, shape)
+    write = routed.write
+    if write is None:  # a 429 or 5xx that outlived the client's retries
+        logger.error("Failed to fetch fixtures: HTTP %d", raw.status)
+        raw_writer.record_failure(
+            RAW_ENDPOINT,
+            request_url=raw.url,
+            error_class="FetchFailed",
+            http_status=raw.status,
+            attempt_count=raw.attempt_count,
+            message=f"HTTP {raw.status}",
+        )
+        return StageOutcome(result=StageResult(stage="fixtures", errors=1))
+
+    if routed.response_class is not ResponseClass.VALID:
         logger.error(
-            "Fixtures payload failed shape validation (%s); writing it anyway",
+            "Fixtures response is %s (%s); kept at %s, not as a payload",
+            routed.response_class.value,
             ", ".join(shape["failures"]),
+            write.payload_key,
+        )
+        # Counted as skipped, which strict mode aborts on. Nothing usable was
+        # written, so the writer has already marked the endpoint failed.
+        return StageOutcome(
+            result=StageResult(stage="fixtures", fetched=1, skipped=1),
+            lineage=StageLineage.from_metadata(FIXTURES_STAGE, raw_artifacts=()),
         )
 
-    write = raw_writer.write_object(
-        RAW_ENDPOINT,
-        raw.body,
-        request_url=raw.url,
-        requested_at=raw.requested_at,
-        received_at=raw.received_at,
-        http_status=raw.status,
-        response_headers=raw.headers,
-        attempt_count=raw.attempt_count,
-        shape_validation=shape,
-    )
     logger.info(
         "Captured fixtures: %d bytes -> %s", write.content_length, write.payload_key
     )
-
-    # StageResult counts objects here, not rows: one captured object per run.
-    # Its invariants (fetched >= validated >= written, skipped == fetched -
-    # validated) mean a shape failure must be reported as validated=0/written=0
-    # even though the payload was deliberately still written to raw storage —
-    # the sidecar's shape_validation field is where that fact lives. Run status
-    # comes from the writer, which counts that payload as not usable; skipped=1
-    # is what strict mode aborts on.
-    ok = bool(shape["ok"])
-    result = StageResult(
-        stage="fixtures",
-        fetched=1,
-        validated=1 if ok else 0,
-        written=1 if ok else 0,
-        skipped=0 if ok else 1,
-    )
+    result = StageResult(stage="fixtures", fetched=1, validated=1, written=1)
     return StageOutcome(
         result=result,
         lineage=StageLineage.from_metadata(

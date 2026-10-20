@@ -144,3 +144,27 @@ def test_flag_overrides_the_env_var(_no_config_file, monkeypatch):
     args = build_parser().parse_args(["run", "--http-error-streak", "2"])
 
     assert resolve_http_error_streak(args.http_error_streak) == 2
+
+
+@pytest.mark.covers("#109 AC7")
+def test_abort_logs_the_streak_length_threshold_and_last_status(tmp_path, caplog):
+    writer = _writer(tmp_path, http_error_streak=4)
+
+    with caplog.at_level("WARNING"):
+        _feed(writer, [FORBIDDEN] * 4)
+
+    lines = [r.getMessage() for r in caplog.records if "aborted_http_error_streak" in r.getMessage()]
+    assert len(lines) == 1
+    assert "streak=4" in lines[0]
+    assert "threshold=4" in lines[0]
+    assert "last_status=403" in lines[0]
+
+
+@pytest.mark.covers("#109 AC7")
+def test_abort_is_logged_once_however_many_responses_follow(tmp_path, caplog):
+    writer = _writer(tmp_path, http_error_streak=2)
+
+    with caplog.at_level("WARNING"):
+        _feed(writer, [FORBIDDEN] * 5)
+
+    assert len([r for r in caplog.records if "aborted_http_error_streak" in r.getMessage()]) == 1

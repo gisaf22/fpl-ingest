@@ -143,6 +143,12 @@ output.
   cannot match it. Only the fixtures stage does this so far (#55 moves the rest), and an
   older or not-yet-moved stage still writes a failed response to `payload.json` with
   `usable: false`. `fetch_failed` (no response, or 429/5xx after retries) stores nothing.
+- **Invalid counts and aborts are on the finalized manifest** (#109, contract 2.6.0,
+  [ADR 004](docs/adr/004-failure-classification.md)): `invalid_counts`
+  `{not_found, shape_invalid, http_error}`, zero-filled, and `abort_reason`
+  (`aborted_http_error_streak`) when the run stopped itself after N consecutive
+  `http_error` responses (default 10; `--http-error-streak` / `FPL_HTTP_ERROR_STREAK`).
+  `abort_reason` is absent otherwise, and manifests before 2.6.0 have neither key.
 - **`season` is on every 2.1.0 sidecar and capture entry**, derived from the same run's
   bootstrap-static (the deadline year of its lowest-id event). It is `null`, logged at ERROR
   as `season_source=none`, when the run had no usable bootstrap; there is no fallback. The

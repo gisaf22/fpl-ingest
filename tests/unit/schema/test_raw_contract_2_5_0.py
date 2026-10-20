@@ -14,7 +14,7 @@ from fpl_ingest.extract.http.client import RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.extract.http.response_router import route_response
 
-CONTRACT_DIR = Path(__file__).resolve().parents[3] / "schemas" / "raw-contract" / "2.5.0"
+CONTRACT_DIR = Path(__file__).resolve().parents[3] / "schemas" / "raw-contract" / "2.6.0"  # the writer now emits 2.6.0, a superset of 2.5.0 (#109)
 INVALID_CLASSES = ("not_found", "shape_invalid", "http_error")
 FAILING = {"ok": False, "checks": ["http_status_2xx"], "failures": ["http_status_2xx: got 403"], "record_count": None}
 PASSING = {"ok": True, "checks": [], "failures": [], "record_count": 0}
@@ -52,11 +52,6 @@ def run_with_one_valid_and_one_invalid_capture(tmp_path):
 
 
 @pytest.mark.covers("#54 AC5")
-def test_the_contract_version_is_a_minor_bump_to_2_5_0():
-    assert raw_keys.RAW_CONTRACT_VERSION == "2.5.0"
-
-
-@pytest.mark.covers("#54 AC5")
 def test_the_invalid_response_location_and_its_classes_are_documented():
     text = "\n".join(
         path.read_text() for path in sorted(CONTRACT_DIR.iterdir()) if path.is_file()
@@ -68,10 +63,10 @@ def test_the_invalid_response_location_and_its_classes_are_documented():
 
 
 @pytest.mark.covers("#54 AC5")
-def test_written_sidecars_and_manifest_validate_against_2_5_0(run_with_one_valid_and_one_invalid_capture):
+def test_written_sidecars_and_manifest_validate_against_the_current_contract(run_with_one_valid_and_one_invalid_capture):
     root, manifest = run_with_one_valid_and_one_invalid_capture
 
-    assert manifest["raw_contract_version"] == "2.5.0"
+    assert manifest["raw_contract_version"] == raw_keys.RAW_CONTRACT_VERSION
     assert _errors("manifest", manifest) == []
     sidecars = sorted(root.rglob("metadata.json"))
     assert len(sidecars) == 2

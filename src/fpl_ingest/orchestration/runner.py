@@ -30,6 +30,7 @@ from time import perf_counter
 from typing import Any, TypeVar
 
 from fpl_ingest import __version__ as INGEST_VERSION
+from fpl_ingest.config import resolve_http_error_streak
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.origin import detect_origin
 from fpl_ingest.orchestration.run_status import (
@@ -462,6 +463,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     raw_writer = LocalRawWriter(
         config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend,
         origin=detect_origin(logger=logger), baseline_dir=getattr(config, "baseline_dir", None),
+        http_error_streak=resolve_http_error_streak(getattr(args, "http_error_streak", None)),
     )
 
     applied_rate = _resolve_applied_rate(logger, args.rate)
@@ -662,6 +664,7 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
         raw_writer = LocalRawWriter(
             config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend,
             origin=detect_origin(logger=logger), baseline_dir=getattr(config, "baseline_dir", None),
+        http_error_streak=resolve_http_error_streak(getattr(args, "http_error_streak", None)),
         )
         raw_writer.set_season(season_for_bootstrap(raw, logger))
         stage_results: list[StageResult] = []
@@ -720,6 +723,7 @@ async def run_manager_panel_capture(*, args, config, logger: logging.Logger) -> 
         raw_writer = LocalRawWriter(
             config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend,
             origin=detect_origin(logger=logger), baseline_dir=getattr(config, "baseline_dir", None),
+        http_error_streak=resolve_http_error_streak(getattr(args, "http_error_streak", None)),
         )
         season = season_for_bootstrap(raw, logger)
         raw_writer.set_season(season)

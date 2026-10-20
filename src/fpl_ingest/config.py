@@ -110,7 +110,12 @@ _DEFAULT_BASELINE_DIR: Path | None = BASELINE_DIR
 
 def resolve_http_error_streak(explicit: int | None = None) -> int:
     """Return the consecutive ``http_error`` limit: flag, then env var, then default (#109)."""
-    return DEFAULT_HTTP_ERROR_STREAK
+    env_val = os.environ.get("FPL_HTTP_ERROR_STREAK")
+    value = explicit if explicit is not None else int(env_val) if env_val else DEFAULT_HTTP_ERROR_STREAK
+    if value < 1:
+        # A zero or negative limit would switch the abort off or fire on the first response.
+        raise ValueError(f"http error streak must be at least 1, got {value}")
+    return value
 
 
 def resolve_baseline_dir() -> Path | None:

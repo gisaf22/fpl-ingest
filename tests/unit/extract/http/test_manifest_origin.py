@@ -34,7 +34,7 @@ USER_ARN = "arn:aws:iam::111122223333:user/safari-admin"
 ROOT_ARN = "arn:aws:iam::111122223333:root"
 
 SCHEMA_PATH = (
-    Path(__file__).resolve().parents[4] / "schemas" / "raw-contract" / "2.5.0" / "manifest.schema.json"
+    Path(__file__).resolve().parents[4] / "schemas" / "raw-contract" / "2.6.0" / "manifest.schema.json"
 )
 
 logger = logging.getLogger("test_manifest_origin")
@@ -190,7 +190,7 @@ def test_the_manifest_snapshot_carries_the_origin(tmp_path):
 def test_finalized_manifests_validate_against_the_current_contract(tmp_path, env):
     manifest = _finalized(tmp_path, _origin(env))
 
-    assert manifest["raw_contract_version"] == "2.5.0"
+    assert manifest["raw_contract_version"] == "2.6.0"
     assert _schema_errors(manifest) == []
 
 

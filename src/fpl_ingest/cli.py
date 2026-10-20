@@ -62,6 +62,15 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
             raise argparse.ArgumentTypeError(f"must be positive, got {parsed}")
         return parsed
 
+    def positive_int(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"expected a positive integer, got {value!r}") from exc
+        if parsed < 1:
+            raise argparse.ArgumentTypeError(f"must be at least 1, got {parsed}")
+        return parsed
+
     config = config or default_config()
 
     def add_shared_arguments(target: argparse.ArgumentParser, *, suppress_defaults: bool) -> None:
@@ -98,7 +107,7 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
             help="Abort the run if any stage reports skipped rows or fetch errors.",
         )
         target.add_argument(
-            "--http-error-streak", type=int, default=default, metavar="N",
+            "--http-error-streak", type=positive_int, default=default, metavar="N",
             help="Abort the run after N consecutive HTTP error responses (#109).",
         )
         target.add_argument(

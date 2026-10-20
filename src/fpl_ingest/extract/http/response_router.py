@@ -103,6 +103,21 @@ def route_response(
     return RoutedResponse(response_class, write)
 
 
+def record_fetch_failed(raw_writer: LocalRawWriter, endpoint: str, raw: RawResponse) -> None:
+    """Record the manifest failure for a 429 or 5xx that outlived the client's retries.
+
+    ``route_response`` stored nothing for it, so the failure is the only trace.
+    """
+    raw_writer.record_failure(
+        endpoint,
+        request_url=raw.url,
+        error_class="FetchFailed",
+        http_status=raw.status,
+        attempt_count=raw.attempt_count,
+        message=f"HTTP {raw.status}",
+    )
+
+
 def _reason(response_class: ResponseClass, status: int, shape: Mapping[str, Any] | None) -> str:
     if response_class is ResponseClass.SHAPE_INVALID:
         failures = (shape or {}).get("failures") or []

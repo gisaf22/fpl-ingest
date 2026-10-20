@@ -29,6 +29,7 @@ from typing import Any, NamedTuple
 
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
+from fpl_ingest.extract.http.response_router import ResponseClass, record_fetch_failed, route_response
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.extract.season import resolve_season
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
@@ -105,8 +106,9 @@ async def ingest_core_data(
     Returns:
         StageOutcome whose result counts captured objects, not rows — this
         stage no longer produces rows. A shape-validation failure reports
-        ``skipped=1``, which strict mode aborts on; the payload is written
-        regardless, and the writer counts it as not usable. The output carries the downstream
+        ``skipped=1``, which strict mode aborts on; the body is kept under
+        ``fpl/_invalid/``, never as ``payload.json``, and the writer counts the
+        endpoint as failed. The output carries the downstream
         handoff, empty when nothing was captured.
     """
     if execution_state is not None and execution_state.is_failed:
@@ -156,37 +158,35 @@ def capture_bootstrap_raw(raw: RawResponse, raw_writer: LocalRawWriter) -> Stage
     sidecar, shape validation, and result accounting as the full run.
     """
     shape = validate_bootstrap_shape(raw)
-    if not shape["ok"]:
-        logger.error(
-            "bootstrap-static payload failed shape validation (%s); writing it anyway",
-            ", ".join(shape["failures"]),
+    routed = route_response(raw_writer, RAW_ENDPOINT, raw, shape)
+    write = routed.write
+    if write is None:  # a 429 or 5xx that outlived the client's retries
+        logger.error("Failed to fetch bootstrap-static: HTTP %d", raw.status)
+        record_fetch_failed(raw_writer, RAW_ENDPOINT, raw)
+        return StageOutcome(
+            result=StageResult(stage="core", errors=1),
+            output=CoreData(events=[], player_ids=[]),
         )
 
-    write = raw_writer.write_object(
-        RAW_ENDPOINT,
-        raw.body,
-        request_url=raw.url,
-        requested_at=raw.requested_at,
-        received_at=raw.received_at,
-        http_status=raw.status,
-        response_headers=raw.headers,
-        attempt_count=raw.attempt_count,
-        shape_validation=shape,
-    )
-    logger.info(
-        "Captured bootstrap-static: %d bytes -> %s",
-        write.content_length,
-        write.payload_key,
-    )
+    ok = routed.response_class is ResponseClass.VALID
+    if ok:
+        logger.info(
+            "Captured bootstrap-static: %d bytes -> %s",
+            write.content_length,
+            write.payload_key,
+        )
+    else:
+        logger.error(
+            "bootstrap-static response is %s (%s); kept at %s, not as a payload",
+            routed.response_class.value,
+            ", ".join(shape["failures"]),
+            write.payload_key,
+        )
 
     # StageResult counts objects here, not rows: one captured object per run.
-    # Its invariants (fetched >= validated >= written, skipped == fetched -
-    # validated) mean a shape failure must be reported as validated=0/written=0
-    # even though the payload was deliberately still written to raw storage —
-    # the sidecar's shape_validation field is where that fact lives. Run status
-    # comes from the writer, which counts that payload as not usable; skipped=1
-    # is what strict mode aborts on.
-    ok = bool(shape["ok"])
+    # An invalid response is reported as validated=0/written=0 and skipped=1,
+    # which strict mode aborts on; it is kept under ``fpl/_invalid/``, never as
+    # ``payload.json``, and the writer counts the endpoint as failed.
     result = StageResult(
         stage="core",
         fetched=1,
@@ -198,7 +198,7 @@ def capture_bootstrap_raw(raw: RawResponse, raw_writer: LocalRawWriter) -> Stage
         result=result,
         output=core_handoff(raw),
         lineage=StageLineage.from_metadata(
-            CORE_STAGE, raw_artifacts=(write.payload_key,)
+            CORE_STAGE, raw_artifacts=(write.payload_key,) if ok else ()
         ),
     )
 

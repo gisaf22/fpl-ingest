@@ -121,7 +121,7 @@ output.
   `attempted`, `usable`, `failed`, `outcome` and `failures` (every one with a `reason`).
   - **written vs usable:** `objects[...].written` counts payloads stored; `endpoints[...].usable`
     counts payloads stored *and* passing their shape check, so a shape-invalid capture is
-    written but not usable.
+    written (under `_invalid`, since #54/#55) but not usable.
   - **SUCCESS:** everything attempted is usable.
   - **PARTIAL:** some usable, some failed.
   - **FAILED:** nothing usable — including an endpoint not attempted because an earlier stage
@@ -140,9 +140,10 @@ output.
   `metadata.json` beside it. `class` is `not_found`, `shape_invalid` or `http_error`,
   and the sidecar records `class` and `reason`. Its `captures[]` entry has `usable:
   false` and the `class`, and its endpoint counts as failed. A glob for `payload.json`
-  cannot match it. Only the fixtures stage does this so far (#55 moves the rest), and an
-  older or not-yet-moved stage still writes a failed response to `payload.json` with
-  `usable: false`. `fetch_failed` (no response, or 429/5xx after retries) stores nothing.
+  cannot match it. Every stage but the manager panel does this (fixtures from #54, bootstrap-static,
+  event-status, event-live and element-summary from #55); captures from before then may
+  still hold a failed response at `payload.json` with `usable: false`, and the manager
+  panel's direct write still does (#103 moves it). `fetch_failed` (no response, or 429/5xx after retries) stores nothing.
 - **Invalid counts and aborts are on the finalized manifest** (#109, contract 2.6.0,
   [ADR 004](docs/adr/004-failure-classification.md)): `invalid_counts`
   `{not_found, shape_invalid, http_error}`, zero-filled, and `abort_reason`

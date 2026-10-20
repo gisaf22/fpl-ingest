@@ -157,9 +157,18 @@ def test_an_unavailable_check_records_its_reason(tmp_path, baselines):
 
 @pytest.mark.covers("#85 AC1")
 def test_mixed_ok_and_unavailable_is_unavailable_with_the_entries_that_ran(tmp_path, baselines):
-    client = _client(copy.deepcopy(CLEAN), per_player={1: _summary(brand_new="x"), 2: b"<html>"})
+    # Written through the writer: since #55 no stage stores a non-JSON body as a
+    # payload, so this mix can no longer arrive through a run.
+    writer = LocalRawWriter(tmp_path / "raw", "fpl", baseline_dir=baselines)
+    at = datetime(2026, 10, 7, tzinfo=timezone.utc)
+    verdict = {"ok": True, "checks": [], "failures": []}
+    for player, body in ((1, json.dumps(_summary(brand_new="x")).encode()), (2, b"<html>")):
+        writer.write_object(
+            f"element-summary/{player}", body, request_url="u",
+            requested_at=at, received_at=at, http_status=200, shape_validation=verdict,
+        )
 
-    _, manifest = _run(tmp_path, client)
+    manifest = writer.finalize("PARTIAL").manifest
 
     drift = _drift(manifest, "element-summary")
     assert drift["status"] == "unavailable"

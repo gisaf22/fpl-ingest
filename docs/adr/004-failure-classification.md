@@ -1,7 +1,7 @@
 # ADR 004 — Failure classification and invalid-response storage
 
 Date: 2026-10-19
-Status: Accepted (#54). Extended by #55 (the other stages); streak abort and per-class counts added by #109.
+Status: Accepted (#54). Extended by #55 (the other four stages); streak abort and per-class counts added by #109.
 
 ## Context
 
@@ -65,8 +65,12 @@ stage with a limit of 1.
 `captures[]` entries, so `fetch_failed` is not counted and a spike shows without
 reading sidecars. Raw contract 2.6.0.
 
-The per-stage shape validators are unchanged; only the fixtures stage uses the
-router so far.
+The per-stage shape validators are unchanged. Fixtures (#54) and bootstrap-static,
+event-status, event-live and element-summary (#55) use the router. None declares
+`absence_ok`, so a 404 from any of them is `http_error`. An invalid event-live response
+earns no `_settlement/event-live` marker, and an invalid element-summary player is
+retried next run: neither lands in the payload tree the resume checks read. The manager
+panel's direct `write_object` call still bypasses it (#103).
 
 ## Alternatives Considered
 
@@ -89,5 +93,4 @@ router so far.
 - The strategy doc's earlier rule, "write the payload, record the failure, do not
   discard" (B.2), no longer holds for the stages on the router. The response is still
   kept and the failure still recorded, but not as a payload.
-- Remaining stages move onto the router in #55.
 - Count-only with no abort was rejected (#109): it hammers a blocked API and surfaces late.

@@ -155,21 +155,23 @@ class TestShapeValidation:
         assert verdict["ok"] is True
         assert verdict["record_count"] == 0
 
+    @pytest.mark.covers("#55 AC4")
     @pytest.mark.asyncio
-    async def test_shape_failure_still_writes_the_payload_and_yields_no_finality(self, tmp_path):
-        """The one unrecoverable mistake here would be discarding a surprising payload."""
+    async def test_shape_failure_keeps_the_body_apart_from_the_payload_and_yields_no_finality(self, tmp_path):
+        """A response that is not a dict is kept under _invalid with its status, never as payload.json."""
         raw = _raw(body=b"<html>502 Bad Gateway</html>")
         writer = _writer(tmp_path)
 
         outcome = await ingest_event_status(_client(raw), writer)
 
         root = tmp_path / "raw"
-        payload_path = root / "fpl" / "event-status" / writer.extraction_date / writer.run_id / "payload.json"
-        assert payload_path.read_bytes() == raw.body, "a failed payload must still be written"
-
-        sidecar = _read(
-            root, f"fpl/event-status/{writer.extraction_date}/{writer.run_id}/metadata.json"
-        )
+        raw_root = tmp_path / "raw"
+        assert not list(raw_root.glob("fpl/event-status/**/payload.json")), "an invalid response is never a payload"
+        (invalid_body,) = raw_root.glob("fpl/_invalid/shape_invalid/event-status/**/response.body")
+        assert invalid_body.read_bytes() == raw.body
+        sidecar = json.loads((invalid_body.parent / "metadata.json").read_text())
+        assert sidecar["http_status"] == raw.status
+        assert sidecar["class"] == "shape_invalid"
         assert sidecar["shape_validation"]["ok"] is False
         assert sidecar["shape_validation"]["failures"]
 

@@ -79,6 +79,9 @@ class TestBudget:
         assert classify_run(writer.endpoint_outcomes) == "SUCCESS", "a budget stop that captured something is not a failure"
         manifest = json.loads((root / writer.finalize("SUCCESS").manifest_key).read_text())
         assert manifest["stop_reason"] == "stopped_at_budget"
+        assert manifest["markers_withheld"] == [
+            {"endpoint": "entry-picks", "event": 1, "reason": "stopped_at_budget"}
+        ], "the manifest says why gameweek 1 will be fetched again"
 
     @pytest.mark.covers("#116 AC4")
     async def test_a_second_run_resumes_at_the_first_uncaptured_gameweek(self, tmp_path):
@@ -137,3 +140,31 @@ class TestThroughputRecord:
         assert throughput is not None, "expected a throughput record on the finalized manifest"
         assert {"requests_per_second", "total_seconds", "gameweeks_completed"} <= set(throughput)
         assert throughput["gameweeks_completed"] == [1]
+        assert throughput["requests"] == len(ENTRIES)
+        assert throughput["total_seconds"] > 0
+        assert throughput["requests_per_second"] == pytest.approx(throughput["requests"] / throughput["total_seconds"], rel=0.1)  # both are rounded to 3 places
+
+    @pytest.mark.covers("#116 AC5")
+    async def test_requests_do_not_count_entries_a_rerun_skipped(self, tmp_path):
+        root = tmp_path / "raw"
+        first_calls: list[int] = []
+
+        async def _fetch(gw: int, entry_id: int) -> RawResponse:
+            first_calls.append(entry_id)
+            if entry_id >= 115:  # five entries refused, so the gameweek stays unsettled
+                at = datetime(2026, 10, 19, 4, 30, tzinfo=timezone.utc)
+                return RawResponse(url="https://x/", status=403, headers={}, body=b"{}", requested_at=at, received_at=at)
+            return _ok()
+
+        await ingest_entry_picks(
+            MagicMock(get_entry_picks_raw=AsyncMock(side_effect=_fetch)), _writer(root, "20261019T043000Z-e00001"),
+            season=SEASON, entries=ENTRIES, gameweeks=[GW1],
+        )
+        assert len(first_calls) == 20
+
+        client = _slow_client(0.0)
+        writer = _writer(root, "20261019T050000Z-e00002")
+        await ingest_entry_picks(client, writer, season=SEASON, entries=ENTRIES, gameweeks=[GW1])
+        manifest = json.loads((root / writer.finalize("SUCCESS").manifest_key).read_text())
+
+        assert manifest["endpoints"]["entry-picks"]["throughput"]["requests"] == 5 == len(client.calls)

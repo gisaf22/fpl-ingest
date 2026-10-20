@@ -20,11 +20,11 @@ from fpl_ingest.extract.stages.entry_picks import validate_entry_picks_shape
 PICKS_15 = {"picks": [{"element": i, "position": i, "multiplier": 1} for i in range(1, 16)]}
 
 
-def _raw(body: object) -> RawResponse:
+def _raw(body: object, status: int = 200) -> RawResponse:
     at = datetime(2026, 10, 19, 4, 30, tzinfo=timezone.utc)
     payload = json.dumps(body).encode() if not isinstance(body, bytes) else body
     return RawResponse(
-        url="https://fantasy.premierleague.com/api/entry/x/event/y/picks/", status=200,
+        url="https://fantasy.premierleague.com/api/entry/x/event/y/picks/", status=status,
         headers={"content-type": "application/json"}, body=payload,
         requested_at=at, received_at=at, attempt_count=1,
     )
@@ -61,3 +61,18 @@ class TestShapeInvalid:
 
         assert shape["ok"] is False
         assert shape.get("failures")
+
+    @pytest.mark.covers("#116 AC15")
+    @pytest.mark.parametrize("status", [403, 404, 500])
+    def test_a_non_2xx_status_is_shape_invalid_whatever_the_body(self, status):
+        shape = validate_entry_picks_shape(_raw(PICKS_15, status=status))
+
+        assert shape["ok"] is False
+        assert any("http_status_2xx" in f for f in shape["failures"])
+
+    @pytest.mark.covers("#116 AC15")
+    def test_a_body_that_is_not_json_is_shape_invalid(self):
+        shape = validate_entry_picks_shape(_raw(b"<html>bad gateway</html>"))
+
+        assert shape["ok"] is False
+        assert any("body_parses_as_json" in f for f in shape["failures"])

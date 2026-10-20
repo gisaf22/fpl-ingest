@@ -42,6 +42,7 @@ GW1 = {"id": 1, "finished": True, "data_checked": True}
 GW2 = {"id": 2, "finished": True, "data_checked": True}
 GW_FINISHED_ONLY = {"id": 3, "finished": True, "data_checked": False}
 GW_NOT_FINISHED = {"id": 4, "finished": False, "data_checked": False}
+GW_CHECKED_NOT_FINISHED = {"id": 5, "finished": False, "data_checked": True}  # not a state the API reports, but never captured
 
 ENTRIES = [(RANDOM_A, COHORT_RANDOM), (SELF_ID, COHORT_SELF)]
 
@@ -123,7 +124,7 @@ class TestEligibility:
 
         await ingest_entry_picks(
             client, writer, season=SEASON, entries=ENTRIES,
-            gameweeks=[GW1, GW_FINISHED_ONLY, GW_NOT_FINISHED],
+            gameweeks=[GW1, GW_FINISHED_ONLY, GW_NOT_FINISHED, GW_CHECKED_NOT_FINISHED],
         )
 
         requested_gws = {gw for gw, _ in client.calls}
@@ -185,6 +186,18 @@ class TestNon2xxCohortHandling:
         assert manifest.get("invalid_counts", {}).get("not_found", 0) == 1
 
     @pytest.mark.covers("#116 AC9")
+    async def test_a_stored_random_cohort_404_does_not_block_the_gameweek_marker(self, tmp_path):
+        root = tmp_path / "raw"
+        writer = _writer(root, "20261019T043000Z-a10001")
+        client = _client({(1, RANDOM_A): _raw(404, b'{"detail":"Not found."}')})
+
+        await ingest_entry_picks(
+            client, writer, season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM), (RANDOM_B, COHORT_RANDOM)], gameweeks=[GW1],
+        )
+
+        assert (root / "fpl" / "_settlement" / "entry-picks" / "1" / "marker.json").exists()
+
+    @pytest.mark.covers("#116 AC9")
     async def test_a_rerun_skips_the_random_cohort_404_via_exists_prefix(self, tmp_path):
         root = tmp_path / "raw"
         first = _client({(1, RANDOM_A): _raw(404, b'{"detail":"Not found."}')})
@@ -237,6 +250,23 @@ class TestNon2xxCohortHandling:
         assert not any(f"/{RANDOM_A}/" in f for f in _files_under(root, "fpl"))
         assert not (root / "fpl" / "_settlement" / "entry-picks" / "1" / "marker.json").exists()
 
+    @pytest.mark.covers("#116 AC10")
+    async def test_an_unexpected_exception_is_recorded_as_a_failure_and_the_run_carries_on(self, tmp_path):
+        root = tmp_path / "raw"
+        writer = _writer(root, "20261019T043000Z-a10002")
+        client = _client({(1, RANDOM_A): RuntimeError("socket closed")})
+
+        await ingest_entry_picks(
+            client, writer, season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM), (RANDOM_B, COHORT_RANDOM)], gameweeks=[GW1],
+        )
+        manifest = _manifest(writer, root)
+
+        assert any(f"/{RANDOM_B}/" in f for f in _files_under(root, "fpl/entry-picks")), "the other entry is still captured"
+        failures = manifest["endpoints"]["entry-picks"]["failures"]
+        assert [f["endpoint"] for f in failures] == [raw_endpoint(SEASON, 1, RANDOM_A)]
+        assert manifest["status"] == "PARTIAL"
+        assert not (root / "fpl" / "_settlement" / "entry-picks" / "1" / "marker.json").exists()
+
 
 class TestSpikeCount:
 
@@ -257,6 +287,24 @@ class TestSpikeCount:
 
         counts = manifest.get("endpoints", {}).get("entry-picks", {}).get("non_2xx_by_gameweek")
         assert counts == {"1": 2}, f"expected a per-gameweek non-2xx count, got {counts!r}"
+
+    @pytest.mark.covers("#116 AC11")
+    async def test_the_count_leaves_out_a_200_that_failed_its_shape_check_and_counts_zero_for_a_quiet_gameweek(self, tmp_path):
+        root = tmp_path / "raw"
+        writer = _writer(root, "20261019T043000Z-a10003")
+        client = _client({
+            (1, RANDOM_A): _raw(404, b'{"detail":"Not found."}'),
+            (1, RANDOM_B): _raw(200, b'{"picks": []}'),
+        })
+        await ingest_entry_picks(
+            client, writer, season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM), (RANDOM_B, COHORT_RANDOM)], gameweeks=[GW1],
+        )
+        assert _manifest(writer, root)["endpoints"]["entry-picks"]["non_2xx_by_gameweek"] == {"1": 1}
+
+        quiet = _writer(tmp_path / "raw2", "20261019T050000Z-a10004")
+        await ingest_entry_picks(_client({}), quiet, season=SEASON, entries=ENTRIES, gameweeks=[GW1, GW2])
+        counts = _manifest(quiet, tmp_path / "raw2")["endpoints"]["entry-picks"]["non_2xx_by_gameweek"]
+        assert counts == {"1": 0, "2": 0}, "a clean gameweek reads as zero, not as absent"
 
 
 class TestResumeGranularityPerClass:

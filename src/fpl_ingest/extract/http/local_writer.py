@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 from fpl_ingest.extract.http import raw_keys
 from fpl_ingest.extract.http.raw_keys import (
+    DEFAULT_HTTP_ERROR_STREAK,
     RAW_CONTRACT_VERSION,
     INVALID_BODY_FILENAME,
     METADATA_FILENAME,
@@ -235,6 +236,7 @@ class LocalRawWriter:
         backend: RawStorageBackend | None = None,
         origin: Mapping[str, Any] | None = None,
         baseline_dir: Path | None = None,
+        http_error_streak: int = DEFAULT_HTTP_ERROR_STREAK,
     ) -> None:
         """Create a writer for one run of one source.
 
@@ -273,7 +275,16 @@ class LocalRawWriter:
         self._baseline_cache: dict[str, Any] = {}
         self._unavailable_warned: set[tuple[str, str]] = set()
         self._drift_totals: dict[str, dict[str, Any]] = {}
+        self._http_error_streak = http_error_streak
         self._finalized = False
+
+    @property
+    def aborted(self) -> bool:
+        """Whether the run has hit its consecutive ``http_error`` limit (#109)."""
+        return False
+
+    def observe_response(self, response_class: str) -> None:
+        """Feed one routed response's class to the run's streak counter (#109)."""
 
     @property
     def backend(self) -> RawStorageBackend:

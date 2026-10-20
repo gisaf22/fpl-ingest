@@ -98,6 +98,10 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
             help="Abort the run if any stage reports skipped rows or fetch errors.",
         )
         target.add_argument(
+            "--http-error-streak", type=int, default=default, metavar="N",
+            help="Abort the run after N consecutive HTTP error responses (#109).",
+        )
+        target.add_argument(
             "--verbose", "-v", action="store_true", default=default,
             help="Enable debug logging.",
         )

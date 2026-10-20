@@ -80,6 +80,7 @@ def route_response(
     """
     shape_ok = bool(shape and shape.get("ok"))
     response_class = classify_response(raw, shape_ok, absence_ok=absence_ok)
+    raw_writer.observe_response(response_class.value)
     if response_class is ResponseClass.FETCH_FAILED:
         return RoutedResponse(response_class, None)
 

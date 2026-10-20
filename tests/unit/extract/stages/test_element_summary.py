@@ -833,6 +833,20 @@ class TestErrorHandling:
         manifest = writer.manifest_snapshot
         assert manifest["totals"]["written"] == 3, "every payload is written, good or bad"
 
+    @pytest.mark.covers("#55 AC8")
+    @pytest.mark.asyncio
+    async def test_a_failed_fetch_is_an_error_not_a_fetched_object(self, tmp_path):
+        writer = _writer(tmp_path)
+        responses = {1: _raw(_payload(1), player_id=1), 2: _raw(player_id=2, status=503, body=b"")}
+
+        outcome = await ingest_player_histories(
+            _client(responses), writer, [1, 2], [], event_finality=None
+        )
+
+        assert (outcome.result.fetched, outcome.result.written, outcome.result.errors) == (1, 1, 1)
+        (failure,) = writer.manifest_snapshot["failures"]
+        assert (failure["endpoint"], failure["http_status"]) == ("element-summary/2", 503)
+
     @pytest.mark.asyncio
     async def test_non_strict_failure_captures_the_other_players(self, tmp_path):
         writer = _writer(tmp_path)

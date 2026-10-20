@@ -716,6 +716,21 @@ class TestErrorHandling:
             f"fpl/_invalid/shape_invalid/event-live/02/{writer.extraction_date}/{writer.run_id}/metadata.json",
         )["shape_validation"]["ok"] is False
 
+    @pytest.mark.covers("#55 AC8")
+    @pytest.mark.asyncio
+    async def test_a_failed_fetch_is_an_error_not_a_fetched_object(self, tmp_path):
+        writer = _writer(tmp_path)
+        responses = {1: _raw(_payload([1]), gw=1), 2: _raw(gw=2, status=503, body=b"")}
+
+        outcome = await ingest_gameweeks(
+            _client(responses), writer, [_event(gw, finished=True) for gw in (1, 2)],
+            event_finality=_settled(1, 2),
+        )
+
+        assert (outcome.result.fetched, outcome.result.written, outcome.result.errors) == (1, 1, 1)
+        (failure,) = writer.manifest_snapshot["failures"]
+        assert (failure["endpoint"], failure["http_status"]) == ("event-live/02", 503)
+
     @pytest.mark.asyncio
     async def test_non_strict_failure_captures_the_other_gameweeks(self, tmp_path):
         raw_dir = tmp_path / "raw"

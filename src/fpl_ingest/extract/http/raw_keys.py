@@ -18,7 +18,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-RAW_CONTRACT_VERSION = "2.6.0"
+RAW_CONTRACT_VERSION = "2.7.0"
 
 #: Consecutive ``http_error`` responses that abort a run (#109).
 DEFAULT_HTTP_ERROR_STREAK = 10

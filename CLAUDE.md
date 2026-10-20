@@ -140,10 +140,18 @@ output.
   `metadata.json` beside it. `class` is `not_found`, `shape_invalid` or `http_error`,
   and the sidecar records `class` and `reason`. Its `captures[]` entry has `usable:
   false` and the `class`, and its endpoint counts as failed. A glob for `payload.json`
-  cannot match it. Every stage but the manager panel does this (fixtures from #54, bootstrap-static,
-  event-status, event-live and element-summary from #55); captures from before then may
-  still hold a failed response at `payload.json` with `usable: false`, and the manager
-  panel's direct write still does (#103 moves it). `fetch_failed` (no response, or 429/5xx after retries) stores nothing.
+  cannot match it. Every stage does this (fixtures from #54, bootstrap-static,
+  event-status, event-live and element-summary from #55, the manager panel from #115); captures
+  from before then may still hold a failed response at `payload.json` with `usable: false`.
+  `fetch_failed` (no response, or 429/5xx after retries) stores nothing.
+- **An expected invalid capture is not a failure** (#115, contract 2.7.0, [ADR
+  004](docs/adr/004-failure-classification.md)). When the caller declared the outcome
+  legitimate for its request (the manager panel's random-cohort 404 and empty `current`),
+  the sidecar and the `captures[]` entry carry `expected: true`, and the endpoint's
+  `expected` count replaces a `failed`. Both are absent, never `false`, otherwise, and a
+  reader treats a missing count as zero and manifests before 2.7.0 as having none. The
+  capture is still `usable: false` and still in `invalid_counts`. An endpoint is SUCCESS
+  when nothing failed, so judge by `failed`, not by `usable == attempted`.
 - **Invalid counts and aborts are on the finalized manifest** (#109, contract 2.6.0,
   [ADR 004](docs/adr/004-failure-classification.md)): `invalid_counts`
   `{not_found, shape_invalid, http_error}`, zero-filled, and `abort_reason`

@@ -43,7 +43,9 @@ def _route(tmp_path: Path, outcome, verdict, **declared):
 
 
 def _keys(root: Path) -> list[str]:
-    return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+    return sorted(
+        str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and "_manifests" not in p.parts
+    )
 
 
 @pytest.mark.covers("#115 AC1")

@@ -17,6 +17,7 @@ from fpl_ingest.extract.http.response_router import route_response
 
 SCHEMAS = Path(__file__).resolve().parents[3] / "schemas" / "raw-contract" / "2.7.0"
 NO_PICKS = {"ok": False, "checks": [], "failures": ["current_is_empty"], "record_count": None, "outcome": "no_picks"}
+ORIGIN = {"kind": "local", "workflow": None, "ref": None, "github_run_id": None, "aws_principal": None}
 PASSING = {"ok": True, "checks": [], "failures": [], "record_count": 1}
 
 
@@ -32,7 +33,7 @@ def _run(tmp_path, *, with_expected: bool):
     at = datetime(2026, 10, 19, 8, 0, 0, tzinfo=timezone.utc)
     raw = RawResponse(url="https://x/api/entry/1/history/", status=200, headers={}, body=b"{}",
                       requested_at=at, received_at=at + timedelta(seconds=1))
-    writer = LocalRawWriter(tmp_path / "raw", "fpl")
+    writer = LocalRawWriter(tmp_path / "raw", "fpl", origin=ORIGIN)
     route_response(writer, "entry-history/2026-27/1", raw, PASSING)
     if with_expected:
         route_response(writer, "entry-history/2026-27/2", raw, NO_PICKS, expected=frozenset({"no_picks"}))

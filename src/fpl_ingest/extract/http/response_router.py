@@ -11,12 +11,17 @@ modelling's job (docs/adr/004-failure-classification.md).
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable, Mapping
 
 from fpl_ingest.extract.http.client import RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, WriteResult
+from fpl_ingest.extract.http.sync_http import FPLClientError
+
+logger = logging.getLogger(__name__)
 
 
 class ResponseClass(str, Enum):
@@ -35,6 +40,7 @@ class RoutedResponse:
 
     response_class: ResponseClass
     write: WriteResult | None
+    shape: Mapping[str, Any] | None = None
 
 
 def classify_response(
@@ -78,12 +84,17 @@ def route_response(
         absence_ok: The caller declares a 404 legitimate for this request.
             Per call, not per endpoint: entry-picks passes True for a
             random-cohort entry and False for the self cohort.
+        expected: Outcomes the caller declares legitimate for this request:
+            ``not_found`` for a declared 404, or the ``outcome`` a stage's shape
+            verdict names for a ``shape_invalid`` (the panel's ``no_picks``).
+            A declared invalid capture is stored and counted as usual but does
+            not mark its endpoint failed (ADR 004). Anything undeclared still does.
     """
     shape_ok = bool(shape and shape.get("ok"))
     response_class = classify_response(raw, shape_ok, absence_ok=absence_ok)
     raw_writer.observe_response(response_class.value, raw.status if raw is not None else 0)
     if response_class is ResponseClass.FETCH_FAILED:
-        return RoutedResponse(response_class, None)
+        return RoutedResponse(response_class, None, shape)
 
     assert raw is not None  # every other class has a response
     fields: dict[str, Any] = {
@@ -96,12 +107,38 @@ def route_response(
         "shape_validation": shape,
     }
     if response_class is ResponseClass.VALID:
-        return RoutedResponse(response_class, raw_writer.write_object(endpoint, raw.body, **fields))
+        return RoutedResponse(response_class, raw_writer.write_object(endpoint, raw.body, **fields), shape)
     write = raw_writer.write_invalid(
         endpoint, raw.body, response_class=response_class.value,
-        reason=_reason(response_class, raw.status, shape), **fields,
+        reason=_reason(response_class, raw.status, shape),
+        expected=_outcome(response_class, shape) in expected, **fields,
     )
-    return RoutedResponse(response_class, write)
+    return RoutedResponse(response_class, write, shape)
+
+
+def route_and_record(
+    raw_writer: LocalRawWriter,
+    endpoint: str,
+    raw: RawResponse,
+    shape: Mapping[str, Any],
+    *,
+    label: str,
+    absence_ok: bool = False,
+    expected: frozenset[str] = frozenset(),
+) -> RoutedResponse:
+    """Route a response and record the one outcome ``route_response`` leaves unrecorded (#115).
+
+    A 429 or 5xx that outlived the client's retries stores nothing, so its
+    manifest failure and log line are written here, once, for every stage.
+    ``label`` names the request in that log line ("gameweek 5"). The caller
+    keeps its own ``StageResult`` accounting and its log line for the other
+    classes.
+    """
+    routed = route_response(raw_writer, endpoint, raw, shape, absence_ok=absence_ok, expected=expected)
+    if routed.response_class is ResponseClass.FETCH_FAILED:
+        logger.error("Failed to fetch %s: HTTP %d", label, raw.status)
+        record_fetch_failed(raw_writer, endpoint, raw)
+    return routed
 
 
 async def fetch_and_route(
@@ -111,11 +148,43 @@ async def fetch_and_route(
     validate: Callable[[RawResponse], Mapping[str, Any]],
     *,
     request_url: str,
+    label: str | None = None,
     absence_ok: bool = False,
     expected: frozenset[str] = frozenset(),
 ) -> RoutedResponse:
-    """Fetch, classify, store and record one response: the tail every stage shares (#115 stub)."""
-    raise NotImplementedError("#115")
+    """Fetch, classify, store and record one response: the tail every stage shares (#115).
+
+    Covers all three ways a request ends: a response (routed by class), a 429 or
+    5xx that outlived the client's retries, and no response at all (recorded
+    under the exception's class). Both failures come back as ``fetch_failed``.
+
+    Args:
+        fetch: Performs the request.
+        validate: The stage's shape check for the response.
+        request_url: Recorded on a no-response failure, when there is no response to read it from.
+        label: Names the request in log lines; defaults to ``endpoint``.
+        absence_ok, expected: As for ``route_response``.
+    """
+    label = label or endpoint
+    try:
+        raw = await fetch()
+    except FPLClientError as exc:
+        record_no_response(raw_writer, endpoint, request_url=request_url, exc=exc, label=label)
+        return RoutedResponse(ResponseClass.FETCH_FAILED, None)
+    return route_and_record(
+        raw_writer, endpoint, raw, validate(raw), label=label, absence_ok=absence_ok, expected=expected
+    )
+
+
+def record_no_response(
+    raw_writer: LocalRawWriter, endpoint: str, *, request_url: str, exc: BaseException, label: str | None = None
+) -> None:
+    """Record the manifest failure for a request that got no response at all."""
+    if label is not None:
+        logger.error("Failed to fetch %s: %s", label, exc)
+    raw_writer.record_failure(
+        endpoint, request_url=request_url, error_class=type(exc).__name__, message=str(exc)
+    )
 
 
 def record_fetch_failed(raw_writer: LocalRawWriter, endpoint: str, raw: RawResponse) -> None:
@@ -131,6 +200,15 @@ def record_fetch_failed(raw_writer: LocalRawWriter, endpoint: str, raw: RawRespo
         attempt_count=raw.attempt_count,
         message=f"HTTP {raw.status}",
     )
+
+
+def _outcome(response_class: ResponseClass, shape: Mapping[str, Any] | None) -> str | None:
+    """Name the outcome a caller can declare expected, or None when none applies."""
+    if response_class is ResponseClass.NOT_FOUND:
+        return "not_found"
+    if response_class is ResponseClass.SHAPE_INVALID:
+        return (shape or {}).get("outcome")
+    return None
 
 
 def _reason(response_class: ResponseClass, status: int, shape: Mapping[str, Any] | None) -> str:

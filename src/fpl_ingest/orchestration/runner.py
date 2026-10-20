@@ -54,8 +54,9 @@ from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
 from fpl_ingest.extract.stages.element_summary import ingest_player_histories
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
-from fpl_ingest.extract.http.rate_config import MAX_RATE, normalize_rate
+from fpl_ingest.extract.http.rate_config import MAX_CONCURRENT_REQUESTS, MAX_RATE, normalize_rate
 from fpl_ingest.extract.http.rate_limiter import TokenBucketLimiter
+from fpl_ingest.extract.http.response_router import record_no_response
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.orchestration.pre_deadline import (
     PRE_DEADLINE_TRIGGER,
@@ -63,7 +64,6 @@ from fpl_ingest.orchestration.pre_deadline import (
     next_deadline,
 )
 
-_MAX_CONCURRENT_REQUESTS = 10
 _StageOutput = TypeVar("_StageOutput")
 
 # The full run's stages in execution order, each with the endpoint it captures.
@@ -467,7 +467,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     )
 
     applied_rate = _resolve_applied_rate(logger, args.rate)
-    rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)
+    rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=MAX_CONCURRENT_REQUESTS)
 
     event_finality: Finality | None = None
     git_sha = _current_git_sha(logger)
@@ -477,7 +477,7 @@ async def run_pipeline(*, args, config, logger: logging.Logger) -> int:
     try:
         async with AsyncFPLClient(
             rate_limiter=rate_limiter,
-            connector_limit=_MAX_CONCURRENT_REQUESTS,
+            connector_limit=MAX_CONCURRENT_REQUESTS,
         ) as client:
             # event-status is fetched first, but its sidecar must carry the
             # season, which only this run's bootstrap-static can give. So the
@@ -622,12 +622,12 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
     storage_backend = _build_storage_backend(config)
     run_start = datetime.now(timezone.utc)
     applied_rate = _resolve_applied_rate(logger, args.rate)
-    rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)
+    rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=MAX_CONCURRENT_REQUESTS)
     force = bool(getattr(args, "force", False))
 
     async with AsyncFPLClient(
         rate_limiter=rate_limiter,
-        connector_limit=_MAX_CONCURRENT_REQUESTS,
+        connector_limit=MAX_CONCURRENT_REQUESTS,
     ) as client:
         bootstrap_error: FPLClientError | None = None
         try:
@@ -671,11 +671,8 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
         if raw is not None:
             _record_stage(stage_results, logger, capture_bootstrap_raw(raw, raw_writer).result, strict=False)
         else:
-            raw_writer.record_failure(
-                BOOTSTRAP_ENDPOINT,
-                request_url=_ENDPOINTS["bootstrap"],
-                error_class=type(bootstrap_error).__name__,
-                message=str(bootstrap_error),
+            record_no_response(
+                raw_writer, BOOTSTRAP_ENDPOINT, request_url=_ENDPOINTS["bootstrap"], exc=bootstrap_error
             )
             _record_stage(stage_results, logger, StageResult(stage="core", errors=1), strict=False)
 
@@ -706,11 +703,11 @@ async def run_manager_panel_capture(*, args, config, logger: logging.Logger) -> 
     storage_backend = _build_storage_backend(config)
     run_start = datetime.now(timezone.utc)
     applied_rate = _resolve_applied_rate(logger, args.rate)
-    rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=_MAX_CONCURRENT_REQUESTS)
+    rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=MAX_CONCURRENT_REQUESTS)
 
     async with AsyncFPLClient(
         rate_limiter=rate_limiter,
-        connector_limit=_MAX_CONCURRENT_REQUESTS,
+        connector_limit=MAX_CONCURRENT_REQUESTS,
     ) as client:
         try:
             raw = await client.get_bootstrap_raw()

@@ -160,7 +160,7 @@ class TestAbortOnAStreakOfErrors:
         assert manifest["abort_reason"] == "aborted_http_error_streak"
         assert 10 <= len(client.calls) < 300, "no request is dispatched after the Nth"
         assert not _panel_path(raw).exists()
-        stored = {m.split("/")[4] for m in _under(raw, "fpl/_invalid/http_error") if m.endswith("response.body")}
+        stored = {m.split("/")[5] for m in _under(raw, "fpl/_invalid/http_error") if m.endswith("response.body")}
         assert len(stored) == len(client.calls), "responses in flight were still stored"
 
     @pytest.mark.covers("#115 AC5")

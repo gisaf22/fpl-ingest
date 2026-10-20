@@ -227,9 +227,9 @@ def test_written_manifests_and_sidecars_validate_against_2_4_0(tmp_path, baselin
 
     _, manifest = _run(tmp_path, _client(payloads))
 
-    assert manifest["raw_contract_version"] == "2.6.0"
+    assert manifest["raw_contract_version"] == "2.7.0"
     assert raw_contract_schema.errors("manifest", manifest) == []
     for sidecar_path in (tmp_path / "raw" / "fpl").rglob("metadata.json"):
         sidecar = json.loads(sidecar_path.read_text())
-        assert sidecar["raw_contract_version"] == "2.6.0"
+        assert sidecar["raw_contract_version"] == "2.7.0"
         assert raw_contract_schema.errors("sidecar", sidecar) == [], sidecar_path

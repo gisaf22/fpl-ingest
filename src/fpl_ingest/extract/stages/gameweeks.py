@@ -58,7 +58,7 @@ from fpl_ingest.extract.http.local_writer import (
     RawObjectExistsError,
     RawStorageBackend,
 )
-from fpl_ingest.extract.http.response_router import ResponseClass, record_fetch_failed, route_response
+from fpl_ingest.extract.http.response_router import ResponseClass, record_no_response, route_and_record
 from fpl_ingest.extract.http.raw_keys import (
     SETTLEMENT_PREFIX,
     iso_utc,
@@ -184,11 +184,9 @@ async def ingest_gameweeks(
         raw = fetched[gameweek_id]
         endpoint = raw_endpoint(gameweek_id)
         shape = validate_gameweek_shape(raw)
-        routed = route_response(raw_writer, endpoint, raw, shape)
+        routed = route_and_record(raw_writer, endpoint, raw, shape, label=f"gameweek {gameweek_id}")
         write = routed.write
         if write is None:  # a 429 or 5xx that outlived the client's retries
-            logger.error("Failed to fetch gameweek %d: HTTP %d", gameweek_id, raw.status)
-            record_fetch_failed(raw_writer, endpoint, raw)
             fetch_failed += 1
             continue
         if routed.response_class is not ResponseClass.VALID:
@@ -516,11 +514,8 @@ def _record_fetch_failure(
     raw_writer: LocalRawWriter, gameweek_id: int, exc: BaseException
 ) -> None:
     """Record one gameweek's failed capture in the shared run manifest."""
-    raw_writer.record_failure(
-        raw_endpoint(gameweek_id),
-        request_url=_ENDPOINTS["live"].format(gw=gameweek_id),
-        error_class=type(exc).__name__,
-        message=str(exc),
+    record_no_response(
+        raw_writer, raw_endpoint(gameweek_id), request_url=_ENDPOINTS["live"].format(gw=gameweek_id), exc=exc
     )
 
 

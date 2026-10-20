@@ -95,3 +95,16 @@ def test_a_404_defaults_to_an_error_when_the_caller_says_nothing(tmp_path):
 
     assert routed.response_class == "http_error"
     assert all(key.startswith(f"{INVALID_ROOT}/http_error/fixtures/") for key in _written_keys(tmp_path / "raw"))
+
+
+@pytest.mark.covers("#54 AC9")
+@pytest.mark.parametrize("verdict", [None, PASSING], ids=["no_verdict", "passing_verdict"])
+def test_an_invalid_capture_is_unusable_whatever_verdict_the_stage_passed(tmp_path, verdict):
+    """The index must never call a stored 403 usable because its verdict was missing or clean."""
+    writer = LocalRawWriter(tmp_path / "raw", "fpl")
+
+    route_response(writer, ENDPOINT, _response(403), verdict)
+
+    (entry,) = writer.finalize("FAILED").manifest["captures"]
+    assert entry["usable"] is False
+    assert entry["class"] == "http_error"

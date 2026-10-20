@@ -45,7 +45,20 @@ payloads cannot match anything there.
 `endpoints[...].drift`: a body already known to be wrong is not a sample of the
 endpoint's shape. Every invalid capture has a `captures[]` entry with its
 `_invalid` key, `usable: false` and `class`, and its endpoint counts as failed, so
-a run is never SUCCESS when it withheld a payload. Raw contract 2.5.0.
+a run is never SUCCESS when it withheld a payload, unless the caller declared the
+outcome expected (below). Raw contract 2.5.0.
+
+**Expected outcomes (#115).** A caller may declare, per request, that an invalid outcome
+is legitimate: `not_found` (with `absence_ok`) or an outcome its shape verdict names,
+which for now is `no_picks`, a random-cohort `entry-history` with an empty `current`.
+A declared response is stored under `fpl/_invalid/{class}/` and counted in
+`invalid_counts` and `captures[]` (`usable: false`) as above, but carries
+`expected: true` on its sidecar and entry and is tallied in its endpoint's `expected`
+count instead of `failed`. An endpoint is SUCCESS when nothing failed, so a run whose
+only invalid captures are expected stays SUCCESS with exit 0. Only declared outcomes
+qualify: a 403 or any other 4xx, a 5xx, a malformed body and a self-cohort 404 still
+fail the endpoint. Expected outcomes neither count toward nor reset the streak.
+Raw contract 2.7.0.
 
 **Streak abort (#109).** A run stops itself after N consecutive `http_error` responses
 (default 10; `--http-error-streak` or `FPL_HTTP_ERROR_STREAK`; at least 1). Only a
@@ -56,9 +69,10 @@ Nth. Dispatchers stop sending when it is set; requests already in flight finish 
 stored. The abort logs `streak`, `threshold` and `last_status`, the manifest records
 `abort_reason: aborted_http_error_streak`, and the run exits non-zero as any run with
 failed endpoints does. Items that got `http_error` are never marked captured, so the
-next run retries them. A budget stop (#103) is a different reason. Until #103's AC12
-wires a dispatch loop to `aborted`, the abort is reachable only through the fixtures
-stage with a limit of 1.
+next run retries them. A budget stop (#103) is a different reason. The bounded dispatch
+loop (`http/dispatch.py`, #115) checks `aborted` before each dispatch; the manager panel
+draw uses it, with the client's concurrency limit. event-live and element-summary fetch
+everything with `asyncio.gather` before routing and do not.
 
 **Per-class counts (#109).** A finalized manifest carries `invalid_counts`:
 `{not_found, shape_invalid, http_error}`, zero-filled, counted from the run's invalid
@@ -66,11 +80,13 @@ stage with a limit of 1.
 reading sidecars. Raw contract 2.6.0.
 
 The per-stage shape validators are unchanged. Fixtures (#54) and bootstrap-static,
-event-status, event-live and element-summary (#55) use the router. None declares
-`absence_ok`, so a 404 from any of them is `http_error`. An invalid event-live response
+event-status, event-live and element-summary (#55) use the router through one shared
+tail, `route_and_record` and `fetch_and_route` (#115). None declares `absence_ok`, so a
+404 from any of them is `http_error`. An invalid event-live response
 earns no `_settlement/event-live` marker, and an invalid element-summary player is
 retried next run: neither lands in the payload tree the resume checks read. The manager
-panel's direct `write_object` call still bypasses it (#103).
+panel (#115) uses it too: a random-cohort 404 or empty `current` is declared expected, a
+self-cohort 404 is an `http_error`.
 
 ## Alternatives Considered
 

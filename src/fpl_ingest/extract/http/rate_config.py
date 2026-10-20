@@ -8,6 +8,8 @@ caller-supplied value.
 
 DEFAULT_RATE = 10.0
 MAX_RATE = 10.0
+#: In-flight requests the client allows; dispatch loops use it as their limit (#115).
+MAX_CONCURRENT_REQUESTS = 10
 
 
 def normalize_rate(rate: float) -> float:

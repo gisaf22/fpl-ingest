@@ -24,7 +24,7 @@ from typing import Any
 
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
-from fpl_ingest.extract.http.response_router import ResponseClass, record_fetch_failed, route_response
+from fpl_ingest.extract.http.response_router import ResponseClass, record_no_response, route_and_record
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.stage_result import (
@@ -88,12 +88,8 @@ async def ingest_event_status(
     try:
         raw = await client.get_event_status_raw()
     except FPLClientError as exc:
-        logger.error("Failed to fetch event-status: %s", exc)
-        raw_writer.record_failure(
-            RAW_ENDPOINT,
-            request_url=_ENDPOINTS["event_status"],
-            error_class=type(exc).__name__,
-            message=str(exc),
+        record_no_response(
+            raw_writer, RAW_ENDPOINT, request_url=_ENDPOINTS["event_status"], exc=exc, label="event-status"
         )
         return StageOutcome(result=StageResult(stage="event_status", errors=1), output=None)
 
@@ -101,11 +97,9 @@ async def ingest_event_status(
         await before_write()
 
     shape = validate_event_status_shape(raw)
-    routed = route_response(raw_writer, RAW_ENDPOINT, raw, shape)
+    routed = route_and_record(raw_writer, RAW_ENDPOINT, raw, shape, label="event-status")
     write = routed.write
     if write is None:  # a 429 or 5xx that outlived the client's retries
-        logger.error("Failed to fetch event-status: HTTP %d", raw.status)
-        record_fetch_failed(raw_writer, RAW_ENDPOINT, raw)
         return StageOutcome(result=StageResult(stage="event_status", errors=1), output=None)
 
     ok = routed.response_class is ResponseClass.VALID

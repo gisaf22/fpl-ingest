@@ -20,8 +20,7 @@ from typing import Any
 
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
-from fpl_ingest.extract.http.response_router import ResponseClass, record_fetch_failed, route_response
-from fpl_ingest.extract.http.sync_http import FPLClientError
+from fpl_ingest.extract.http.response_router import ResponseClass, fetch_and_route
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.stage_result import (
     StageLineage,
@@ -73,31 +72,19 @@ async def ingest_fixtures(
         return StageOutcome(result=StageResult(stage="fixtures"))
 
     logger.info("Fetching fixtures...")
-    try:
-        raw = await client.get_fixtures_raw()
-    except FPLClientError as exc:
-        logger.error("Failed to fetch fixtures: %s", exc)
-        raw_writer.record_failure(
-            RAW_ENDPOINT,
-            request_url=_ENDPOINTS["fixtures"],
-            error_class=type(exc).__name__,
-            message=str(exc),
-        )
-        return StageOutcome(result=StageResult(stage="fixtures", errors=1))
-
-    shape = validate_fixtures_shape(raw)
-    routed = route_response(raw_writer, RAW_ENDPOINT, raw, shape)
+    routed = await fetch_and_route(
+        raw_writer, RAW_ENDPOINT, client.get_fixtures_raw, validate_fixtures_shape,
+        request_url=_ENDPOINTS["fixtures"], label="fixtures",
+    )
     write = routed.write
-    if write is None:  # a 429 or 5xx that outlived the client's retries
-        logger.error("Failed to fetch fixtures: HTTP %d", raw.status)
-        record_fetch_failed(raw_writer, RAW_ENDPOINT, raw)
+    if write is None:  # no response, or a 429 or 5xx that outlived the client's retries
         return StageOutcome(result=StageResult(stage="fixtures", errors=1))
 
     if routed.response_class is not ResponseClass.VALID:
         logger.error(
             "Fixtures response is %s (%s); kept at %s, not as a payload",
             routed.response_class.value,
-            ", ".join(shape["failures"]),
+            ", ".join((routed.shape or {})["failures"]),
             write.payload_key,
         )
         # Counted as skipped, which strict mode aborts on. Nothing usable was

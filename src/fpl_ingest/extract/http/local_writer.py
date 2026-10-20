@@ -465,6 +465,7 @@ class LocalRawWriter:
         attempt_count: int = 1,
         shape_validation: Mapping[str, Any] | None = None,
         season: str | None = _RUN_SEASON,
+        expected: bool = False,
     ) -> WriteResult:
         """Store a response that is not a valid capture, apart from ``payload.json``.
 
@@ -472,7 +473,10 @@ class LocalRawWriter:
         beside a sidecar carrying the usual fields plus ``class`` and ``reason``
         (#54 Q5). It has no ``drift`` block and no part in drift totals: a body
         already known to be wrong is not a sample of the endpoint's shape. The
-        endpoint counts as failed, so the run is never SUCCESS.
+        endpoint counts as failed, so the run is never SUCCESS, unless the caller
+        declared the outcome ``expected`` (#115): it is then stored and counted the
+        same, flagged ``expected: true``, and tallied under the endpoint's
+        ``expected`` instead of ``failed``.
 
         Args:
             endpoint: Endpoint identity, as for ``write_object``.
@@ -480,6 +484,7 @@ class LocalRawWriter:
             response_class: One of ``raw_keys.INVALID_CLASSES``.
             reason: Why it is invalid; recorded in the sidecar and the manifest.
             shape_validation: The stage validator's verdict for the response.
+            expected: The caller declared this outcome legitimate for this request.
 
         Raises:
             RawObjectExistsError: This run already stored an invalid response here.
@@ -511,13 +516,18 @@ class LocalRawWriter:
         )
         sidecar["class"] = response_class
         sidecar["reason"] = reason
+        if expected:
+            sidecar["expected"] = True
         self._backend.put_bytes(sidecar_key, _json_bytes(sidecar))
-        self._captures.append(
-            {**_capture_entry(body_key, sidecar), "usable": False, "class": response_class}
-        )
+        entry = {**_capture_entry(body_key, sidecar), "usable": False, "class": response_class}
+        if expected:
+            entry["expected"] = True
+        self._captures.append(entry)
 
         self._record_object(endpoint, written=1, byte_count=len(body))
-        self._record_endpoint(endpoint, usable=False, reason=f"{response_class}: {reason}")
+        self._record_endpoint(
+            endpoint, usable=False, reason=f"{response_class}: {reason}", expected=expected
+        )
         self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
         return WriteResult(
@@ -859,14 +869,18 @@ class LocalRawWriter:
     def _endpoint_entry(self, endpoint: str) -> dict[str, Any]:
         """Return the tallies for ``endpoint``'s family (``element-summary/115`` -> ``element-summary``)."""
         return self._endpoints.setdefault(
-            endpoint.split("/", 1)[0], {"attempted": 0, "usable": 0, "failed": 0, "failures": []}
+            endpoint.split("/", 1)[0], {"attempted": 0, "usable": 0, "failed": 0, "expected": 0, "failures": []}
         )
 
-    def _record_endpoint(self, endpoint: str, *, usable: bool, reason: str | None = None) -> None:
+    def _record_endpoint(
+        self, endpoint: str, *, usable: bool, reason: str | None = None, expected: bool = False
+    ) -> None:
         entry = self._endpoint_entry(endpoint)
         entry["attempted"] += 1
         if usable:
             entry["usable"] += 1
+        elif expected:
+            entry["expected"] += 1
         else:
             entry["failed"] += 1
             entry["failures"].append({"endpoint": endpoint, "reason": reason})
@@ -875,7 +889,8 @@ class LocalRawWriter:
         outcomes: dict[str, dict[str, Any]] = {}
         for name, entry in sorted(self._endpoints.items()):
             outcome: RunStatus
-            if entry["attempted"] and entry["usable"] == entry["attempted"]:
+            # Everything attempted was usable or declared expected: nothing failed.
+            if entry["attempted"] and not entry["failed"]:
                 outcome = ENDPOINT_OUTCOME_SUCCESS
             elif entry["usable"]:
                 outcome = ENDPOINT_OUTCOME_PARTIAL
@@ -888,6 +903,8 @@ class LocalRawWriter:
                 "outcome": outcome,
                 "failures": [dict(f) for f in entry["failures"]],
             }
+            if entry["expected"]:
+                outcomes[name]["expected"] = entry["expected"]
         return outcomes
 
     def _flush_manifest(self, status: str) -> None:

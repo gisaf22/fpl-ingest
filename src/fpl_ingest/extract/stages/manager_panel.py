@@ -7,9 +7,14 @@ plus a self cohort held outside them) and captures each kept manager's
 ``fpl/_panels/{season}/manager-panel.json`` (D3).
 
 The history response is also the keep test: an id is kept iff ``current`` is
-non-empty, i.e. it has picks this season (P1). A 404 is skipped, not a failure.
+non-empty, i.e. it has picks this season (P1). Every response goes through the
+shared router (#115): a random-cohort 404 or empty ``current`` is stored under
+``fpl/_invalid/`` and declared expected, so it is counted but is not a failure;
+anything else that is not a valid capture fails the endpoint, and nothing is
+stored at ``payload.json`` for an id that is not kept. The draw is dispatched
+through the bounded loop, which stops after a streak of ``http_error`` responses.
 
-Resume after a failed run (P3, P6): any non-404 failure leaves no panel file,
+Resume after a failed run (P3, P6): any failure that was not declared expected leaves no panel file,
 so the next run redraws. The seed defaults to a function of the season, so the
 redraw is the same ids, and an id that already has a capture under
 ``fpl/entry-history/{season}/{entry_id}`` is counted as kept without a fetch
@@ -25,11 +30,16 @@ import hashlib
 import json
 import logging
 import random
+import time
+from functools import partial
 from typing import Any
 
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
+from fpl_ingest.extract.http.dispatch import dispatch_bounded
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
+from fpl_ingest.extract.http.rate_config import MAX_CONCURRENT_REQUESTS
 from fpl_ingest.extract.http.raw_keys import panel_key
+from fpl_ingest.extract.http.response_router import ResponseClass, fetch_and_route, record_no_response
 from fpl_ingest.orchestration.stage_result import StageLineage, StageMetadata, StageOutcome, StageResult
 
 logger = logging.getLogger(__name__)
@@ -41,6 +51,8 @@ HISTORY_FAMILY = "entry-history"
 PANEL_SIZE = 2000
 #: The self cohort (D1): kept outside the random draw.
 SELF_COHORT = (8450051, 4685107)
+#: Seconds between progress log lines while the draw runs.
+PROGRESS_INTERVAL_SECONDS = 30.0
 #: Every id in the first draw joins at GW1, where backfill starts (P2).
 INITIAL_JOINED_GW = 1
 
@@ -93,6 +105,7 @@ async def ingest_manager_panel(
     seed: int,
     panel_size: int = PANEL_SIZE,
     self_cohort: tuple[int, ...] = SELF_COHORT,
+    progress_interval: float = PROGRESS_INTERVAL_SECONDS,
 ) -> StageOutcome[dict[str, Any]]:
     """Draw the season's panel once and capture each kept manager's history.
 
@@ -101,18 +114,38 @@ async def ingest_manager_panel(
     for the kept ones, and writes the panel file only if nothing failed (P3).
     """
     backend = raw_writer.backend
-    existing = read_panel(backend, season)
+    existing = await asyncio.to_thread(read_panel, backend, season)
     if existing is not None:
         logger.info("Manager panel for %s already drawn; nothing to do", season)
         return StageOutcome(result=StageResult(stage=MANAGER_PANEL_STAGE.name), output=existing)
 
     drawn = draw_ids(seed, total_players, panel_size, self_cohort)
     jobs = [(i, COHORT_RANDOM) for i in drawn] + [(i, COHORT_SELF) for i in self_cohort]
-    results = await asyncio.gather(*[_capture_one(client, raw_writer, season, i, c) for i, c in jobs])
 
-    tally = {"fetched": 0, "errors": 0, "written": 0, "not_found": 0, "no_picks": 0}
+    io = _OffLoop()
+    progress = {"attempted": 0, "stored": 0, "failed": 0}
+
+    async def capture(job: tuple[int, str]) -> str:
+        verdict = await _capture_one(client, raw_writer, io, season, *job)
+        progress["attempted"] += 1
+        if verdict == "kept":
+            progress["stored"] += 1
+        elif verdict == "error":
+            progress["failed"] += 1
+        return verdict
+
+    reporter = asyncio.create_task(_report_progress(progress, len(jobs), progress_interval))
+    try:
+        dispatched = await dispatch_bounded(
+            jobs, capture, aborted=lambda: raw_writer.aborted, limit=MAX_CONCURRENT_REQUESTS
+        )
+    finally:
+        reporter.cancel()
+
+    # A job the abort kept from being dispatched is an unresolved id: it blocks the panel file.
+    tally = {"fetched": 0, "errors": len(jobs) - len(dispatched), "written": 0, "not_found": 0, "no_picks": 0}
     entries: list[dict[str, Any]] = []
-    for (entry_id, cohort), verdict in zip(jobs, results):
+    for (entry_id, cohort), verdict in dispatched:
         if verdict == "error":
             tally["errors"] += 1
             continue
@@ -144,7 +177,8 @@ async def ingest_manager_panel(
         "drawn_not_kept": {"not_found": tally["not_found"], "no_picks": tally["no_picks"]},
         "entries": entries,
     }
-    backend.put_bytes(panel_key(RAW_SOURCE, season), json.dumps(panel, sort_keys=True, indent=2).encode("utf-8") + b"\n")
+    panel_bytes = json.dumps(panel, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    await io(backend.put_bytes, panel_key(RAW_SOURCE, season), panel_bytes)
     logger.info("Manager panel %s drawn: kept %d of %d", season, panel["kept"], panel["drawn"])
     return StageOutcome(
         result=result, output=panel,
@@ -152,8 +186,39 @@ async def ingest_manager_panel(
     )
 
 
+class _OffLoop:
+    """Runs the writer's and backend's blocking calls on a thread, one at a time.
+
+    boto3 is synchronous: called on the loop it freezes every in-flight
+    request, whose 30 s timers keep running (runs 39365465979, 39366583920).
+    The writer is not thread-safe, so the lock keeps a single thread inside it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+
+    async def __call__(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        async with self._lock:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+async def _report_progress(progress: dict[str, int], total: int, interval: float) -> None:
+    """Log attempted, stored and failed ids every ``interval`` seconds until cancelled."""
+    started = time.monotonic()
+    while True:
+        await asyncio.sleep(interval)
+        logger.info(
+            "Manager panel progress: attempted %d of %d, stored %d, failed %d (%.0fs elapsed)",
+            progress["attempted"], total, progress["stored"], progress["failed"], time.monotonic() - started,
+        )
+
+
+#: Outcomes a random-cohort id may legitimately end in: it may not exist yet, or have no picks.
+_EXPECTED_DROPS = frozenset({"not_found", "no_picks"})
+
+
 async def _capture_one(
-    client: AsyncFPLClient, raw_writer: LocalRawWriter, season: str, entry_id: int, cohort: str
+    client: AsyncFPLClient, raw_writer: LocalRawWriter, io: _OffLoop, season: str, entry_id: int, cohort: str
 ) -> str:
     """Capture one id; return resumed, kept, no_picks, not_found or error.
 
@@ -161,43 +226,41 @@ async def _capture_one(
     """
     endpoint = raw_endpoint(season, entry_id)
     # Existence alone says kept: only kept ids are ever stored (P6).
-    if raw_writer.backend.exists_prefix(f"{RAW_SOURCE}/{endpoint}"):
+    if await io(raw_writer.backend.exists_prefix, f"{RAW_SOURCE}/{endpoint}"):
         return "resumed"
     url = _ENDPOINTS["entry_history"].format(entry_id=entry_id)
+    random_cohort = cohort == COHORT_RANDOM
     try:
-        raw = await client.get_entry_history_raw(entry_id)
-    except Exception as exc:  # noqa: BLE001 - any fetch failure is recorded, never raised
-        logger.error("Failed history fetch %d: %s", entry_id, exc)
-        raw_writer.record_failure(endpoint, request_url=url, error_class=type(exc).__name__, message=str(exc))
-        return "error"
-
-    if raw.status == 404 and cohort == COHORT_RANDOM:
-        return "not_found"
-    shape = validate_history_shape(raw)
-    if not shape["ok"]:
-        # A self id that 404s lands here too: it is configured, so it must exist.
-        raw_writer.record_failure(
-            endpoint, request_url=url, error_class="UnexpectedResponse",
-            http_status=raw.status, attempt_count=raw.attempt_count,
-            message="; ".join(shape["failures"]),
+        routed = await fetch_and_route(
+            raw_writer, endpoint, partial(client.get_entry_history_raw, entry_id),
+            partial(validate_history_shape, require_picks=random_cohort),
+            request_url=url, label=f"history {entry_id}",
+            # A self id is configured, so it must exist: its 404 is an http_error.
+            absence_ok=random_cohort, expected=_EXPECTED_DROPS if random_cohort else frozenset(),
+            run_blocking=io,
         )
+    except Exception as exc:  # noqa: BLE001 - any fetch failure is recorded, never raised
+        await io(record_no_response, raw_writer, endpoint, request_url=url, exc=exc, label=f"history {entry_id}")
         return "error"
-    payload = raw.json()
-    if cohort == COHORT_RANDOM and isinstance(payload, dict) and not payload["current"]:
+
+    response_class = routed.response_class
+    if response_class is ResponseClass.VALID:
+        return "kept"
+    if response_class is ResponseClass.NOT_FOUND:
+        return "not_found"
+    if response_class is ResponseClass.SHAPE_INVALID and (routed.shape or {}).get("outcome") == "no_picks":
         return "no_picks"
-    raw_writer.write_object(
-        endpoint, raw.body, request_url=raw.url, requested_at=raw.requested_at,
-        received_at=raw.received_at, http_status=raw.status,
-        response_headers=raw.headers, attempt_count=raw.attempt_count, shape_validation=shape,
-    )
-    return "kept"
+    return "error"
 
 
-def validate_history_shape(raw: RawResponse) -> dict[str, Any]:
+def validate_history_shape(raw: RawResponse, *, require_picks: bool = False) -> dict[str, Any]:
     """Return the raw-boundary structural verdict for an entry-history response.
 
     Checks only that the status is 2xx and the body is a JSON object carrying
-    a ``current`` list; anything finer is warehouse work.
+    a ``current`` list; anything finer is warehouse work. With ``require_picks``
+    an empty list also fails, naming the outcome ``no_picks`` so the caller can
+    declare it expected (the random cohort); the self cohort keeps an empty
+    history.
     """
     checks = ["http_status_2xx", "body_parses_as_json", "top_level_is_object", "current_is_list"]
     failures: list[str] = []
@@ -210,4 +273,7 @@ def validate_history_shape(raw: RawResponse) -> dict[str, Any]:
         failures.append(f"top_level_is_object: got {type(payload).__name__}")
     elif not isinstance(payload.get("current"), list):
         failures.append("current_is_list: missing or not a list")
+    elif require_picks and not payload["current"]:
+        failures.append("current_is_empty: the manager has no picks this season")
+        return {"ok": False, "checks": checks, "failures": failures, "record_count": None, "outcome": "no_picks"}
     return {"ok": not failures, "checks": checks, "failures": failures, "record_count": None}

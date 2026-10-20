@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from fpl_ingest.extract.http.raw_keys import RAW_CONTRACT_VERSION
-
 SCHEMA = Path(__file__).resolve().parents[3] / "schemas" / "raw-contract" / "2.6.0" / "manifest.schema.json"
 
 
@@ -17,8 +15,9 @@ def _properties() -> dict:
 
 
 @pytest.mark.covers("#109 AC6")
-def test_contract_version_is_one_minor_above_2_5_0():
-    assert RAW_CONTRACT_VERSION == "2.6.0"
+def test_contract_2_6_0_stays_published_as_a_closed_set():
+    # The writer moved on to 2.7.0 (#115); this set is kept for manifests written at 2.6.0.
+    assert _properties()["raw_contract_version"] == {"const": "2.6.0"}
 
 
 @pytest.mark.covers("#109 AC6")

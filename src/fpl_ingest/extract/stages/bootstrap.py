@@ -29,7 +29,7 @@ from typing import Any, NamedTuple
 
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
-from fpl_ingest.extract.http.response_router import ResponseClass, record_fetch_failed, route_response
+from fpl_ingest.extract.http.response_router import ResponseClass, record_no_response, route_and_record
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.extract.season import resolve_season
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
@@ -126,12 +126,8 @@ async def ingest_core_data(
             logger.info("Fetching bootstrap-static...")
             raw = await client.get_bootstrap_raw()
     except FPLClientError as exc:
-        logger.error("Failed to fetch bootstrap-static: %s", exc)
-        raw_writer.record_failure(
-            RAW_ENDPOINT,
-            request_url=_ENDPOINTS["bootstrap"],
-            error_class=type(exc).__name__,
-            message=str(exc),
+        record_no_response(
+            raw_writer, RAW_ENDPOINT, request_url=_ENDPOINTS["bootstrap"], exc=exc, label="bootstrap-static"
         )
         # Trip fail-fast so downstream stages can tell "core hard-failed" apart
         # from "core succeeded with an empty events/player_ids handoff." Both
@@ -158,11 +154,9 @@ def capture_bootstrap_raw(raw: RawResponse, raw_writer: LocalRawWriter) -> Stage
     sidecar, shape validation, and result accounting as the full run.
     """
     shape = validate_bootstrap_shape(raw)
-    routed = route_response(raw_writer, RAW_ENDPOINT, raw, shape)
+    routed = route_and_record(raw_writer, RAW_ENDPOINT, raw, shape, label="bootstrap-static")
     write = routed.write
     if write is None:  # a 429 or 5xx that outlived the client's retries
-        logger.error("Failed to fetch bootstrap-static: HTTP %d", raw.status)
-        record_fetch_failed(raw_writer, RAW_ENDPOINT, raw)
         return StageOutcome(
             result=StageResult(stage="core", errors=1),
             output=CoreData(events=[], player_ids=[]),

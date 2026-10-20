@@ -247,19 +247,20 @@ class AsyncFPLClient:
         """Perform one HTTP GET and classify the outcome.
 
         Returns a RequestOutcome describing whether to retry and how long to wait.
-        asyncio.TimeoutError is a subclass of aiohttp.ClientError and is treated
-        as retryable — transient network timeouts are worth retrying, whereas
-        hard failures (e.g. DNS resolution) are also caught here and retried up
-        to max_retries before giving up.
+        A request that outlives the total timeout raises asyncio.TimeoutError,
+        which is not an aiohttp.ClientError (only aiohttp's own
+        ServerTimeoutError is both), so it is caught alongside it. Both are
+        retryable: transient network timeouts are worth retrying, and so are
+        hard failures (e.g. DNS resolution), up to max_retries before giving up.
         """
         requested_at = datetime.now(timezone.utc)
         try:
             async with session.get(url, timeout=self._timeout) as resp:
                 return await self._classify_response(resp, url, attempt, requested_at)
-        except aiohttp.ClientError as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             logger.warning(
-                "Request error on %s attempt %d/%d: %s",
-                url, attempt, self._max_retries, exc,
+                "Request error on %s attempt %d/%d: %s: %s",
+                url, attempt, self._max_retries, type(exc).__name__, exc,
             )
             return self._retry_decision(attempt)
 

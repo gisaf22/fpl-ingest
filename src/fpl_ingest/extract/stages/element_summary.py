@@ -78,7 +78,7 @@ from fpl_ingest.extract.http.client import (
     cancel_pending_tasks,
 )
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
-from fpl_ingest.extract.http.response_router import ResponseClass, record_fetch_failed, route_response
+from fpl_ingest.extract.http.response_router import ResponseClass, record_no_response, route_and_record
 from fpl_ingest.extract.http.raw_keys import (
     SETTLEMENT_PREFIX,
     iso_utc,
@@ -237,11 +237,9 @@ async def ingest_player_histories(
         raw = fetched[player_id]
         endpoint = raw_endpoint(player_id)
         shape = validate_element_summary_shape(raw)
-        routed = route_response(raw_writer, endpoint, raw, shape)
+        routed = route_and_record(raw_writer, endpoint, raw, shape, label=f"player {player_id}")
         write = routed.write
         if write is None:  # a 429 or 5xx that outlived the client's retries
-            logger.error("Failed to fetch player %d: HTTP %d", player_id, raw.status)
-            record_fetch_failed(raw_writer, endpoint, raw)
             fetch_failed += 1
         elif routed.response_class is not ResponseClass.VALID:
             logger.error(
@@ -614,11 +612,8 @@ def _record_fetch_failure(
     raw_writer: LocalRawWriter, player_id: int, exc: BaseException
 ) -> None:
     """Record one player's failed capture in the shared run manifest."""
-    raw_writer.record_failure(
-        raw_endpoint(player_id),
-        request_url=_ENDPOINTS["player"].format(player_id=player_id),
-        error_class=type(exc).__name__,
-        message=str(exc),
+    record_no_response(
+        raw_writer, raw_endpoint(player_id), request_url=_ENDPOINTS["player"].format(player_id=player_id), exc=exc
     )
 
 

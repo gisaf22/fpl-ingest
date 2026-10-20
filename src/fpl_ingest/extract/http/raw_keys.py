@@ -18,12 +18,14 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-RAW_CONTRACT_VERSION = "2.7.0"
+RAW_CONTRACT_VERSION = "2.8.0"
 
 #: Consecutive ``http_error`` responses that abort a run (#109).
 DEFAULT_HTTP_ERROR_STREAK = 10
 #: The manifest ``abort_reason`` of a run stopped by that streak (#109).
 ABORT_REASON_HTTP_ERROR_STREAK = "aborted_http_error_streak"
+#: The manifest ``stop_reason`` of a run that stopped dispatching at its wall-clock budget (#116).
+STOP_REASON_BUDGET = "stopped_at_budget"
 
 #: Prefix every key carries in the capture bucket. The keys built here are
 #: relative to it; ``bucket_key`` adds it, whatever the storage backend.

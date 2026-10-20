@@ -1,0 +1,110 @@
+{
+  "endpoint": "entry-picks",
+  "paths": {
+    "$": [
+      "object"
+    ],
+    "$.active_chip": [
+      "null",
+      "string"
+    ],
+    "$.automatic_subs": [
+      "array"
+    ],
+    "$.automatic_subs[]": [
+      "object"
+    ],
+    "$.automatic_subs[].element_in": [
+      "number"
+    ],
+    "$.automatic_subs[].element_out": [
+      "number"
+    ],
+    "$.automatic_subs[].entry": [
+      "number"
+    ],
+    "$.automatic_subs[].event": [
+      "number"
+    ],
+    "$.entry_history": [
+      "object"
+    ],
+    "$.entry_history.bank": [
+      "number"
+    ],
+    "$.entry_history.event": [
+      "number"
+    ],
+    "$.entry_history.event_transfers": [
+      "number"
+    ],
+    "$.entry_history.event_transfers_cost": [
+      "number"
+    ],
+    "$.entry_history.overall_rank": [
+      "number"
+    ],
+    "$.entry_history.overall_rank_percentage": [
+      "string"
+    ],
+    "$.entry_history.percentile_rank": [
+      "number"
+    ],
+    "$.entry_history.points": [
+      "number"
+    ],
+    "$.entry_history.points_on_bench": [
+      "number"
+    ],
+    "$.entry_history.rank": [
+      "number"
+    ],
+    "$.entry_history.rank_sort": [
+      "number"
+    ],
+    "$.entry_history.total_points": [
+      "number"
+    ],
+    "$.entry_history.value": [
+      "number"
+    ],
+    "$.picks": [
+      "array"
+    ],
+    "$.picks[]": [
+      "object"
+    ],
+    "$.picks[].element": [
+      "number"
+    ],
+    "$.picks[].element_type": [
+      "number"
+    ],
+    "$.picks[].is_captain": [
+      "boolean"
+    ],
+    "$.picks[].is_vice_captain": [
+      "boolean"
+    ],
+    "$.picks[].multiplier": [
+      "number"
+    ],
+    "$.picks[].position": [
+      "number"
+    ]
+  },
+  "samples": [
+    "entry-picks/4685107/1",
+    "entry-picks/4685107/2",
+    "entry-picks/4685107/3",
+    "entry-picks/4685107/4",
+    "entry-picks/4685107/5",
+    "entry-picks/4685107/6",
+    "entry-picks/8450051/1",
+    "entry-picks/8450051/2",
+    "entry-picks/8450051/3",
+    "entry-picks/8450051/4",
+    "entry-picks/8450051/5",
+    "entry-picks/8450051/6"
+  ]
+}

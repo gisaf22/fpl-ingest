@@ -14,7 +14,7 @@ from fpl_ingest.extract.http.client import RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.extract.http.response_router import route_response
 
-CONTRACT_DIR = Path(__file__).resolve().parents[3] / "schemas" / "raw-contract" / "2.7.0"  # the writer now emits 2.7.0, a superset of 2.5.0 (#109, #115)
+CONTRACT_DIR = Path(__file__).resolve().parents[3] / "schemas" / "raw-contract" / "2.8.0"  # the writer now emits 2.8.0, a superset of 2.5.0 (#109, #115, #116)
 INVALID_CLASSES = ("not_found", "shape_invalid", "http_error")
 FAILING = {"ok": False, "checks": ["http_status_2xx"], "failures": ["http_status_2xx: got 403"], "record_count": None}
 PASSING = {"ok": True, "checks": [], "failures": [], "record_count": 0}

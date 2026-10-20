@@ -12,10 +12,10 @@ from jsonschema import Draft202012Validator
 
 from fpl_ingest.extract.http.client import RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
-from fpl_ingest.extract.http.raw_keys import RAW_CONTRACT_VERSION
 from fpl_ingest.extract.http.response_router import route_response
 
-SCHEMAS = Path(__file__).resolve().parents[3] / "schemas" / "raw-contract" / "2.7.0"
+SCHEMAS = Path(__file__).resolve().parents[3] / "schemas" / "raw-contract" / "2.8.0"  # the writer now emits 2.8.0, a superset of 2.7.0 (#116)
+CLOSED_SET = Path(__file__).resolve().parents[3] / "schemas" / "raw-contract" / "2.7.0"
 NO_PICKS = {"ok": False, "checks": [], "failures": ["current_is_empty"], "record_count": None, "outcome": "no_picks"}
 ORIGIN = {"kind": "local", "workflow": None, "ref": None, "github_run_id": None, "aws_principal": None}
 PASSING = {"ok": True, "checks": [], "failures": [], "record_count": 1}
@@ -43,8 +43,10 @@ def _run(tmp_path, *, with_expected: bool):
 
 
 @pytest.mark.covers("#115 AC14")
-def test_contract_version_is_one_minor_above_2_6_0():
-    assert RAW_CONTRACT_VERSION == "2.7.0"
+def test_contract_2_7_0_stays_published_as_a_closed_set():
+    # The writer moved on to 2.8.0 (#116); this set is kept for manifests written at 2.7.0.
+    manifest = json.loads((CLOSED_SET / "manifest.schema.json").read_text())
+    assert manifest["properties"]["raw_contract_version"] == {"const": "2.7.0"}
 
 
 @pytest.mark.covers("#115 AC14")

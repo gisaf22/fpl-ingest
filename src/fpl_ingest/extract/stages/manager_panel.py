@@ -35,7 +35,7 @@ from functools import partial
 from typing import Any
 
 from fpl_ingest.extract.http.client import _ENDPOINTS, AsyncFPLClient, RawResponse
-from fpl_ingest.extract.http.dispatch import dispatch_bounded
+from fpl_ingest.extract.http.dispatch import OffLoop, dispatch_bounded
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, RawStorageBackend
 from fpl_ingest.extract.http.rate_config import MAX_CONCURRENT_REQUESTS
 from fpl_ingest.extract.http.raw_keys import panel_key
@@ -122,7 +122,7 @@ async def ingest_manager_panel(
     drawn = draw_ids(seed, total_players, panel_size, self_cohort)
     jobs = [(i, COHORT_RANDOM) for i in drawn] + [(i, COHORT_SELF) for i in self_cohort]
 
-    io = _OffLoop()
+    io = OffLoop()
     progress = {"attempted": 0, "stored": 0, "failed": 0}
 
     async def capture(job: tuple[int, str]) -> str:
@@ -186,22 +186,6 @@ async def ingest_manager_panel(
     )
 
 
-class _OffLoop:
-    """Runs the writer's and backend's blocking calls on a thread, one at a time.
-
-    boto3 is synchronous: called on the loop it freezes every in-flight
-    request, whose 30 s timers keep running (runs 39365465979, 39366583920).
-    The writer is not thread-safe, so the lock keeps a single thread inside it.
-    """
-
-    def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-
-    async def __call__(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
-        async with self._lock:
-            return await asyncio.to_thread(fn, *args, **kwargs)
-
-
 async def _report_progress(progress: dict[str, int], total: int, interval: float) -> None:
     """Log attempted, stored and failed ids every ``interval`` seconds until cancelled."""
     started = time.monotonic()
@@ -218,7 +202,7 @@ _EXPECTED_DROPS = frozenset({"not_found", "no_picks"})
 
 
 async def _capture_one(
-    client: AsyncFPLClient, raw_writer: LocalRawWriter, io: _OffLoop, season: str, entry_id: int, cohort: str
+    client: AsyncFPLClient, raw_writer: LocalRawWriter, io: OffLoop, season: str, entry_id: int, cohort: str
 ) -> str:
     """Capture one id; return resumed, kept, no_picks, not_found or error.
 

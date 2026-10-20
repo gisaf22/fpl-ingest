@@ -69,9 +69,9 @@ Nth. Dispatchers stop sending when it is set; requests already in flight finish 
 stored. The abort logs `streak`, `threshold` and `last_status`, the manifest records
 `abort_reason: aborted_http_error_streak`, and the run exits non-zero as any run with
 failed endpoints does. Items that got `http_error` are never marked captured, so the
-next run retries them. A budget stop (#103) is a different reason. The bounded dispatch
+next run retries them. A budget stop (#116, ADR 006) is a different reason, `stop_reason`. The bounded dispatch
 loop (`http/dispatch.py`, #115) checks `aborted` before each dispatch; the manager panel
-draw uses it, with the client's concurrency limit. event-live and element-summary fetch
+draw and entry-picks (#116) use it, with the client's concurrency limit. event-live and element-summary fetch
 everything with `asyncio.gather` before routing and do not.
 
 **Per-class counts (#109).** A finalized manifest carries `invalid_counts`:
@@ -86,7 +86,10 @@ tail, `route_and_record` and `fetch_and_route` (#115). None declares `absence_ok
 earns no `_settlement/event-live` marker, and an invalid element-summary player is
 retried next run: neither lands in the payload tree the resume checks read. The manager
 panel (#115) uses it too: a random-cohort 404 or empty `current` is declared expected, a
-self-cohort 404 is an `http_error`.
+self-cohort 404 is an `http_error`. Entry-picks (#116) does the same with
+`absence_ok` per cohort: a random-cohort 404 (a manager's pre-join week) is declared
+expected and counts as captured on resume; a self-cohort 404, any other 4xx and an empty
+`picks` list are failures that retry (ADR 006).
 
 ## Alternatives Considered
 

@@ -118,6 +118,22 @@ def resolve_http_error_streak(explicit: int | None = None) -> int:
     return value
 
 
+#: Wall-clock allowance for one entry-picks run when neither flag nor env var sets one (#116).
+#: Provisional: below the one-hour credential window of a scheduled run, to be sized
+#: from the first run's throughput record (#100 D4). Never "no budget": an unset value
+#: must not quietly switch the guard off.
+DEFAULT_ENTRY_PICKS_MAX_SECONDS = 45 * 60.0
+
+
+def resolve_entry_picks_max_seconds(explicit: float | None = None) -> float:
+    """Return the entry-picks wall-clock budget: flag, then env var, then default (#116)."""
+    env_val = os.environ.get("FPL_ENTRY_PICKS_MAX_SECONDS")
+    value = explicit if explicit is not None else float(env_val) if env_val else DEFAULT_ENTRY_PICKS_MAX_SECONDS
+    if value <= 0:
+        raise ValueError(f"entry-picks max seconds must be positive, got {value}")
+    return value
+
+
 def resolve_baseline_dir() -> Path | None:
     """Return ``FPL_BASELINE_DIR`` if set, else the committed baselines."""
     env_val = os.environ.get("FPL_BASELINE_DIR")

@@ -22,6 +22,7 @@ import pytest
 from fpl_ingest.extract.http.client import RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.extract.http.sync_http import FPLClientError
+from fpl_ingest.orchestration.run_status import classify_run
 from fpl_ingest.extract.stages.entry_picks import (
     COHORT_RANDOM,
     COHORT_SELF,
@@ -84,7 +85,8 @@ def _writer(root: Path, run_id: str) -> LocalRawWriter:
 
 
 def _manifest(writer: LocalRawWriter, root: Path) -> dict:
-    result = writer.finalize("SUCCESS")
+    # Status comes from the endpoint outcomes, as the runner derives it; a hard-coded status would make every status assertion vacuous.
+    result = writer.finalize(classify_run(writer.endpoint_outcomes))
     return json.loads((root / result.manifest_key).read_text())
 
 
@@ -170,7 +172,11 @@ class TestNon2xxCohortHandling:
         writer = _writer(root, "20261019T043000Z-ffffff")
         client = _client({(1, RANDOM_A): _raw(404, b'{"detail":"Not found."}')})
 
-        await ingest_entry_picks(client, writer, season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM)], gameweeks=[GW1])
+        # RANDOM_B is clean: "nothing else failed" needs something usable, because classify_run
+        # reads a run with no usable capture as FAILED even when every outcome was expected.
+        await ingest_entry_picks(
+            client, writer, season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM), (RANDOM_B, COHORT_RANDOM)], gameweeks=[GW1],
+        )
         manifest = _manifest(writer, root)
 
         assert any(f"/{RANDOM_A}/" in f for f in _files_under(root, "fpl/_invalid/not_found"))
@@ -183,13 +189,13 @@ class TestNon2xxCohortHandling:
         root = tmp_path / "raw"
         first = _client({(1, RANDOM_A): _raw(404, b'{"detail":"Not found."}')})
         await ingest_entry_picks(
-            first, _writer(root, "20261019T043000Z-gggggg"),
+            first, _writer(root, "20261019T043000Z-a00007"),
             season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM)], gameweeks=[GW1],
         )
 
         second = _client({})
         await ingest_entry_picks(
-            second, _writer(root, "20261019T050000Z-hhhhhh"),
+            second, _writer(root, "20261019T050000Z-a00008"),
             season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM)], gameweeks=[GW1],
         )
 
@@ -203,7 +209,7 @@ class TestNon2xxCohortHandling:
     async def test_a_self_404_or_a_non_404_4xx_is_http_error_retried_and_blocks_the_marker(self, tmp_path, response, label):
         root = tmp_path / "raw"
         entry_id, cohort = (SELF_ID, COHORT_SELF) if label == "self_404" else (RANDOM_B, COHORT_RANDOM)
-        writer = _writer(root, "20261019T043000Z-iiiiii")
+        writer = _writer(root, "20261019T043000Z-a00009")
         client = _client({(1, entry_id): response})
 
         await ingest_entry_picks(client, writer, season=SEASON, entries=[(entry_id, cohort)], gameweeks=[GW1])
@@ -215,7 +221,7 @@ class TestNon2xxCohortHandling:
 
         rerun_client = _client({})
         await ingest_entry_picks(
-            rerun_client, _writer(root, "20261019T050000Z-jjjjjj"),
+            rerun_client, _writer(root, "20261019T050000Z-a0000a"),
             season=SEASON, entries=[(entry_id, cohort)], gameweeks=[GW1],
         )
         assert (1, entry_id) in rerun_client.calls, "an http_error entry must be retried, not skipped"
@@ -223,7 +229,7 @@ class TestNon2xxCohortHandling:
     @pytest.mark.covers("#116 AC10")
     async def test_a_network_error_or_5xx_stores_nothing_and_blocks_the_marker(self, tmp_path):
         root = tmp_path / "raw"
-        writer = _writer(root, "20261019T043000Z-kkkkkk")
+        writer = _writer(root, "20261019T043000Z-a0000b")
         client = _client({(1, RANDOM_A): FPLClientError("503 after retries")})
 
         await ingest_entry_picks(client, writer, season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM)], gameweeks=[GW1])
@@ -237,7 +243,7 @@ class TestSpikeCount:
     @pytest.mark.covers("#116 AC11")
     async def test_the_manifest_carries_a_per_gameweek_count_of_stored_non_2xx_responses(self, tmp_path):
         root = tmp_path / "raw"
-        writer = _writer(root, "20261019T043000Z-llllll")
+        writer = _writer(root, "20261019T043000Z-a0000c")
         client = _client({
             (1, RANDOM_A): _raw(404, b'{"detail":"Not found."}'),
             (1, RANDOM_B): _raw(403, b'{"detail":"forbidden"}'),
@@ -265,13 +271,16 @@ class TestResumeGranularityPerClass:
             (1, c): _raw(403, b'{"detail":"forbidden"}'),
         })
         await ingest_entry_picks(
-            first, _writer(root, "20261019T043000Z-mmmmmm"),
+            first, _writer(root, "20261019T043000Z-a0000d"),
             season=SEASON, entries=[(a, COHORT_RANDOM), (b, COHORT_RANDOM), (c, COHORT_RANDOM)], gameweeks=[GW1],
         )
 
+        marker = root / "fpl" / "_settlement" / "entry-picks" / "1" / "marker.json"
+        assert not marker.exists(), "B and C are unresolved, so the gameweek must not settle"
+
         second = _client({})
         await ingest_entry_picks(
-            second, _writer(root, "20261019T050000Z-nnnnnn"),
+            second, _writer(root, "20261019T050000Z-b00010"),
             season=SEASON, entries=[(a, COHORT_RANDOM), (b, COHORT_RANDOM), (c, COHORT_RANDOM)], gameweeks=[GW1],
         )
 
@@ -279,7 +288,7 @@ class TestResumeGranularityPerClass:
         assert a not in requested, "a stored not_found capture must not be re-requested"
         assert b in requested, "a stored shape_invalid capture must be re-requested"
         assert c in requested, "a stored http_error capture must be re-requested"
-        assert not (root / "fpl" / "_settlement" / "entry-picks" / "1" / "marker.json").exists()
+        assert marker.exists(), "B and C now succeed (the second client answers 200), so the gameweek settles"
 
 
 class TestCohortDependentFourOhFour:
@@ -287,7 +296,7 @@ class TestCohortDependentFourOhFour:
     @pytest.mark.covers("#116 AC14")
     async def test_random_404_and_self_404_land_in_different_trees_with_different_outcomes(self, tmp_path):
         root = tmp_path / "raw"
-        writer = _writer(root, "20261019T043000Z-oooooo")
+        writer = _writer(root, "20261019T043000Z-a0000f")
         client = _client({
             (1, RANDOM_A): _raw(404, b'{"detail":"Not found."}'),
             (1, SELF_ID): _raw(404, b'{"detail":"Not found."}'),
@@ -302,16 +311,18 @@ class TestCohortDependentFourOhFour:
         assert any(f"/{RANDOM_A}/" in f for f in _files_under(root, "fpl/_invalid/not_found"))
         assert any(f"/{SELF_ID}/" in f for f in _files_under(root, "fpl/_invalid/http_error"))
         assert manifest["status"] != "SUCCESS"
+        marker = root / "fpl" / "_settlement" / "entry-picks" / "1" / "marker.json"
+        assert not marker.exists(), "the self-cohort 404 is unresolved, so the gameweek must not settle"
 
         rerun = _client({})
         await ingest_entry_picks(
-            rerun, _writer(root, "20261019T050000Z-pppppp"),
+            rerun, _writer(root, "20261019T050000Z-b00010"),
             season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM), (SELF_ID, COHORT_SELF)], gameweeks=[GW1],
         )
         requested = {entry for _, entry in rerun.calls}
         assert RANDOM_A not in requested
         assert SELF_ID in requested
-        assert not (root / "fpl" / "_settlement" / "entry-picks" / "1" / "marker.json").exists()
+        assert marker.exists(), "the self id now answers 200 and the random 404 counts as captured, so the gameweek settles"
 
 
 class TestEmptyPicksBothCohorts:
@@ -320,7 +331,7 @@ class TestEmptyPicksBothCohorts:
     @pytest.mark.parametrize("entry_id, cohort", [(RANDOM_A, COHORT_RANDOM), (SELF_ID, COHORT_SELF)])
     async def test_an_empty_picks_200_is_shape_invalid_for_both_cohorts_and_blocks_the_marker(self, tmp_path, entry_id, cohort):
         root = tmp_path / "raw"
-        writer = _writer(root, "20261019T043000Z-qqqqqq")
+        writer = _writer(root, "20261019T043000Z-b00011")
         client = _client({(1, entry_id): _raw(200, b'{"picks": []}')})
 
         await ingest_entry_picks(client, writer, season=SEASON, entries=[(entry_id, cohort)], gameweeks=[GW1])
@@ -331,7 +342,7 @@ class TestEmptyPicksBothCohorts:
 
         rerun = _client({})
         await ingest_entry_picks(
-            rerun, _writer(root, "20261019T050000Z-rrrrrr"),
+            rerun, _writer(root, "20261019T050000Z-b00012"),
             season=SEASON, entries=[(entry_id, cohort)], gameweeks=[GW1],
         )
         assert (1, entry_id) in rerun.calls, "a shape_invalid capture must be re-requested on rerun"

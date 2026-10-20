@@ -50,6 +50,7 @@ _ENDPOINTS = {
     "player":       f"{_FPL_BASE}/element-summary/{{player_id}}/",
     "event_status": f"{_FPL_BASE}/event-status/",
     "entry_history": f"{_FPL_BASE}/entry/{{entry_id}}/history/",
+    "entry_picks":  f"{_FPL_BASE}/entry/{{entry_id}}/event/{{gw}}/picks/",
 }
 
 _DEFAULT_MAX_CONCURRENT = 10
@@ -541,6 +542,25 @@ class AsyncFPLClient:
         _, raw = await self._fetch_with_retries_raw(_ENDPOINTS["entry_history"].format(entry_id=entry_id))
         if raw is None:
             raise FPLClientError(f"Failed to fetch history for entry {entry_id} from FPL API")
+        return raw
+
+    async def get_entry_picks_raw(self, gw: int, entry_id: int) -> RawResponse:
+        """Fetch one manager's picks for one gameweek and return the verbatim response.
+
+        Like ``get_entry_history_raw``: a non-2xx status (a 404 for a gameweek
+        before the manager joined) is returned, not raised; the caller judges it.
+
+        Args:
+            gw: Gameweek number.
+            entry_id: FPL manager (entry) id.
+
+        Raises:
+            FPLClientError: If no response was received at all.
+        """
+        logger.debug("Fetching entry %d picks for gameweek %d (raw)...", entry_id, gw)
+        _, raw = await self._fetch_with_retries_raw(_ENDPOINTS["entry_picks"].format(entry_id=entry_id, gw=gw))
+        if raw is None:
+            raise FPLClientError(f"Failed to fetch picks for entry {entry_id} gameweek {gw} from FPL API")
         return raw
 
     async def get_player_history(self, player_id: int) -> Dict[str, Any]:

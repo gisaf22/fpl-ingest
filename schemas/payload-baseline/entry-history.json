@@ -1,0 +1,90 @@
+{
+  "endpoint": "entry-history",
+  "paths": {
+    "$": [
+      "object"
+    ],
+    "$.chips": [
+      "array"
+    ],
+    "$.chips[]": [
+      "object"
+    ],
+    "$.chips[].event": [
+      "number"
+    ],
+    "$.chips[].name": [
+      "string"
+    ],
+    "$.chips[].time": [
+      "string"
+    ],
+    "$.current": [
+      "array"
+    ],
+    "$.current[]": [
+      "object"
+    ],
+    "$.current[].bank": [
+      "number"
+    ],
+    "$.current[].event": [
+      "number"
+    ],
+    "$.current[].event_transfers": [
+      "number"
+    ],
+    "$.current[].event_transfers_cost": [
+      "number"
+    ],
+    "$.current[].overall_rank": [
+      "number"
+    ],
+    "$.current[].overall_rank_percentage": [
+      "string"
+    ],
+    "$.current[].percentile_rank": [
+      "number"
+    ],
+    "$.current[].points": [
+      "number"
+    ],
+    "$.current[].points_on_bench": [
+      "number"
+    ],
+    "$.current[].rank": [
+      "number"
+    ],
+    "$.current[].rank_sort": [
+      "number"
+    ],
+    "$.current[].total_points": [
+      "number"
+    ],
+    "$.current[].value": [
+      "number"
+    ],
+    "$.past": [
+      "array"
+    ],
+    "$.past[]": [
+      "object"
+    ],
+    "$.past[].rank": [
+      "number"
+    ],
+    "$.past[].rank_percentage": [
+      "string"
+    ],
+    "$.past[].season_name": [
+      "string"
+    ],
+    "$.past[].total_points": [
+      "number"
+    ]
+  },
+  "samples": [
+    "entry-history/4685107",
+    "entry-history/8450051"
+  ]
+}

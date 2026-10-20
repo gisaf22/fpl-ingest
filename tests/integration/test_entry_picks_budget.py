@@ -18,6 +18,7 @@ import pytest
 from fpl_ingest.extract.http.client import RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter
 from fpl_ingest.extract.stages.entry_picks import COHORT_RANDOM, ingest_entry_picks
+from fpl_ingest.orchestration.run_status import classify_run
 
 pytestmark = pytest.mark.asyncio
 
@@ -25,6 +26,10 @@ SEASON = "2026-27"
 GW1 = {"id": 1, "finished": True, "data_checked": True}
 PICKS_15 = {"picks": [{"element": i, "position": i, "multiplier": 1} for i in range(1, 16)]}
 ENTRIES = [(e, COHORT_RANDOM) for e in range(100, 120)]  # 20 entries
+# Dispatch runs MAX_CONCURRENT_REQUESTS (10) at once, so 20 entries are two waves. The budget runs out
+# during the first wave, which finishes (in-flight work is never cut off); the second wave never starts.
+WAVE_SECONDS = 0.2
+BUDGET_SECONDS = 0.1
 
 
 def _ok() -> RawResponse:
@@ -63,23 +68,25 @@ class TestBudget:
     async def test_a_small_budget_stops_cleanly_and_leaves_unreached_entries_absent(self, tmp_path):
         root = tmp_path / "raw"
         writer = _writer(root, "20261019T043000Z-aaaaaa")
-        client = _slow_client(0.05)
+        client = _slow_client(WAVE_SECONDS)
 
         outcome = await ingest_entry_picks(
-            client, writer, season=SEASON, entries=ENTRIES, gameweeks=[GW1], budget_seconds=0.12,
+            client, writer, season=SEASON, entries=ENTRIES, gameweeks=[GW1], budget_seconds=BUDGET_SECONDS,
         )
 
         assert len(client.calls) < len(ENTRIES), "expected the budget to stop before every entry was reached"
-        reason = getattr(outcome.result, "stopped_reason", None) or outcome.metadata.get("stopped_reason")
-        assert reason == "stopped_at_budget"
+        assert outcome.metadata.get("stopped_reason") == "stopped_at_budget"
+        assert classify_run(writer.endpoint_outcomes) == "SUCCESS", "a budget stop that captured something is not a failure"
+        manifest = json.loads((root / writer.finalize("SUCCESS").manifest_key).read_text())
+        assert manifest["stop_reason"] == "stopped_at_budget"
 
     @pytest.mark.covers("#116 AC4")
     async def test_a_second_run_resumes_at_the_first_uncaptured_gameweek(self, tmp_path):
         root = tmp_path / "raw"
-        first = _slow_client(0.05)
+        first = _slow_client(WAVE_SECONDS)
         await ingest_entry_picks(
             first, _writer(root, "20261019T043000Z-bbbbbb"),
-            season=SEASON, entries=ENTRIES, gameweeks=[GW1], budget_seconds=0.12,
+            season=SEASON, entries=ENTRIES, gameweeks=[GW1], budget_seconds=BUDGET_SECONDS,
         )
         assert len(first.calls) < len(ENTRIES)
 
@@ -99,18 +106,19 @@ class TestBudget:
     async def test_a_budget_stop_that_captured_nothing_exits_non_zero(self, tmp_path):
         root = tmp_path / "raw"
         writer = _writer(root, "20261019T043000Z-dddddd")
-        client = _slow_client(10.0)  # far exceeds the budget before even one request resolves
+        client = _slow_client(0.0)
 
+        # A zero budget is spent before the first request, whatever the machine's speed; in-flight
+        # requests finish rather than being cut off, so a tiny non-zero budget could not guarantee this.
         outcome = await ingest_entry_picks(
-            client, writer, season=SEASON, entries=ENTRIES, gameweeks=[GW1], budget_seconds=0.01,
+            client, writer, season=SEASON, entries=ENTRIES, gameweeks=[GW1], budget_seconds=0.0,
         )
 
+        assert client.calls == []
         assert outcome.result.written == 0
-        reason = getattr(outcome.result, "stopped_reason", None) or outcome.metadata.get("stopped_reason")
-        assert reason == "stopped_at_budget"
-        assert outcome.metadata.get("exit_non_zero") == "true" or outcome.result.errors > 0, (
-            "a budget stop that captured nothing must be surfaced as a failure, not a quiet SUCCESS"
-        )
+        assert outcome.metadata.get("stopped_reason") == "stopped_at_budget"
+        # The runner derives the exit code from this status; a quiet SUCCESS here would exit 0.
+        assert classify_run(writer.endpoint_outcomes) != "SUCCESS"
 
 
 class TestThroughputRecord:

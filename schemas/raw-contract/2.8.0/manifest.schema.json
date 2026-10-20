@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gisaf22/fpl-ingest/schemas/raw-contract/2.8.0/manifest.schema.json",
+  "title": "Per-run manifest (manifest.json), raw contract 2.8.0",
+  "description": "One per run, under raw/{source}/_manifests/{extraction_date}/{run_id}/. Strict at the top level and on each captures[] entry: a field not listed here is a contract change. objects, totals, config and finality stay free-form, and so does each endpoint's block except its optional drift (2.4.0, #85), non_2xx_by_gameweek and throughput (2.8.0, #116) blocks, which are strict. captures is present only once the run is finalized; consumers must ignore IN_PROGRESS manifests. 2.5.0 (#54): a response that is not a valid capture is stored under raw/fpl/_invalid/{class}/ and not as payload.json; it has a captures[] entry with usable false and a class, and its endpoint counts as failed. 2.6.0 (#109): a finalized manifest carries invalid_counts, the number of invalid captures per class, and abort_reason when the run stopped itself after consecutive http_error responses. 2.7.0 (#115): an invalid capture the caller declared expected carries expected true (on its sidecar and captures[] entry) and is tallied in its endpoint's expected count instead of failed; the count is absent when zero. 2.8.0 (#116): the entry-picks endpoint (raw/fpl/entry-picks/{season}/{gw}/{entry_id}/...) adds non_2xx_by_gameweek and throughput to its endpoints block, and a run that stopped dispatching at its wall-clock budget carries stop_reason; both are absent otherwise.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "raw_contract_version", "run_id", "source", "extraction_date", "started_at", "ended_at",
+    "duration_seconds", "status", "objects", "totals", "failures", "endpoints", "git_sha",
+    "ingest_version", "config", "trigger", "origin"
+  ],
+  "properties": {
+    "raw_contract_version": { "const": "2.8.0" },
+    "run_id": { "type": "string", "pattern": "^\\d{8}T\\d{6}Z-[0-9a-f]{6}$" },
+    "source": { "type": "string", "minLength": 1 },
+    "extraction_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "started_at": { "$ref": "#/$defs/utc_timestamp" },
+    "ended_at": { "anyOf": [{ "$ref": "#/$defs/utc_timestamp" }, { "type": "null" }] },
+    "duration_seconds": { "type": ["number", "null"] },
+    "status": { "enum": ["SUCCESS", "PARTIAL", "FAILED", "IN_PROGRESS"] },
+    "objects": { "type": "object" },
+    "totals": { "type": "object" },
+    "failures": { "type": "array", "items": { "type": "object" } },
+    "endpoints": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "drift": { "$ref": "#/$defs/endpoint_drift" },
+          "non_2xx_by_gameweek": { "$ref": "#/$defs/non_2xx_by_gameweek" },
+          "throughput": { "$ref": "#/$defs/throughput" }
+        }
+      }
+    },
+    "git_sha": { "type": ["string", "null"] },
+    "ingest_version": { "type": ["string", "null"] },
+    "config": { "type": ["object", "null"] },
+    "trigger": { "type": ["string", "null"] },
+    "origin": { "$ref": "#/$defs/origin" },
+    "finality": { "type": "object" },
+    "markers_withheld": { "type": "array", "items": { "type": "object" } },
+    "invalid_counts": {
+      "description": "Invalid captures in the run per class (#109). Zero-filled; finalized manifests only. fetch_failed stores nothing and is not counted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["not_found", "shape_invalid", "http_error"],
+      "properties": {
+        "not_found": { "type": "integer", "minimum": 0 },
+        "shape_invalid": { "type": "integer", "minimum": 0 },
+        "http_error": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "abort_reason": {
+      "description": "Why the run stopped itself (#109). Absent when it did not. aborted_http_error_streak: N consecutive http_error responses; in-flight requests finished and the manifest was written.",
+      "enum": ["aborted_http_error_streak"]
+    },
+    "stop_reason": {
+      "description": "Why the run chose to stop dispatching before it ran out of work (2.8.0, #116). Absent when it did not. stopped_at_budget: the stage's wall-clock budget was spent; in-flight requests finished, unreached entries are absent (not failed), and a rerun resumes. Not a failure by itself: a stop that captured nothing new also marks the endpoint failed, so the run exits non-zero.",
+      "enum": ["stopped_at_budget"]
+    },
+    "captures": {
+      "description": "One entry per body written in the run, valid or invalid. Fetch failures have no body and no entry.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/capture" }
+    }
+  },
+  "if": { "properties": { "status": { "const": "IN_PROGRESS" } } },
+  "then": { "not": { "required": ["captures", "invalid_counts"] } },
+  "else": { "required": ["captures", "invalid_counts"] },
+  "$defs": {
+    "non_2xx_by_gameweek": {
+      "description": "entry-picks only (2.8.0, #116): per gameweek the run requested, how many non-2xx picks responses it stored (not_found and http_error; a 2xx that failed its shape check and a fetch that stored nothing are not counted). Resumed entries are not requests and are not counted. Zero is recorded, so a quiet gameweek reads differently from one not requested. Present only when the run made at least one picks request.",
+      "type": "object",
+      "propertyNames": { "pattern": "^[1-9][0-9]*$" },
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "throughput": {
+      "description": "entry-picks only (2.8.0, #116): what the run's picks requests cost, to size the wall-clock budget. requests excludes entries skipped by resume; total_seconds is the stage's wall time; requests_per_second is requests / total_seconds (0 when total_seconds is 0); gameweeks_completed lists the gameweeks whose settlement marker this run wrote. Present only when the run made at least one picks request.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "total_seconds", "requests_per_second", "gameweeks_completed"],
+      "properties": {
+        "requests": { "type": "integer", "minimum": 1 },
+        "total_seconds": { "type": "number", "minimum": 0 },
+        "requests_per_second": { "type": "number", "minimum": 0 },
+        "gameweeks_completed": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "uniqueItems": true }
+      }
+    },
+    "endpoint_drift": {
+      "description": "Payload drift aggregated over the endpoint's captures (#85). Finalized manifests only; warn-only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checked", "reasons", "entries"],
+      "properties": {
+        "status": { "enum": ["ok", "drift", "unavailable"] },
+        "checked": { "type": "integer", "minimum": 1 },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "kind", "baseline_types", "observed_types", "payloads"],
+            "properties": {
+              "path": { "type": "string", "pattern": "^\\$" },
+              "kind": { "enum": ["added", "removed", "type_changed"] },
+              "baseline_types": { "type": "array", "items": { "enum": ["object", "array", "string", "number", "boolean", "null"] } },
+              "observed_types": { "type": "array", "items": { "enum": ["object", "array", "string", "number", "boolean", "null"] } },
+              "payloads": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "origin": {
+      "description": "Where the run came from (#75). kind is ci when GITHUB_ACTIONS is \"true\", else local; workflow, ref and github_run_id are the Actions run's values for ci and null for local. These are a self-report, not proof. aws_principal is the role or IAM user name STS resolved the run's credentials to, \"root\" for the root user, null when the lookup failed; never an ARN, account ID or session name. Production is the consumer's call, e.g. kind == ci and ref == refs/heads/main.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "workflow", "ref", "github_run_id", "aws_principal"],
+      "properties": {
+        "kind": { "enum": ["ci", "local"] },
+        "workflow": { "type": ["string", "null"] },
+        "ref": { "type": ["string", "null"] },
+        "github_run_id": { "type": ["string", "null"] },
+        "aws_principal": { "type": ["string", "null"], "pattern": "^[^:]+$" }
+      },
+      "if": { "properties": { "kind": { "const": "ci" } } },
+      "then": {
+        "properties": {
+          "workflow": { "type": "string" },
+          "ref": { "type": "string" },
+          "github_run_id": { "type": "string" }
+        }
+      },
+      "else": {
+        "properties": {
+          "workflow": { "type": "null" },
+          "ref": { "type": "null" },
+          "github_run_id": { "type": "null" }
+        }
+      }
+    },
+    "utc_timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key", "endpoint", "received_at", "content_sha256", "content_length",
+        "http_status", "shape_ok", "usable", "season"
+      ],
+      "properties": {
+        "key": {
+          "description": "Full object key under the bucket, no scheme.",
+          "type": "string",
+          "pattern": "^raw/"
+        },
+        "endpoint": { "type": "string", "minLength": 1 },
+        "received_at": { "$ref": "#/$defs/utc_timestamp" },
+        "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "content_length": { "type": "integer", "minimum": 0 },
+        "http_status": { "type": "integer" },
+        "shape_ok": { "type": "boolean" },
+        "usable": {
+          "description": "Written, shape_ok and not an invalid response. Always false for an entry with a class.",
+          "type": "boolean"
+        },
+        "class": {
+          "description": "Present only on an invalid response, whose key is under raw/fpl/_invalid/{class}/.",
+          "enum": ["not_found", "shape_invalid", "http_error"]
+        },
+        "expected": {
+          "description": "Present, and true, only on an invalid capture the caller declared legitimate for its request (2.7.0, #115). Absent otherwise, never false.",
+          "const": true
+        },
+        "season": {
+          "description": "From this run's bootstrap-static; null when the run had no usable one.",
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}$"
+        }
+      }
+    }
+  }
+}

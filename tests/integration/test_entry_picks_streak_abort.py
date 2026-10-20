@@ -43,12 +43,21 @@ def _http_error(entry_id: int) -> RawResponse:
     )
 
 
-def _blocked_client():
+def _ok() -> RawResponse:
+    at = datetime(2026, 10, 19, 5, 0, tzinfo=timezone.utc)
+    return RawResponse(
+        url="https://fantasy.premierleague.com/api/entry/x/event/1/picks/", status=200,
+        headers={"content-type": "application/json"}, body=b'{"picks": [{"element": 1, "position": 1}]}',
+        requested_at=at, received_at=at, attempt_count=1,
+    )
+
+
+def _blocked_client(*, blocked: bool = True):
     calls: list[int] = []
 
     async def _fetch(gw: int, entry_id: int) -> RawResponse:
         calls.append(entry_id)
-        return _http_error(entry_id)
+        return _http_error(entry_id) if blocked else _ok()
 
     client = MagicMock()
     client.get_entry_picks_raw = AsyncMock(side_effect=_fetch)
@@ -84,10 +93,11 @@ class TestStreakAbort:
         await ingest_entry_picks(first, _writer(root, "20261019T043000Z-bbbbbb"), season=SEASON, entries=ENTRIES, gameweeks=[GW1])
         assert first.calls, "expected the first run to have dispatched at least one request"
 
-        second = _blocked_client()
+        # The API recovers. A blocked second run would just abort again on the same first entries.
+        second = _blocked_client(blocked=False)
         await ingest_entry_picks(second, _writer(root, "20261019T050000Z-cccccc"), season=SEASON, entries=ENTRIES, gameweeks=[GW1])
 
-        never_requested_first_run = {e for e, _ in ENTRIES} - set(first.calls)
-        assert never_requested_first_run & set(second.calls), (
-            "expected at least one entry skipped by the first run's abort to be requested on the next run"
+        assert set(first.calls) <= set(second.calls), "an entry that got an http_error must be retried"
+        assert {e for e, _ in ENTRIES} - set(first.calls) <= set(second.calls), (
+            "an entry the abort kept from being dispatched must be requested on the next run"
         )

@@ -30,7 +30,7 @@ from time import perf_counter
 from typing import Any, TypeVar
 
 from fpl_ingest import __version__ as INGEST_VERSION
-from fpl_ingest.config import resolve_http_error_streak
+from fpl_ingest.config import resolve_entry_picks_max_seconds, resolve_http_error_streak
 from fpl_ingest.orchestration.execution_state import PipelineExecutionState
 from fpl_ingest.orchestration.origin import detect_origin
 from fpl_ingest.orchestration.run_status import (
@@ -49,6 +49,7 @@ from fpl_ingest.extract.stages.bootstrap import (
 )
 from fpl_ingest.extract.stages.event_status import Finality, ingest_event_status
 from fpl_ingest.extract.stages.fixtures import RAW_SOURCE, ingest_fixtures
+from fpl_ingest.extract.stages.entry_picks import COHORT_RANDOM, PICKS_FAMILY, ingest_entry_picks
 from fpl_ingest.extract.stages.manager_panel import default_seed, ingest_manager_panel, read_panel
 from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
 from fpl_ingest.extract.stages.element_summary import ingest_player_histories
@@ -753,6 +754,79 @@ async def run_manager_panel_capture(*, args, config, logger: logging.Logger) -> 
         raw_writer, logger,
         git_sha=_current_git_sha(logger), ingest_version=INGEST_VERSION,
         config=_effective_run_config(args), trigger="manual",
+        drift_report=getattr(args, "drift_report", None),
+    )
+    return exit_code
+
+
+async def run_entry_picks_capture(*, args, config, logger: logging.Logger) -> int:
+    """Capture each kept panel manager's picks for the finished, data-checked gameweeks (#116).
+
+    Captures bootstrap-static first, for the season and the gameweeks' ``finished``
+    and ``data_checked`` flags, then reads the season's panel file (the one
+    permitted read-back, ADR 005) for the kept managers and their cohorts. A run
+    with no panel, or no season, records the failure under ``entry-picks`` and
+    exits non-zero: it cannot know whom to fetch. The stage stops at
+    ``--max-seconds`` and exits 0 unless it captured nothing new.
+    """
+    storage_backend = _build_storage_backend(config)
+    run_start = datetime.now(timezone.utc)
+    applied_rate = _resolve_applied_rate(logger, args.rate)
+    rate_limiter = TokenBucketLimiter(rate=applied_rate, max_concurrent=MAX_CONCURRENT_REQUESTS)
+    max_seconds = resolve_entry_picks_max_seconds(getattr(args, "max_seconds", None))
+
+    async with AsyncFPLClient(
+        rate_limiter=rate_limiter,
+        connector_limit=MAX_CONCURRENT_REQUESTS,
+    ) as client:
+        try:
+            raw = await client.get_bootstrap_raw()
+        except FPLClientError as exc:
+            logger.error("entry-picks: bootstrap-static fetch failed; nothing written: %s", exc)
+            return 1
+
+        if storage_backend is None:
+            config.raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_writer = LocalRawWriter(
+            config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend,
+            origin=detect_origin(logger=logger), baseline_dir=getattr(config, "baseline_dir", None),
+            http_error_streak=resolve_http_error_streak(getattr(args, "http_error_streak", None)),
+        )
+        season = season_for_bootstrap(raw, logger)
+        raw_writer.set_season(season)
+        stage_results: list[StageResult] = []
+        _record_stage(stage_results, logger, capture_bootstrap_raw(raw, raw_writer).result, strict=False)
+
+        panel = read_panel(raw_writer.backend, season) if season is not None else None
+        if panel is None:
+            reason = "no season: bootstrap-static had no usable events" if season is None else (
+                f"no manager panel for {season}: run manager-panel first"
+            )
+            logger.error("entry-picks: cannot run: %s", reason)
+            raw_writer.record_failure(
+                PICKS_FAMILY, request_url=_ENDPOINTS["bootstrap"], error_class="CannotRun", message=reason
+            )
+            _record_stage(stage_results, logger, StageResult(stage="entry_picks", errors=1), strict=False)
+        else:
+            assert season is not None  # a panel is read only for a known season
+            entries = [(int(e["entry_id"]), str(e["cohort"])) for e in panel["entries"]]
+            payload = raw.json()
+            events = payload.get("events") if isinstance(payload, dict) else None
+            logger.info(
+                "entry-picks: %d kept manager(s), budget %.0fs (%d of them random cohort)",
+                len(entries), max_seconds, sum(1 for _, cohort in entries if cohort == COHORT_RANDOM),
+            )
+            outcome = await ingest_entry_picks(
+                client, raw_writer, season=season, entries=entries,
+                gameweeks=events if isinstance(events, list) else [], budget_seconds=max_seconds,
+            )
+            _record_stage(stage_results, logger, outcome.result, strict=False)
+
+    exit_code = _exit_code(logger, raw_writer, stage_results)
+    _finalize_raw_manifest(
+        raw_writer, logger,
+        git_sha=_current_git_sha(logger), ingest_version=INGEST_VERSION,
+        config={**_effective_run_config(args), "max_seconds": max_seconds}, trigger="manual",
         drift_report=getattr(args, "drift_report", None),
     )
     return exit_code

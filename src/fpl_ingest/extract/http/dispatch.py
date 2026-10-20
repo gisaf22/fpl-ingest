@@ -1,7 +1,7 @@
-"""Bounded dispatch loop that stops when the run aborts (#115).
+"""Bounded dispatch loop that stops when the run aborts (#115), and the off-loop storage runner.
 
 Built for the stages that send many small requests and route each response as it
-arrives (the manager panel, and entry-picks next). It checks ``aborted`` before
+arrives (the manager panel and entry-picks). It checks ``aborted`` before
 each dispatch, so a blocked API is not hammered across thousands of requests
 (#109); work already in flight finishes and is stored. event-live and
 element-summary fetch everything with ``asyncio.gather`` before routing and do
@@ -11,7 +11,7 @@ not use it.
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable, Sequence, TypeVar
+from typing import Any, Awaitable, Callable, Sequence, TypeVar
 
 Item = TypeVar("Item")
 Result = TypeVar("Result")
@@ -40,3 +40,19 @@ async def dispatch_bounded(
 
     await asyncio.gather(*(worker() for _ in range(min(limit, len(items)))))
     return [done[i] for i in sorted(done)]
+
+
+class OffLoop:
+    """Runs the writer's and backend's blocking calls on a thread, one at a time.
+
+    boto3 is synchronous: called on the loop it freezes every in-flight
+    request, whose 30 s timers keep running (runs 39365465979, 39366583920).
+    The writer is not thread-safe, so the lock keeps a single thread inside it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+
+    async def __call__(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        async with self._lock:
+            return await asyncio.to_thread(fn, *args, **kwargs)

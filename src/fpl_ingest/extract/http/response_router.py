@@ -141,6 +141,14 @@ def route_and_record(
     return routed
 
 
+#: Runs ``fn(*args, **kwargs)`` and returns its result; a stage passes one that keeps blocking I/O off the loop.
+BlockingRunner = Callable[..., Awaitable[Any]]
+
+
+async def _run_inline(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    return fn(*args, **kwargs)
+
+
 async def fetch_and_route(
     raw_writer: LocalRawWriter,
     endpoint: str,
@@ -151,6 +159,7 @@ async def fetch_and_route(
     label: str | None = None,
     absence_ok: bool = False,
     expected: frozenset[str] = frozenset(),
+    run_blocking: BlockingRunner | None = None,
 ) -> RoutedResponse:
     """Fetch, classify, store and record one response: the tail every stage shares (#115).
 
@@ -164,15 +173,20 @@ async def fetch_and_route(
         request_url: Recorded on a no-response failure, when there is no response to read it from.
         label: Names the request in log lines; defaults to ``endpoint``.
         absence_ok, expected: As for ``route_response``.
+        run_blocking: Runs the blocking storage work (the writer's backend calls)
+            off the event loop; None runs it inline. The caller owns serialising
+            the writer if it passes one (the writer is not thread-safe).
     """
     label = label or endpoint
+    run = run_blocking or _run_inline
     try:
         raw = await fetch()
     except FPLClientError as exc:
-        record_no_response(raw_writer, endpoint, request_url=request_url, exc=exc, label=label)
+        await run(record_no_response, raw_writer, endpoint, request_url=request_url, exc=exc, label=label)
         return RoutedResponse(ResponseClass.FETCH_FAILED, None)
-    return route_and_record(
-        raw_writer, endpoint, raw, validate(raw), label=label, absence_ok=absence_ok, expected=expected
+    return await run(
+        route_and_record,
+        raw_writer, endpoint, raw, validate(raw), label=label, absence_ok=absence_ok, expected=expected,
     )
 
 
@@ -181,7 +195,7 @@ def record_no_response(
 ) -> None:
     """Record the manifest failure for a request that got no response at all."""
     if label is not None:
-        logger.error("Failed to fetch %s: %s", label, exc)
+        logger.error("Failed to fetch %s: %s: %s", label, type(exc).__name__, exc)
     raw_writer.record_failure(
         endpoint, request_url=request_url, error_class=type(exc).__name__, message=str(exc)
     )

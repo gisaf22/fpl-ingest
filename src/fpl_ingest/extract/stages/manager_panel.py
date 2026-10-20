@@ -25,10 +25,12 @@ stored. The panel file is the one thing read back (D5), via
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import random
+import time
 from functools import partial
 from typing import Any
 
@@ -49,6 +51,8 @@ HISTORY_FAMILY = "entry-history"
 PANEL_SIZE = 2000
 #: The self cohort (D1): kept outside the random draw.
 SELF_COHORT = (8450051, 4685107)
+#: Seconds between progress log lines while the draw runs.
+PROGRESS_INTERVAL_SECONDS = 30.0
 #: Every id in the first draw joins at GW1, where backfill starts (P2).
 INITIAL_JOINED_GW = 1
 
@@ -101,6 +105,7 @@ async def ingest_manager_panel(
     seed: int,
     panel_size: int = PANEL_SIZE,
     self_cohort: tuple[int, ...] = SELF_COHORT,
+    progress_interval: float = PROGRESS_INTERVAL_SECONDS,
 ) -> StageOutcome[dict[str, Any]]:
     """Draw the season's panel once and capture each kept manager's history.
 
@@ -109,7 +114,7 @@ async def ingest_manager_panel(
     for the kept ones, and writes the panel file only if nothing failed (P3).
     """
     backend = raw_writer.backend
-    existing = read_panel(backend, season)
+    existing = await asyncio.to_thread(read_panel, backend, season)
     if existing is not None:
         logger.info("Manager panel for %s already drawn; nothing to do", season)
         return StageOutcome(result=StageResult(stage=MANAGER_PANEL_STAGE.name), output=existing)
@@ -117,12 +122,25 @@ async def ingest_manager_panel(
     drawn = draw_ids(seed, total_players, panel_size, self_cohort)
     jobs = [(i, COHORT_RANDOM) for i in drawn] + [(i, COHORT_SELF) for i in self_cohort]
 
-    async def capture(job: tuple[int, str]) -> str:
-        return await _capture_one(client, raw_writer, season, *job)
+    io = _OffLoop()
+    progress = {"attempted": 0, "stored": 0, "failed": 0}
 
-    dispatched = await dispatch_bounded(
-        jobs, capture, aborted=lambda: raw_writer.aborted, limit=MAX_CONCURRENT_REQUESTS
-    )
+    async def capture(job: tuple[int, str]) -> str:
+        verdict = await _capture_one(client, raw_writer, io, season, *job)
+        progress["attempted"] += 1
+        if verdict == "kept":
+            progress["stored"] += 1
+        elif verdict == "error":
+            progress["failed"] += 1
+        return verdict
+
+    reporter = asyncio.create_task(_report_progress(progress, len(jobs), progress_interval))
+    try:
+        dispatched = await dispatch_bounded(
+            jobs, capture, aborted=lambda: raw_writer.aborted, limit=MAX_CONCURRENT_REQUESTS
+        )
+    finally:
+        reporter.cancel()
 
     # A job the abort kept from being dispatched is an unresolved id: it blocks the panel file.
     tally = {"fetched": 0, "errors": len(jobs) - len(dispatched), "written": 0, "not_found": 0, "no_picks": 0}
@@ -159,7 +177,8 @@ async def ingest_manager_panel(
         "drawn_not_kept": {"not_found": tally["not_found"], "no_picks": tally["no_picks"]},
         "entries": entries,
     }
-    backend.put_bytes(panel_key(RAW_SOURCE, season), json.dumps(panel, sort_keys=True, indent=2).encode("utf-8") + b"\n")
+    panel_bytes = json.dumps(panel, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    await io(backend.put_bytes, panel_key(RAW_SOURCE, season), panel_bytes)
     logger.info("Manager panel %s drawn: kept %d of %d", season, panel["kept"], panel["drawn"])
     return StageOutcome(
         result=result, output=panel,
@@ -167,12 +186,39 @@ async def ingest_manager_panel(
     )
 
 
+class _OffLoop:
+    """Runs the writer's and backend's blocking calls on a thread, one at a time.
+
+    boto3 is synchronous: called on the loop it freezes every in-flight
+    request, whose 30 s timers keep running (runs 39365465979, 39366583920).
+    The writer is not thread-safe, so the lock keeps a single thread inside it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+
+    async def __call__(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        async with self._lock:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+async def _report_progress(progress: dict[str, int], total: int, interval: float) -> None:
+    """Log attempted, stored and failed ids every ``interval`` seconds until cancelled."""
+    started = time.monotonic()
+    while True:
+        await asyncio.sleep(interval)
+        logger.info(
+            "Manager panel progress: attempted %d of %d, stored %d, failed %d (%.0fs elapsed)",
+            progress["attempted"], total, progress["stored"], progress["failed"], time.monotonic() - started,
+        )
+
+
 #: Outcomes a random-cohort id may legitimately end in: it may not exist yet, or have no picks.
 _EXPECTED_DROPS = frozenset({"not_found", "no_picks"})
 
 
 async def _capture_one(
-    client: AsyncFPLClient, raw_writer: LocalRawWriter, season: str, entry_id: int, cohort: str
+    client: AsyncFPLClient, raw_writer: LocalRawWriter, io: _OffLoop, season: str, entry_id: int, cohort: str
 ) -> str:
     """Capture one id; return resumed, kept, no_picks, not_found or error.
 
@@ -180,7 +226,7 @@ async def _capture_one(
     """
     endpoint = raw_endpoint(season, entry_id)
     # Existence alone says kept: only kept ids are ever stored (P6).
-    if raw_writer.backend.exists_prefix(f"{RAW_SOURCE}/{endpoint}"):
+    if await io(raw_writer.backend.exists_prefix, f"{RAW_SOURCE}/{endpoint}"):
         return "resumed"
     url = _ENDPOINTS["entry_history"].format(entry_id=entry_id)
     random_cohort = cohort == COHORT_RANDOM
@@ -191,9 +237,10 @@ async def _capture_one(
             request_url=url, label=f"history {entry_id}",
             # A self id is configured, so it must exist: its 404 is an http_error.
             absence_ok=random_cohort, expected=_EXPECTED_DROPS if random_cohort else frozenset(),
+            run_blocking=io,
         )
     except Exception as exc:  # noqa: BLE001 - any fetch failure is recorded, never raised
-        record_no_response(raw_writer, endpoint, request_url=url, exc=exc, label=f"history {entry_id}")
+        await io(record_no_response, raw_writer, endpoint, request_url=url, exc=exc, label=f"history {entry_id}")
         return "error"
 
     response_class = routed.response_class

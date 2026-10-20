@@ -84,7 +84,7 @@ async def ingest_fixtures(
         logger.error(
             "Fixtures response is %s (%s); kept at %s, not as a payload",
             routed.response_class.value,
-            ", ".join(routed.shape["failures"]),
+            ", ".join((routed.shape or {})["failures"]),
             write.payload_key,
         )
         # Counted as skipped, which strict mode aborts on. Nothing usable was

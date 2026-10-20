@@ -671,6 +671,7 @@ async def run_pre_deadline_capture(*, args, config, logger: logging.Logger) -> i
         if raw is not None:
             _record_stage(stage_results, logger, capture_bootstrap_raw(raw, raw_writer).result, strict=False)
         else:
+            assert bootstrap_error is not None  # raw is None only when the fetch raised
             record_no_response(
                 raw_writer, BOOTSTRAP_ENDPOINT, request_url=_ENDPOINTS["bootstrap"], exc=bootstrap_error
             )

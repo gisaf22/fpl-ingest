@@ -240,9 +240,10 @@ class TestShapeValidation:
 
         assert validate_gameweek_shape(_raw(payload))["ok"] is True
 
+    @pytest.mark.covers("#55 AC7")
     @pytest.mark.asyncio
-    async def test_shape_failure_still_writes_the_payload_and_flags_the_manifest(self, tmp_path):
-        """The one unrecoverable mistake here would be discarding a surprising payload."""
+    async def test_shape_failure_keeps_the_body_apart_from_the_payload_and_flags_the_manifest(self, tmp_path):
+        """An invalid event-live response is kept under _invalid with its status, never as payload.json."""
         raw_dir = tmp_path / "raw"
         raw_dir.mkdir()
         writer = _writer(tmp_path)
@@ -252,14 +253,13 @@ class TestShapeValidation:
             _client({1: raw}), writer, [_event(1, finished=True)], event_finality=_settled(1)
         )
 
-        payload_path = (
-            raw_dir / "fpl" / "event-live" / "01" / writer.extraction_date / writer.run_id / "payload.json"
-        )
-        assert payload_path.read_bytes() == raw.body, "a failed payload must still be written"
-
-        sidecar = _read(
-            raw_dir, f"fpl/event-live/01/{writer.extraction_date}/{writer.run_id}/metadata.json"
-        )
+        raw_root = tmp_path / "raw"
+        assert not list(raw_root.glob("fpl/event-live/01/**/payload.json")), "an invalid response is never a payload"
+        (invalid_body,) = raw_root.glob("fpl/_invalid/shape_invalid/event-live/01/**/response.body")
+        assert invalid_body.read_bytes() == raw.body
+        sidecar = json.loads((invalid_body.parent / "metadata.json").read_text())
+        assert sidecar["http_status"] == raw.status
+        assert sidecar["class"] == "shape_invalid"
         assert sidecar["shape_validation"]["ok"] is False
         assert sidecar["shape_validation"]["failures"]
 

@@ -1,10 +1,11 @@
 # One-off scheduled run of `fpl-ingest manager-panel` (#102, R6).
 #
 # Production writes come only from scheduled runs, so the first live draw of
-# the 2026-27 manager panel gets two single-date cron slots:
-#   - 2026-10-20 03:30 UTC: slot 1, draws the panel and captures each kept
+# the 2026-27 manager panel gets two single-date cron slots (re-slotted after
+# the 03:30/03:45 slots were spent before #117 merged):
+#   - 2026-10-20 06:37 UTC: slot 1, draws the panel and captures each kept
 #     manager's entry-history.
-#   - 2026-10-20 03:45 UTC: slot 2, the rerun check. It must make zero
+#   - 2026-10-20 06:57 UTC: slot 2, the rerun check. It must make zero
 #     entry-history requests and leave the panel object unchanged.
 #     The slots share one concurrency group (queued, never cancelled), so a
 #     late-starting slot 1 cannot be overlapped by slot 2.
@@ -21,8 +22,8 @@ name: Scheduled Ingestion — Manager Panel (one-off, #102)
 
 on:
   schedule:
-    - cron: "30 3 20 10 *"
-    - cron: "45 3 20 10 *"
+    - cron: "37 6 20 10 *"
+    - cron: "57 6 20 10 *"
 
 permissions:
   id-token: write
@@ -37,8 +38,9 @@ jobs:
     # Scheduled runs always execute on the default branch; the ref check is a second guard.
     if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Measured run is ~200 s; 15 min bounds a hang. A queued slot 2 waits for it.
-    timeout-minutes: 15
+    # Measured run is ~200 s but a serial run can be slower; 25 min bounds a hang.
+    # A queued slot 2 waits for it.
+    timeout-minutes: 25
 
     env:
       FPL_STORAGE_BACKEND: s3

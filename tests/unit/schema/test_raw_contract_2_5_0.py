@@ -41,7 +41,10 @@ def _errors(name: str, document: dict) -> list[str]:
 @pytest.fixture
 def run_with_one_valid_and_one_invalid_capture(tmp_path):
     """A run whose event-status is valid and whose fixtures response is a 403."""
-    writer = LocalRawWriter(tmp_path / "raw", "fpl")
+    writer = LocalRawWriter(
+        tmp_path / "raw", "fpl",
+        origin={"kind": "local", "workflow": None, "ref": None, "github_run_id": None, "aws_principal": None},
+    )
     route_response(writer, "event-status", _response(200, b"{}"), PASSING)
     route_response(writer, "fixtures", _response(403, b'{"detail": "forbidden"}'), FAILING)
     manifest = writer.finalize("PARTIAL").manifest

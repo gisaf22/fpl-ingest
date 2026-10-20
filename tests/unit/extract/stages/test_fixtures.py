@@ -142,28 +142,29 @@ class TestShapeValidation:
         assert verdict["ok"] is True
 
     @pytest.mark.asyncio
-    async def test_shape_failure_still_writes_the_payload_and_flags_the_manifest(self, tmp_path):
-        """The one unrecoverable mistake here would be discarding a surprising payload."""
+    async def test_shape_failure_is_kept_apart_from_the_payload_and_flags_the_manifest(self, tmp_path):
+        """A surprising response is never discarded, but it is never a payload either (#54)."""
         raw = _raw(body=b"<html>502 Bad Gateway</html>")
         writer = _writer(tmp_path)
 
         outcome = await ingest_fixtures(_client(raw), writer)
 
         root = tmp_path / "raw"
-        payload_path = root / "fpl" / "fixtures" / writer.extraction_date / writer.run_id / "payload.json"
-        assert payload_path.read_bytes() == raw.body, "a failed payload must still be written"
+        run = f"{writer.extraction_date}/{writer.run_id}"
+        assert not (root / "fpl" / "fixtures" / run / "payload.json").exists()
+        invalid = root / "fpl" / "_invalid" / "shape_invalid" / "fixtures" / run
+        assert (invalid / "response.body").read_bytes() == raw.body, "the body must still be kept"
 
-        sidecar = _read(
-            root, f"fpl/fixtures/{writer.extraction_date}/{writer.run_id}/metadata.json"
-        )
+        sidecar = _read(root, f"fpl/_invalid/shape_invalid/fixtures/{run}/metadata.json")
         assert sidecar["shape_validation"]["ok"] is False
         assert sidecar["shape_validation"]["failures"]
+        assert sidecar["class"] == "shape_invalid"
 
         assert outcome.result.errors == 0, "a shape failure is partial, not a hard error"
         assert outcome.result.skipped == 1
 
         status = classify_run(writer.endpoint_outcomes)
-        # Its only payload is not usable, so nothing usable came out of the run.
+        # Nothing it stored is usable, so nothing usable came out of the run.
         assert status == RUN_STATUS_FAILED
         assert writer.finalize(status).manifest["status"] == RUN_STATUS_FAILED
 

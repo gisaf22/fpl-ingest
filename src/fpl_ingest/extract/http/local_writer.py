@@ -39,8 +39,11 @@ from typing import Any, Protocol
 from fpl_ingest.extract.http import raw_keys
 from fpl_ingest.extract.http.raw_keys import (
     RAW_CONTRACT_VERSION,
+    INVALID_BODY_FILENAME,
+    METADATA_FILENAME,
     RawKeyError,
     bucket_key,
+    invalid_prefix,
     iso_utc,
     manifest_key,
     metadata_key,
@@ -407,6 +410,88 @@ class LocalRawWriter:
             content_length=len(payload_bytes),
             content_sha256=digest,
             companion_keys=companion_keys,
+        )
+
+    def write_invalid(
+        self,
+        endpoint: str,
+        body: bytes,
+        *,
+        response_class: str,
+        reason: str,
+        request_url: str,
+        requested_at: datetime,
+        received_at: datetime,
+        http_status: int,
+        response_headers: Mapping[str, str] | None = None,
+        attempt_count: int = 1,
+        shape_validation: Mapping[str, Any] | None = None,
+        season: str | None = _RUN_SEASON,
+    ) -> WriteResult:
+        """Store a response that is not a valid capture, apart from ``payload.json``.
+
+        The body goes to ``{source}/_invalid/{response_class}/{endpoint}/{date}/{run_id}/``
+        beside a sidecar carrying the usual fields plus ``class`` and ``reason``
+        (#54 Q5). It has no ``drift`` block and no part in drift totals: a body
+        already known to be wrong is not a sample of the endpoint's shape. The
+        endpoint counts as failed, so the run is never SUCCESS.
+
+        Args:
+            endpoint: Endpoint identity, as for ``write_object``.
+            body: The response body exactly as received.
+            response_class: One of ``raw_keys.INVALID_CLASSES``.
+            reason: Why it is invalid; recorded in the sidecar and the manifest.
+            shape_validation: The stage validator's verdict for the response.
+
+        Raises:
+            RawObjectExistsError: This run already stored an invalid response here.
+            RawKeyError: The class or endpoint is not key-safe.
+        """
+        self._assert_open()
+        prefix = invalid_prefix(
+            self.source, response_class, endpoint, self.extraction_date, self.run_id
+        )
+        body_key = f"{prefix}/{INVALID_BODY_FILENAME}"
+        sidecar_key = f"{prefix}/{METADATA_FILENAME}"
+
+        digest = hashlib.sha256(body).hexdigest()
+        body_location = self._backend.put_bytes(body_key, body)
+        sidecar = self._build_sidecar(
+            endpoint=endpoint,
+            request_url=request_url,
+            requested_at=requested_at,
+            received_at=received_at,
+            http_status=http_status,
+            response_headers=response_headers,
+            content_length=len(body),
+            content_sha256=digest,
+            attempt_count=attempt_count,
+            shape_validation=shape_validation,
+            payload_filename=INVALID_BODY_FILENAME,
+            companion_files=[],
+            season=self._season if season is _RUN_SEASON else season,
+        )
+        sidecar["class"] = response_class
+        sidecar["reason"] = reason
+        self._backend.put_bytes(sidecar_key, _json_bytes(sidecar))
+        self._captures.append(
+            {**_capture_entry(body_key, sidecar), "usable": False, "class": response_class}
+        )
+
+        self._record_object(endpoint, written=1, byte_count=len(body))
+        self._record_endpoint(endpoint, usable=False, reason=f"{response_class}: {reason}")
+        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+
+        return WriteResult(
+            source=self.source,
+            endpoint=endpoint,
+            run_id=self.run_id,
+            extraction_date=self.extraction_date,
+            payload_key=body_key,
+            metadata_key=sidecar_key,
+            payload_location=body_location,
+            content_length=len(body),
+            content_sha256=digest,
         )
 
     def _check_drift(self, endpoint: str, payload_bytes: bytes) -> dict[str, Any] | None:

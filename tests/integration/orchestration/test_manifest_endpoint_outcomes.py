@@ -102,7 +102,7 @@ class TestEachEndpointHasAnOutcome:
         assert entry["outcome"] == "FAILED"
 
     @pytest.mark.covers("#49 AC1")
-    def test_shape_invalid_fixtures_is_stored_but_marked_failed(self, tmp_path):
+    def test_shape_invalid_fixtures_is_stored_apart_and_marked_failed(self, tmp_path):
         raw = tmp_path / "raw"
         client = _make_async_client()
         client.get_fixtures_raw = AsyncMock(
@@ -110,8 +110,9 @@ class TestEachEndpointHasAnOutcome:
         )
         _full_run(raw, client)
 
-        # Still written, as today.
-        assert sorted((raw / "fpl" / "fixtures").rglob("payload.json"))
+        # Kept, but apart from the payloads (#54).
+        assert not sorted((raw / "fpl" / "fixtures").rglob("payload.json"))
+        assert sorted((raw / "fpl" / "_invalid" / "shape_invalid" / "fixtures").rglob("response.body"))
         entry = _endpoint(_manifest(raw), "fixtures")
         _assert_consistent(entry)
         assert (entry["attempted"], entry["usable"], entry["failed"]) == (1, 0, 1)

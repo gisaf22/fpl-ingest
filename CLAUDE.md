@@ -20,6 +20,9 @@ Stages live in `src/fpl_ingest/extract/stages/`: `bootstrap.py`, `fixtures.py`,
 `manager_panel.py` (the seeded manager panel and each kept manager's `entry-history`, #102;
 `fpl-ingest manager-panel`).
 
+Before design work, read [`docs/adr/`](docs/adr/README.md): decisions recorded there are
+settled unless the work says why to reopen them.
+
 ---
 
 ## Tests
@@ -38,6 +41,8 @@ excluded from the default run because it calls the real API.
 ---
 
 ## Architecture invariants
+
+(Why these hold: [ADR 005](docs/adr/005-write-only-raw-storage.md).)
 
 **`RawStorageBackend` is write-only by design.** Ingestion never reads back what it wrote.
 The only read the protocol offers is `exists_prefix`, an existence check
@@ -124,10 +129,20 @@ output.
   - An endpoint the refetch policy deliberately didn't fetch is absent, not FAILED. Manifests
     before 1.1.0 have `objects` counts but no `endpoints` block.
 - **Find a run's captures from its manifest's `captures[]`** (#62, contract 2.1.0), not by
-  reading sidecars. There is one entry per payload written, with its full bucket key
+  reading sidecars. There is one entry per body written, with its full bucket key
   (`raw/fpl/...`), `shape_ok`, `usable` and `season`. It appears only in the finalized
   manifest, so ignore `IN_PROGRESS` manifests. Fetch failures stay in `failures` and have no
   entry. Manifests before 2.1.0 have no `captures[]`.
+- **An invalid response is not at `payload.json`** (#54, contract 2.5.0, [ADR
+  004](docs/adr/004-failure-classification.md)). A response that is not a valid capture
+  (a non-2xx, or a 2xx that fails its shape check) is stored at
+  `raw/fpl/_invalid/{class}/{endpoint}/{date}/{run_id}/response.body`, with a
+  `metadata.json` beside it. `class` is `not_found`, `shape_invalid` or `http_error`,
+  and the sidecar records `class` and `reason`. Its `captures[]` entry has `usable:
+  false` and the `class`, and its endpoint counts as failed. A glob for `payload.json`
+  cannot match it. Only the fixtures stage does this so far (#55 moves the rest), and an
+  older or not-yet-moved stage still writes a failed response to `payload.json` with
+  `usable: false`. `fetch_failed` (no response, or 429/5xx after retries) stores nothing.
 - **`season` is on every 2.1.0 sidecar and capture entry**, derived from the same run's
   bootstrap-static (the deadline year of its lowest-id event). It is `null`, logged at ERROR
   as `season_source=none`, when the run had no usable bootstrap; there is no fallback. The

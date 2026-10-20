@@ -62,10 +62,10 @@ def _bootstrap_failing_run(raw: Path) -> dict:
 
 
 def _payload_keys_on_disk(raw: Path) -> list[str]:
-    """Every payload the run wrote, in the bucket-form key the manifest records."""
+    """Every body the run wrote, valid or invalid, in the bucket-form key the manifest records."""
     return sorted(
         "raw/" + p.relative_to(raw).as_posix()
-        for p in raw.rglob("payload.json")
+        for p in [*raw.rglob("payload.json"), *raw.rglob("response.body")]
     )
 
 
@@ -87,7 +87,7 @@ class TestOneCapturePerPayload:
         raw = tmp_path / "raw"
         manifest = _mixed_run(raw)
 
-        assert manifest["raw_contract_version"] == "2.4.0"
+        assert manifest["raw_contract_version"] == "2.5.0"
         assert manifest["status"] != "IN_PROGRESS"
         keys = [c["key"] for c in manifest["captures"]]
         assert len(keys) == len(set(keys)), "a payload is indexed twice"

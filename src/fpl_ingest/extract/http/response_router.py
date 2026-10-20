@@ -2,10 +2,11 @@
 
 Classifies a fetched response from its HTTP status and its stage's shape
 verdict, then routes the write: a valid response to ``payload.json``, an
-invalid one to ``fpl/_invalid/{class}/...``, and a failed fetch nowhere.
-The per-stage shape validators stay where they are and only supply the verdict.
+invalid one to ``fpl/_invalid/{class}/...``, and a failed fetch nowhere. The
+per-stage shape validators stay where they are and only supply the verdict.
 
-Stub: signatures only, so the #54 tests can import it. Not yet implemented.
+Raw stores what it is given; deciding what a stored response means is
+modelling's job (docs/adr/004-failure-classification.md).
 """
 
 from __future__ import annotations
@@ -36,6 +37,25 @@ class RoutedResponse:
     write: WriteResult | None
 
 
+def classify_response(
+    raw: RawResponse | None, shape_ok: bool, *, absence_ok: bool = False
+) -> ResponseClass:
+    """Return the class of a response.
+
+    A 429 or 5xx here means the client's retries are spent: the server never
+    gave a usable answer, so nothing is stored and the request is retried next
+    run. Any other non-2xx is the server refusing us: ``not_found`` for a 404
+    the caller declared legitimate, ``http_error`` otherwise.
+    """
+    if raw is None or raw.status == 429 or raw.status >= 500:
+        return ResponseClass.FETCH_FAILED
+    if not 200 <= raw.status < 300:
+        if raw.status == 404 and absence_ok:
+            return ResponseClass.NOT_FOUND
+        return ResponseClass.HTTP_ERROR
+    return ResponseClass.VALID if shape_ok else ResponseClass.SHAPE_INVALID
+
+
 def route_response(
     raw_writer: LocalRawWriter,
     endpoint: str,
@@ -46,11 +66,46 @@ def route_response(
 ) -> RoutedResponse:
     """Classify ``raw`` and write it to the location its class calls for.
 
+    A failed fetch writes nothing and records nothing: the caller holds the
+    error to record, if there was one.
+
     Args:
         raw_writer: Writer for this run.
         endpoint: Endpoint identity, as for ``write_object``.
         raw: The response, or None when none arrived.
         shape: The stage validator's verdict for ``raw``; None when ``raw`` is None.
         absence_ok: The caller declares a 404 legitimate for this request.
+            Per call, not per endpoint: entry-picks passes True for a
+            random-cohort entry and False for the self cohort.
     """
-    raise NotImplementedError("#54: response classifier and router")
+    shape_ok = bool(shape and shape.get("ok"))
+    response_class = classify_response(raw, shape_ok, absence_ok=absence_ok)
+    if response_class is ResponseClass.FETCH_FAILED:
+        return RoutedResponse(response_class, None)
+
+    assert raw is not None  # every other class has a response
+    fields: dict[str, Any] = {
+        "request_url": raw.url,
+        "requested_at": raw.requested_at,
+        "received_at": raw.received_at,
+        "http_status": raw.status,
+        "response_headers": raw.headers,
+        "attempt_count": raw.attempt_count,
+        "shape_validation": shape,
+    }
+    if response_class is ResponseClass.VALID:
+        return RoutedResponse(response_class, raw_writer.write_object(endpoint, raw.body, **fields))
+    write = raw_writer.write_invalid(
+        endpoint, raw.body, response_class=response_class.value,
+        reason=_reason(response_class, raw.status, shape), **fields,
+    )
+    return RoutedResponse(response_class, write)
+
+
+def _reason(response_class: ResponseClass, status: int, shape: Mapping[str, Any] | None) -> str:
+    if response_class is ResponseClass.SHAPE_INVALID:
+        failures = (shape or {}).get("failures") or []
+        return "; ".join(str(f) for f in failures) or "shape check failed"
+    if response_class is ResponseClass.NOT_FOUND:
+        return "HTTP 404; absence declared legitimate for this request"
+    return f"HTTP {status}"

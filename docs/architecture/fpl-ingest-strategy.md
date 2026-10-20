@@ -810,11 +810,14 @@ which MOVEs); grain or uniqueness. All of it is warehouse work. The test is: *if
 would fail because the football did something unusual rather than because the API changed
 shape, it does not belong here.*
 
-**Recommendation on failure handling: write the payload, record the failure, do not discard.**
-A shape-check failure means the source changed, which is precisely the moment the payload is
-most valuable. `metadata.json.shape_validation` records the failure; the manifest counts that
-capture as not usable, so the run is `PARTIAL` or `FAILED`; the warehouse can refuse to build on it. Discarding a payload because it
-surprised us is the one unrecoverable mistake available at this boundary.
+**Recommendation on failure handling: keep the response, record the failure, never as a payload.**
+*(Superseded by [ADR 004](../adr/004-failure-classification.md), #54: this originally said to write
+the failed response to `payload.json`.)* A shape-check failure means the source changed, which is
+precisely the moment the response is most valuable, so it is kept, under `fpl/_invalid/{class}/`
+beside a sidecar whose `shape_validation` records the failure. It is not written as `payload.json`,
+because a reader of payloads cannot tell it from a valid capture and one error body fails every later
+build. The manifest counts the endpoint as failed, so the run is `PARTIAL` or `FAILED`. Discarding a
+response because it surprised us is still the one unrecoverable mistake available at this boundary.
 
 **Recommendation: promote `smoke-test` into the scheduled workflow**, as a pre-flight step
 before the capture run and as its own daily job. It costs about four requests. It is currently

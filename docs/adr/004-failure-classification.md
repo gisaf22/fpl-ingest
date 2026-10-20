@@ -1,7 +1,7 @@
 # ADR 004 — Failure classification and invalid-response storage
 
 Date: 2026-10-19
-Status: Accepted (#54). Extended by #55 (the other stages) and #109 (streak abort, per-class counts).
+Status: Accepted (#54). Extended by #55 (the other stages); streak abort and per-class counts added by #109.
 
 ## Context
 
@@ -47,6 +47,24 @@ endpoint's shape. Every invalid capture has a `captures[]` entry with its
 `_invalid` key, `usable: false` and `class`, and its endpoint counts as failed, so
 a run is never SUCCESS when it withheld a payload. Raw contract 2.5.0.
 
+**Streak abort (#109).** A run stops itself after N consecutive `http_error` responses
+(default 10; `--http-error-streak` or `FPL_HTTP_ERROR_STREAK`; at least 1). Only a
+`valid` response resets the streak; `not_found`, `shape_invalid` and `fetch_failed`
+neither count nor reset it, because they say nothing about whether the API is refusing
+us. The router feeds each response to the run's writer, which sets `aborted` on the
+Nth. Dispatchers stop sending when it is set; requests already in flight finish and are
+stored. The abort logs `streak`, `threshold` and `last_status`, the manifest records
+`abort_reason: aborted_http_error_streak`, and the run exits non-zero as any run with
+failed endpoints does. Items that got `http_error` are never marked captured, so the
+next run retries them. A budget stop (#103) is a different reason. Until #103's AC12
+wires a dispatch loop to `aborted`, the abort is reachable only through the fixtures
+stage with a limit of 1.
+
+**Per-class counts (#109).** A finalized manifest carries `invalid_counts`:
+`{not_found, shape_invalid, http_error}`, zero-filled, counted from the run's invalid
+`captures[]` entries, so `fetch_failed` is not counted and a spike shows without
+reading sidecars. Raw contract 2.6.0.
+
 The per-stage shape validators are unchanged; only the fixtures stage uses the
 router so far.
 
@@ -71,5 +89,5 @@ router so far.
 - The strategy doc's earlier rule, "write the payload, record the failure, do not
   discard" (B.2), no longer holds for the stages on the router. The response is still
   kept and the failure still recorded, but not as a payload.
-- Remaining stages move onto the router in #55; the streak abort and per-class
-  manifest counts arrive with #109, which extends this ADR.
+- Remaining stages move onto the router in #55.
+- Count-only with no abort was rejected (#109): it hammers a blocked API and surfaces late.

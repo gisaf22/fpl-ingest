@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gisaf22/fpl-ingest/schemas/raw-contract/2.6.0/sidecar.schema.json",
+  "title": "Per-object sidecar (metadata.json), raw contract 2.6.0",
+  "description": "Written beside each payload. Strict at the top level: a field not listed here is a contract change. response_headers and shape_validation stay free-form. 2.4.0 adds the optional drift block (#82): present for the five FPL endpoint families, absent for other sources. 2.5.0 (#54) adds the optional class and reason, written only for an invalid response: a response that is not a valid capture is stored apart from payload.json, at raw/fpl/_invalid/{class}/{endpoint}/{extraction_date}/{run_id}/response.body beside this sidecar, where class is not_found, shape_invalid or http_error. Its payload_filename is response.body, it has no drift block, and a glob for payload.json cannot match it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "raw_contract_version", "source", "endpoint", "run_id", "extraction_date", "season",
+    "request_url", "requested_at", "received_at", "http_status", "response_headers",
+    "content_length", "content_sha256", "attempt_count", "payload_filename",
+    "companion_files", "shape_validation"
+  ],
+  "properties": {
+    "raw_contract_version": { "const": "2.6.0" },
+    "source": { "type": "string", "minLength": 1 },
+    "endpoint": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "pattern": "^\\d{8}T\\d{6}Z-[0-9a-f]{6}$" },
+    "extraction_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "season": {
+      "description": "From this run's bootstrap-static; null when the run had no usable one.",
+      "type": ["string", "null"],
+      "pattern": "^\\d{4}-\\d{2}$"
+    },
+    "request_url": { "type": "string", "minLength": 1 },
+    "requested_at": { "$ref": "#/$defs/utc_timestamp" },
+    "received_at": { "$ref": "#/$defs/utc_timestamp" },
+    "http_status": { "type": "integer" },
+    "response_headers": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "content_length": { "type": "integer", "minimum": 0 },
+    "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "attempt_count": { "type": "integer", "minimum": 1 },
+    "payload_filename": { "type": "string", "pattern": "^(payload\\.[A-Za-z0-9]+|response\\.body)$" },
+    "companion_files": { "type": "array", "items": { "type": "string" } },
+    "shape_validation": { "type": ["object", "null"] },
+    "class": {
+      "description": "Why the response is invalid (#54). Absent on a valid capture.",
+      "enum": ["not_found", "shape_invalid", "http_error"]
+    },
+    "reason": {
+      "description": "The failure reason of an invalid response. Absent on a valid capture.",
+      "type": "string",
+      "minLength": 1
+    },
+    "drift": {
+      "description": "Payload shape compared with the committed baseline (#82). Warn-only: never affects usability.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason", "entries"],
+      "properties": {
+        "status": { "enum": ["ok", "drift", "unavailable"] },
+        "reason": { "type": ["string", "null"], "description": "Why the check was unavailable; null otherwise." },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["endpoint", "path", "kind", "baseline_types", "observed_types", "count"],
+            "properties": {
+              "endpoint": { "type": "string", "minLength": 1 },
+              "path": { "type": "string", "pattern": "^\\$" },
+              "kind": { "enum": ["added", "removed", "type_changed"] },
+              "baseline_types": { "type": "array", "items": { "enum": ["object", "array", "string", "number", "boolean", "null"] } },
+              "observed_types": { "type": "array", "items": { "enum": ["object", "array", "string", "number", "boolean", "null"] } },
+              "count": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["class"] },
+      "then": {
+        "required": ["reason"],
+        "properties": { "payload_filename": { "const": "response.body" } },
+        "not": { "required": ["drift"] }
+      }
+    }
+  ],
+  "$defs": {
+    "utc_timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    }
+  }
+}

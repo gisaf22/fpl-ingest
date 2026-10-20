@@ -38,8 +38,11 @@ from typing import Any, Protocol
 
 from fpl_ingest.extract.http import raw_keys
 from fpl_ingest.extract.http.raw_keys import (
+    ABORT_REASON_HTTP_ERROR_STREAK,
+    DEFAULT_HTTP_ERROR_STREAK,
     RAW_CONTRACT_VERSION,
     INVALID_BODY_FILENAME,
+    INVALID_CLASSES,
     METADATA_FILENAME,
     RawKeyError,
     bucket_key,
@@ -235,6 +238,7 @@ class LocalRawWriter:
         backend: RawStorageBackend | None = None,
         origin: Mapping[str, Any] | None = None,
         baseline_dir: Path | None = None,
+        http_error_streak: int = DEFAULT_HTTP_ERROR_STREAK,
     ) -> None:
         """Create a writer for one run of one source.
 
@@ -273,7 +277,41 @@ class LocalRawWriter:
         self._baseline_cache: dict[str, Any] = {}
         self._unavailable_warned: set[tuple[str, str]] = set()
         self._drift_totals: dict[str, dict[str, Any]] = {}
+        self._http_error_streak = http_error_streak
+        self._http_error_run = 0
+        self._abort_reason: str | None = None
         self._finalized = False
+
+    @property
+    def aborted(self) -> bool:
+        """Whether the run has hit its consecutive ``http_error`` limit (#109).
+
+        Dispatchers check this before sending the next request; responses
+        already in flight are still stored, and the run's manifest records
+        ``abort_reason``.
+        """
+        return self._abort_reason is not None
+
+    def observe_response(self, response_class: str, http_status: int) -> None:
+        """Feed one routed response to the run's ``http_error`` streak (#109).
+
+        Only a ``valid`` response resets the streak. ``not_found``,
+        ``shape_invalid`` and ``fetch_failed`` neither count nor reset it: they
+        say nothing about whether the API is refusing us.
+        """
+        if response_class == "valid":
+            self._http_error_run = 0
+        elif response_class == "http_error":
+            self._http_error_run += 1
+            if self._http_error_run >= self._http_error_streak and not self.aborted:
+                self._abort_reason = ABORT_REASON_HTTP_ERROR_STREAK
+                logger.warning(
+                    "Run %s: streak=%d threshold=%d last_status=%d; no further requests should be dispatched",
+                    ABORT_REASON_HTTP_ERROR_STREAK,
+                    self._http_error_run,
+                    self._http_error_streak,
+                    http_status,
+                )
 
     @property
     def backend(self) -> RawStorageBackend:
@@ -781,12 +819,18 @@ class LocalRawWriter:
         }
         if finality is not None:
             manifest["finality"] = finality
+        if self._abort_reason is not None:
+            manifest["abort_reason"] = self._abort_reason
         if self._markers_withheld:
             manifest["markers_withheld"] = list(self._markers_withheld)
         # The index is complete only once the run is: an IN_PROGRESS manifest,
         # re-written after every object, carries none (#62 D4).
         if status != MANIFEST_STATUS_IN_PROGRESS:
             manifest["captures"] = [dict(entry) for entry in self._captures]
+            manifest["invalid_counts"] = {
+                name: sum(1 for entry in self._captures if entry.get("class") == name)
+                for name in INVALID_CLASSES
+            }
             # Drift totals likewise appear only once the run is complete (#85).
             for name, outcome in manifest["endpoints"].items():
                 drift = self._endpoint_drift(name)

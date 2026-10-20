@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from fpl_ingest.extract.http.raw_keys import DEFAULT_HTTP_ERROR_STREAK
 from fpl_ingest.schema.payload_baseline import BASELINE_DIR
 
 DEFAULT_STALE_AFTER_HOURS: float = 26.0
@@ -105,6 +106,16 @@ def resolve_s3_bucket() -> str | None:
 #: with None so only the drift tests depend on baseline files; a None directory
 #: records drift ``unavailable``, never a silent skip.
 _DEFAULT_BASELINE_DIR: Path | None = BASELINE_DIR
+
+
+def resolve_http_error_streak(explicit: int | None = None) -> int:
+    """Return the consecutive ``http_error`` limit: flag, then env var, then default (#109)."""
+    env_val = os.environ.get("FPL_HTTP_ERROR_STREAK")
+    value = explicit if explicit is not None else int(env_val) if env_val else DEFAULT_HTTP_ERROR_STREAK
+    if value < 1:
+        # A zero or negative limit would switch the abort off or fire on the first response.
+        raise ValueError(f"http error streak must be at least 1, got {value}")
+    return value
 
 
 def resolve_baseline_dir() -> Path | None:

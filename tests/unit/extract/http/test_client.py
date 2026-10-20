@@ -304,6 +304,55 @@ def test_returns_none_after_exhausting_network_retries():
     asyncio.run(_run())
 
 
+@pytest.mark.covers("#115 AC16")
+def test_asyncio_timeout_is_retried_with_backoff_then_succeeds():
+    """The total-timeout error is not an aiohttp.ClientError; it must still retry (runs 39365465979, 39366583920)."""
+    attempts = []
+
+    class _Resp:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        async def read(self):
+            return b'{"data": 1}'
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    def _get(url, **kwargs):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise asyncio.TimeoutError()
+        return _Resp()
+
+    async def _run():
+        client = _make_client()
+        with patch("aiohttp.ClientSession.get", side_effect=_get), patch("asyncio.sleep", new=AsyncMock()):
+            async with client:
+                return await client._fetch_with_retries("https://example.com/")
+
+    assert asyncio.run(_run()) == {"data": 1}
+    assert len(attempts) == 2
+
+
+@pytest.mark.covers("#115 AC16")
+def test_asyncio_timeout_on_every_attempt_exhausts_retries_and_returns_none():
+    async def _run():
+        client = _make_client()
+        with patch("aiohttp.ClientSession.get", side_effect=asyncio.TimeoutError()) as get, \
+                patch("asyncio.sleep", new=AsyncMock()):
+            async with client:
+                result = await client._fetch_with_retries("https://example.com/")
+        return result, get.call_count
+
+    result, calls = asyncio.run(_run())
+    assert result is None
+    assert calls == 2  # max_retries of the test client
+
+
 # ---------------------------------------------------------------------------
 # Retry design invariants
 # ---------------------------------------------------------------------------

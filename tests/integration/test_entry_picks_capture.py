@@ -174,7 +174,7 @@ class TestNon2xxCohortHandling:
         client = _client({(1, RANDOM_A): _raw(404, b'{"detail":"Not found."}')})
 
         # RANDOM_B is clean: "nothing else failed" needs something usable, because classify_run
-        # reads a run with no usable capture as FAILED even when every outcome was expected.
+        # reads a run with no usable capture as FAILED even when every outcome was expected (#120).
         await ingest_entry_picks(
             client, writer, season=SEASON, entries=[(RANDOM_A, COHORT_RANDOM), (RANDOM_B, COHORT_RANDOM)], gameweeks=[GW1],
         )

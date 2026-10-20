@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from fpl_ingest.extract.http.client import RawResponse
 from fpl_ingest.extract.http.local_writer import LocalRawWriter, WriteResult
@@ -63,6 +63,7 @@ def route_response(
     shape: Mapping[str, Any] | None,
     *,
     absence_ok: bool = False,
+    expected: frozenset[str] = frozenset(),
 ) -> RoutedResponse:
     """Classify ``raw`` and write it to the location its class calls for.
 
@@ -101,6 +102,20 @@ def route_response(
         reason=_reason(response_class, raw.status, shape), **fields,
     )
     return RoutedResponse(response_class, write)
+
+
+async def fetch_and_route(
+    raw_writer: LocalRawWriter,
+    endpoint: str,
+    fetch: Callable[[], Awaitable[RawResponse]],
+    validate: Callable[[RawResponse], Mapping[str, Any]],
+    *,
+    request_url: str,
+    absence_ok: bool = False,
+    expected: frozenset[str] = frozenset(),
+) -> RoutedResponse:
+    """Fetch, classify, store and record one response: the tail every stage shares (#115 stub)."""
+    raise NotImplementedError("#115")
 
 
 def record_fetch_failed(raw_writer: LocalRawWriter, endpoint: str, raw: RawResponse) -> None:

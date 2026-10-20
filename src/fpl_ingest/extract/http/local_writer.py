@@ -465,6 +465,7 @@ class LocalRawWriter:
         attempt_count: int = 1,
         shape_validation: Mapping[str, Any] | None = None,
         season: str | None = _RUN_SEASON,
+        expected: bool = False,
     ) -> WriteResult:
         """Store a response that is not a valid capture, apart from ``payload.json``.
 

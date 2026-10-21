@@ -9,6 +9,6 @@ a decision edits its ADR in the same PR.
 | [003](003-async-pipeline-rate-limiting.md) | Async pipeline with token-bucket rate limiting | Accepted | 2026-05-15 |
 | [004](004-failure-classification.md) | Failure classification and invalid-response storage | Accepted | 2026-10-19 |
 | [005](005-write-only-raw-storage.md) | Write-only raw storage and its one read exception | Accepted | 2026-10-19 |
-| [006](006-picks-resume-and-settlement.md) | Picks resume, settlement and time budget | Accepted | 2026-10-20 |
+| [006](006-picks-resume-and-settlement.md) | Picks resume, settlement and time budget | Accepted, amended 2026-10-21 (#123) | 2026-10-20 |
 
 There is no ADR 001 or 002; they were never written, and numbering was not back-filled.

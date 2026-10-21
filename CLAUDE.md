@@ -57,6 +57,14 @@ hardcoded local path instead of the active backend was a real bug (commit `8f6b7
 other module reads through the backend, or if the ingestion package reads S3 outside
 `s3_backend.py`. (`backfill.py` is a separate catalog tool with its own client, outside this rule.)
 
+**Storage calls run concurrently; only the writer's state is locked** (#123, [ADR
+006](docs/adr/006-picks-resume-and-settlement.md)). The panel and picks stages run every
+backend and writer call through `OffLoop`, a pool of `MAX_CONCURRENT_REQUESTS` threads with
+no lock of its own. `LocalRawWriter` guards its in-memory state and the manifest flush with
+an internal `threading.Lock`, and runs payload and sidecar PUTs outside it. Code called
+through `OffLoop` must be safe across threads. Never serialize storage calls again: one
+lock around them capped the first picks run at 1.8 requests/s.
+
 **Endpoint refetch policy.**
 
 | Endpoint | Policy |
@@ -172,6 +180,10 @@ output.
   its stored `not_found` plus `http_error` picks responses this run; both appear only when the
   run made at least one picks request. An absent `_settlement/entry-picks/{gw}` marker means
   that gameweek still has entries not captured. Manifests before 2.8.0 have none of these.
+  A picks run rewrites its `IN_PROGRESS` manifest every 50 objects or 10 s rather than
+  after each object (#123). A stage that raises still flushes first, so only a run killed
+  outright (a job timeout) leaves a trace lagging by up to that. Every other run still
+  rewrites after each object.
 - **`season` is on every 2.1.0 sidecar and capture entry**, derived from the same run's
   bootstrap-static (the deadline year of its lowest-id event). It is `null`, logged at ERROR
   as `season_source=none`, when the run had no usable bootstrap; there is no fallback. The

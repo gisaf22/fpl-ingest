@@ -141,6 +141,7 @@ async def ingest_manager_panel(
         )
     finally:
         reporter.cancel()
+        io.close()
 
     # A job the abort kept from being dispatched is an unresolved id: it blocks the panel file.
     tally = {"fetched": 0, "errors": len(jobs) - len(dispatched), "written": 0, "not_found": 0, "no_picks": 0}
@@ -178,7 +179,7 @@ async def ingest_manager_panel(
         "entries": entries,
     }
     panel_bytes = json.dumps(panel, sort_keys=True, indent=2).encode("utf-8") + b"\n"
-    await io(backend.put_bytes, panel_key(RAW_SOURCE, season), panel_bytes)
+    await asyncio.to_thread(backend.put_bytes, panel_key(RAW_SOURCE, season), panel_bytes)
     logger.info("Manager panel %s drawn: kept %d of %d", season, panel["kept"], panel["drawn"])
     return StageOutcome(
         result=result, output=panel,

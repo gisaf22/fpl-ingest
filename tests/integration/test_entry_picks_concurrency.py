@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import threading
 import time
 from datetime import datetime, timezone
@@ -89,24 +90,38 @@ class TestOverlappingS3Calls:
 
 
 class FailingBackend(LocalFilesystemBackend):
-    """Blocks each call briefly, as boto3 does, and fails every resume check once ``fail_after`` payloads are stored."""
+    """Blocks each call, as boto3 does, and fails a resume check once ``fail_after`` payloads are stored.
+
+    The check fails only while another PUT is in flight, and PUTs take a jittered
+    30-70 ms, so when the stage raises some write is still running: it is on the
+    trace only if the stage waits for it before its last flush.
+    """
 
     def __init__(self, root: Path, fail_after: int) -> None:
         super().__init__(root)
         self.fail_after = fail_after
         self.payloads = 0
+        self.puts_in_flight = 0
+        self._random = random.Random(123)
         self._lock = threading.Lock()
 
     def exists_prefix(self, prefix: str) -> bool:
         time.sleep(0.005)
         with self._lock:
-            if self.payloads >= self.fail_after:
+            if self.payloads >= self.fail_after and self.puts_in_flight:
                 raise RuntimeError("storage unavailable")
         return super().exists_prefix(prefix)
 
     def put_bytes(self, key: str, data: bytes, *, overwrite: bool = False) -> str:
-        time.sleep(0.005)
-        location = super().put_bytes(key, data, overwrite=overwrite)
+        with self._lock:
+            self.puts_in_flight += 1
+            delay = self._random.uniform(0.03, 0.07)
+        try:
+            time.sleep(delay)
+            location = super().put_bytes(key, data, overwrite=overwrite)
+        finally:
+            with self._lock:
+                self.puts_in_flight -= 1
         if key.endswith("payload.json"):
             with self._lock:
                 self.payloads += 1
@@ -123,6 +138,8 @@ class TestInterruptedRun:
 
         with pytest.raises(RuntimeError, match="storage unavailable"):
             await ingest_entry_picks(_client(), writer, season=SEASON, entries=ENTRIES, gameweeks=[GW1])
+        # Anything still writing after the stage returned lands now, and must already be on the trace.
+        await asyncio.sleep(0.3)
 
         stored = _bodies_on_disk(tmp_path / "fpl")
         trace = json.loads((tmp_path / f"fpl/_manifests/{writer.extraction_date}/{run_id}/manifest.json").read_text())

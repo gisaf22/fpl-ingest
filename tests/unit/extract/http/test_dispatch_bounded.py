@@ -92,5 +92,6 @@ def test_when_one_item_fails_nothing_more_is_dispatched_and_no_worker_outlives_t
 
     at_raise, later, others = _run(main())
 
+    assert at_raise < 10, f"{at_raise} of 50 items were dispatched: the failure did not stop the loop"
     assert later == at_raise, "workers kept dispatching after the call raised"
     assert others == []

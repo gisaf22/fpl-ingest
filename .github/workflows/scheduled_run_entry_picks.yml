@@ -13,8 +13,8 @@ name: Scheduled Ingestion — Entry Picks
 
 on:
   schedule:
-    # 05:55 UTC daily (#104 decision 1).
-    - cron: "55 5 * * *"
+    # 17:25 UTC daily (#104 decision 1).
+    - cron: "25 17 * * *"
 
 permissions:
   id-token: write

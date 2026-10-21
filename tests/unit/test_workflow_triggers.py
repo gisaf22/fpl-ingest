@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 _WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 
@@ -37,3 +39,10 @@ def test_pre_deadline_workflow_runs_the_gated_subcommand():
         "run: uv run fpl-ingest pre-deadline --drift-report drift-report.json "
         "${{ inputs.force && '--force' || '' }}"
     ]
+
+
+@pytest.mark.covers("#104 AC5")
+def test_entry_picks_workflow_passes_the_scheduled_trigger():
+    # No workflow_dispatch (R6), so every run of this workflow is a schedule event.
+    lines = _run_lines("scheduled_run_entry_picks.yml")
+    assert lines == ["run: uv run fpl-ingest entry-picks --trigger scheduled --drift-report drift-report.json"]

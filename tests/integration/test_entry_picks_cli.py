@@ -157,6 +157,31 @@ class TestCommand:
         assert manifest["config"]["max_seconds"] == 0.05
 
 
+class TestTrigger:
+    """The manifest says what started the run, so a scheduled picks run is not recorded as manual."""
+
+    @pytest.mark.covers("#104 AC4")
+    @pytest.mark.parametrize("trigger", ["scheduled", "manual"])
+    def test_the_manifest_records_the_trigger_given(self, tmp_path, trigger):
+        raw = tmp_path / "raw"
+        _write_panel(raw)
+
+        assert _entry_picks(raw, _client(), "--trigger", trigger) == 0
+
+        [manifest] = _manifests(raw)
+        assert manifest["trigger"] == trigger
+
+    @pytest.mark.covers("#104 AC4")
+    def test_without_a_trigger_the_manifest_records_manual_as_before(self, tmp_path):
+        raw = tmp_path / "raw"
+        _write_panel(raw)
+
+        assert _entry_picks(raw, _client()) == 0
+
+        [manifest] = _manifests(raw)
+        assert manifest["trigger"] == "manual"
+
+
 class TestBudgetSetting:
 
     @pytest.mark.covers("#116 AC16")

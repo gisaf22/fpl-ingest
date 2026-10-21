@@ -1,0 +1,99 @@
+# Scheduled FPL ingestion workflow — manager picks (#104).
+#
+# Captures each kept panel manager's picks for every finished, data-checked
+# gameweek not yet settled, oldest first, within the stage's wall-clock budget
+# (#116, ADR 006). A run that stops at the budget is resumed by the next one, so
+# the backfill from GW1 is this same loop (#100 D6).
+#
+# No healthchecks.io ping: a failure shows as a red run and GitHub's failed-run
+# email (#104 decision 4). No workflow_dispatch trigger on purpose: a dispatch
+# must not publish (R6).
+
+name: Scheduled Ingestion — Entry Picks
+
+on:
+  schedule:
+    # 04:30 UTC daily.
+    - cron: "30 4 * * *"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-24.04
+    # The 45 min budget (DEFAULT_ENTRY_PICKS_MAX_SECONDS), ~8 s of setup and up to
+    # ~7.5 min for in-flight requests to finish their retries come to ~53 min. 55 keeps
+    # the job inside the 1-hour OIDC credentials, so it never writes with expired ones.
+    timeout-minutes: 55
+
+    env:
+      FPL_STORAGE_BACKEND: s3
+      FPL_S3_BUCKET: ${{ vars.FPL_S3_BUCKET || 'fpl-data-safari' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::737634035092:role/github-actions-fpl-ingest
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Capture entry picks
+        run: uv run fpl-ingest entry-picks --trigger scheduled --drift-report drift-report.json
+
+      # Hand the finalized manifest's drift to report-drift (#83). The file
+      # exists only when a manifest was finalized.
+      - name: Upload drift report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: drift-report
+          path: drift-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Surfaces drift: job summary, annotations, one issue per new drift (#83).
+  # The only job with issues: write; it holds no AWS credentials (#80 D5).
+  # continue-on-error keeps a failure here from turning the workflow red.
+  report-drift:
+    needs: ingest
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Install dependencies
+        run: uv sync
+
+      # Absent when the run wrote no manifest; report-drift then says so.
+      - name: Download drift report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: drift-report
+          path: drift-report
+
+      - name: Surface drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run fpl-ingest report-drift --report drift-report/drift-report.json

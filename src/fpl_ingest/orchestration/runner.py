@@ -826,7 +826,8 @@ async def run_entry_picks_capture(*, args, config, logger: logging.Logger) -> in
     _finalize_raw_manifest(
         raw_writer, logger,
         git_sha=_current_git_sha(logger), ingest_version=INGEST_VERSION,
-        config={**_effective_run_config(args), "max_seconds": max_seconds}, trigger="manual",
+        config={**_effective_run_config(args), "max_seconds": max_seconds},
+        trigger=getattr(args, "trigger", None) or "manual",
         drift_report=getattr(args, "drift_report", None),
     )
     return exit_code

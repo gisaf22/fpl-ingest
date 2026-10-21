@@ -265,7 +265,7 @@ fpl-warehouse's scheduled build has its own check, documented in that repo.
   on failure" steps were removed once its alerts had been seen working (#58), so each failure
   raises one alert.
 - **The picks workflow, `scheduled_run_entry_picks.yml`, has no healthchecks check** (#104).
-  It runs `fpl-ingest entry-picks --trigger scheduled` daily at `30 4 * * *` UTC, and a
+  It runs `fpl-ingest entry-picks --trigger scheduled` daily at `55 5 * * *` UTC, and a
   failure shows only as a red run and GitHub's failed-run email. That email goes to whoever
   last changed the workflow's cron, if their Actions failure-email setting is on. A late or
   dropped run alerts nobody; the next day's run resumes. The job's `timeout-minutes: 55`

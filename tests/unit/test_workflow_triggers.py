@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+import yaml
+
 _WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 
@@ -37,3 +40,18 @@ def test_pre_deadline_workflow_runs_the_gated_subcommand():
         "run: uv run fpl-ingest pre-deadline --drift-report drift-report.json "
         "${{ inputs.force && '--force' || '' }}"
     ]
+
+
+@pytest.mark.covers("#104 AC5")
+def test_entry_picks_workflow_passes_the_scheduled_trigger():
+    # No workflow_dispatch (R6), so every run of this workflow is a schedule event.
+    lines = _run_lines("scheduled_run_entry_picks.yml")
+    assert lines == ["run: uv run fpl-ingest entry-picks --trigger scheduled --drift-report drift-report.json"]
+
+
+@pytest.mark.covers("#104 AC6")
+def test_entry_picks_workflow_runs_only_on_its_schedule():
+    # A dispatch or a pull_request run would write to the capture bucket outside a schedule (R6).
+    workflow = yaml.safe_load((_WORKFLOWS / "scheduled_run_entry_picks.yml").read_text())
+    triggers = workflow.get("on", workflow.get(True))  # YAML 1.1 reads a bare `on` key as True
+    assert set(triggers) == {"schedule"}

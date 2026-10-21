@@ -220,8 +220,9 @@ output.
 
 ## Monitoring
 
-Each scheduled workflow pings a [healthchecks.io](https://healthchecks.io) check at the end
-of every scheduled run (#57; design decisions on #34). A check alerts by email when a run
+The daily and pre-deadline workflows ping a [healthchecks.io](https://healthchecks.io) check
+at the end of every scheduled run (#57; design decisions on #34); the picks workflow has no
+check (below). A check alerts by email when a run
 reports failure, and also when no ping arrives within the check's schedule plus grace. That
 second case covers runs that never start and GitHub Actions outages.
 
@@ -260,8 +261,16 @@ fpl-warehouse's scheduled build has its own check, documented in that repo.
   is by label, so an unlabelled issue is opened again on the next run. The job alone holds
   `issues: write` and is `continue-on-error`, so drift never turns a run red or changes its
   ping.
-- **healthchecks.io is the only failure alert.** The SMTP "Email on failure" steps were
-  removed once its alerts had been seen working (#58), so each failure raises one alert.
+- **healthchecks.io is the only failure alert for daily and pre-deadline.** The SMTP "Email
+  on failure" steps were removed once its alerts had been seen working (#58), so each failure
+  raises one alert.
+- **The picks workflow, `scheduled_run_entry_picks.yml`, has no healthchecks check** (#104).
+  It runs `fpl-ingest entry-picks --trigger scheduled` daily at `55 5 * * *` UTC, and a
+  failure shows only as a red run and GitHub's failed-run email. That email goes to whoever
+  last changed the workflow's cron, if their Actions failure-email setting is on. A late or
+  dropped run alerts nobody; the next day's run resumes. The job's `timeout-minutes: 55`
+  covers the 45 min budget plus the tail, inside the 1-hour OIDC credentials. It has no
+  `workflow_dispatch`, because a dispatch must not write (R6).
 
 ---
 

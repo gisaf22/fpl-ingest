@@ -164,6 +164,10 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
         help="Stop dispatching after this many wall-clock seconds; a rerun resumes "
         f"(default: $FPL_ENTRY_PICKS_MAX_SECONDS, else {DEFAULT_ENTRY_PICKS_MAX_SECONDS:.0f}).",
     )
+    entry_picks_parser.add_argument(
+        "--trigger", choices=("scheduled", "manual"), default=None,
+        help="What started this run; recorded in the manifest's trigger field (default: manual).",
+    )
 
     report_drift_parser = subparsers.add_parser(
         "report-drift",

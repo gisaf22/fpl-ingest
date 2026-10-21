@@ -2,8 +2,8 @@
 
 The capture job holds AWS credentials and runs FPL fetches, so it must never
 hold an issue-writing token (#80 D5). A failed job turns the workflow red, so
-``report-drift`` must be ``continue-on-error``. These tests parse both
-scheduled workflows.
+``report-drift`` must be ``continue-on-error``. These tests parse every
+scheduled workflow.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import yaml
 _WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 _CAPTURE_JOBS = {
     "scheduled_run_daily.yml": "ingest",
+    "scheduled_run_entry_picks.yml": "ingest",
     "scheduled_run_pre_deadline.yml": "capture",
 }
 

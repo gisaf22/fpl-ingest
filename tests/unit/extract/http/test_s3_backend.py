@@ -26,18 +26,30 @@ class _ClientError(Exception):
 
 
 class FakeS3Client:
-    """Minimal in-memory stand-in for a boto3 S3 client."""
+    """Minimal in-memory stand-in for a boto3 S3 client.
+
+    Honours ``IfNoneMatch="*"`` as S3 does: an existing key answers 412.
+    """
 
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.put_calls: list[tuple[str, str, bytes]] = []
+        self.put_kwargs: list[dict] = []
+        self.head_calls: list[str] = []
+        self.put_error: str | None = None
 
     def head_object(self, *, Bucket: str, Key: str) -> None:
+        self.head_calls.append(Key)
         if Key not in self.objects:
             raise _ClientError("404")
 
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes) -> None:
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **conditions: str) -> None:
         self.put_calls.append((Bucket, Key, Body))
+        self.put_kwargs.append(conditions)
+        if self.put_error is not None:
+            raise _ClientError(self.put_error)
+        if conditions.get("IfNoneMatch") == "*" and Key in self.objects:
+            raise _ClientError("PreconditionFailed")
         self.objects[Key] = Body
 
     def list_objects_v2(self, *, Bucket: str, Prefix: str, MaxKeys: int = 1000) -> dict:
@@ -117,3 +129,42 @@ def test_exists_prefix_does_not_match_a_longer_sibling_id(
 
     assert backend.exists_prefix("fpl/element-summary/1") is False
     assert backend.exists_prefix("fpl/element-summary/10") is True
+
+
+class TestConditionalPut:
+    """Write-once is enforced by S3 in one round trip, not a HEAD then a PUT (#123 D4)."""
+
+    KEY = "fpl/entry-picks/2026-27/1/11/2026-10-21/run-1/payload.json"
+
+    @pytest.mark.covers("#123 AC8")
+    def test_a_new_key_is_one_conditional_put_and_no_head(self, backend: S3Backend, client: FakeS3Client) -> None:
+        backend.put_bytes(self.KEY, b"{}")
+
+        assert client.head_calls == []
+        assert client.put_kwargs == [{"IfNoneMatch": "*"}]
+
+    @pytest.mark.covers("#123 AC8")
+    def test_an_existing_key_raises_and_keeps_the_first_bytes(self, backend: S3Backend, client: FakeS3Client) -> None:
+        backend.put_bytes(self.KEY, b"first")
+
+        with pytest.raises(RawObjectExistsError):
+            backend.put_bytes(self.KEY, b"second")
+        assert client.objects["raw/" + self.KEY] == b"first"
+
+    @pytest.mark.covers("#123 AC8")
+    def test_a_conditional_write_conflict_is_raised_as_is(self, backend: S3Backend, client: FakeS3Client) -> None:
+        client.put_error = "ConditionalRequestConflict"
+
+        with pytest.raises(_ClientError) as exc:
+            backend.put_bytes(self.KEY, b"{}")
+        assert not isinstance(exc.value, RawObjectExistsError)
+
+    @pytest.mark.covers("#123 AC8")
+    def test_a_manifest_overwrite_sends_no_condition(self, backend: S3Backend, client: FakeS3Client) -> None:
+        key = "fpl/_manifests/2026-10-21/run-1/manifest.json"
+        backend.put_bytes(key, b"{}", overwrite=True)
+        backend.put_bytes(key, b'{"status": "SUCCESS"}', overwrite=True)
+
+        assert client.put_kwargs == [{}, {}]
+        assert client.head_calls == []
+        assert client.objects["raw/" + key] == b'{"status": "SUCCESS"}'

@@ -22,6 +22,10 @@ Three properties this writer guarantees, all of which the current
 
 The writer knows nothing about any particular endpoint: it takes bytes plus
 capture metadata and writes files. Stage wiring lives elsewhere.
+
+One writer may be called from several threads at once (#123): backend calls run
+unlocked, so S3 round-trips for different objects overlap, and a lock guards only
+the writer's in-memory state and the manifest flush.
 """
 
 from __future__ import annotations
@@ -30,6 +34,8 @@ import hashlib
 import json
 import logging
 import os
+import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -75,6 +81,9 @@ __all__ = [
 ]
 
 MANIFEST_STATUS_IN_PROGRESS = "IN_PROGRESS"
+
+#: The writer's clock for flush intervals; a module name so tests can move time.
+_monotonic = time.monotonic
 
 # Sidecar fields a captures[] entry repeats, besides the key and the derived
 # shape_ok/usable flags (#62). Entry and sidecar come from one dict.
@@ -221,10 +230,17 @@ class ManifestResult:
 class LocalRawWriter:
     """Write raw captures and their run manifest under a local root directory.
 
-    One instance corresponds to one run of one source. The manifest is updated
-    on disk after every recorded object or failure, so a run that dies partway
-    still leaves an honest partial manifest behind, and ``finalize`` stamps the
-    terminal status.
+    One instance corresponds to one run of one source. The IN_PROGRESS manifest
+    is rewritten as the run goes, so a run that dies partway still leaves an
+    honest partial manifest behind, and ``finalize`` stamps the terminal status.
+    By default it is rewritten after every recorded object or failure; a writer
+    built with ``manifest_flush_every`` / ``manifest_flush_seconds`` batches
+    those (#123), while run-level records (an abort, a stop, a withheld marker,
+    an endpoint detail or one not attempted) are always flushed at once.
+
+    Thread-safe: ``_state_lock`` guards every field below and the manifest
+    flush, which holds it through its PUT so an older snapshot can never land
+    over a newer one. Payload and sidecar PUTs run outside it.
     """
 
     def __init__(
@@ -239,6 +255,8 @@ class LocalRawWriter:
         origin: Mapping[str, Any] | None = None,
         baseline_dir: Path | None = None,
         http_error_streak: int = DEFAULT_HTTP_ERROR_STREAK,
+        manifest_flush_every: int = 1,
+        manifest_flush_seconds: float | None = None,
     ) -> None:
         """Create a writer for one run of one source.
 
@@ -257,7 +275,17 @@ class LocalRawWriter:
             baseline_dir: Payload baselines to check FPL payloads against
                 (#82). The runner passes the configured directory; None
                 records drift ``unavailable`` on every FPL capture.
+            manifest_flush_every: Rewrite the IN_PROGRESS manifest once this
+                many objects or failures are recorded since the last rewrite.
+                1, the default, rewrites after every one.
+            manifest_flush_seconds: Also rewrite on the first object or failure
+                recorded this many seconds after the last rewrite; None for no
+                time bound. Checked only when something is recorded.
         """
+        if manifest_flush_every < 1:
+            raise ValueError(f"manifest_flush_every must be at least 1, got {manifest_flush_every!r}")
+        if manifest_flush_seconds is not None and manifest_flush_seconds <= 0:
+            raise ValueError(f"manifest_flush_seconds must be positive, got {manifest_flush_seconds!r}")
         raw_keys.validate_source(source)
         self.source = source
         self.started_at = started_at or datetime.now(timezone.utc)
@@ -283,6 +311,11 @@ class LocalRawWriter:
         self._stop_reason: str | None = None
         self._endpoint_details: dict[str, dict[str, Any]] = {}
         self._finalized = False
+        self._state_lock = threading.Lock()
+        self._flush_every = manifest_flush_every
+        self._flush_seconds = manifest_flush_seconds
+        self._unflushed = 0
+        self._last_flush_at = _monotonic()
 
     @property
     def aborted(self) -> bool:
@@ -301,19 +334,21 @@ class LocalRawWriter:
         ``shape_invalid`` and ``fetch_failed`` neither count nor reset it: they
         say nothing about whether the API is refusing us.
         """
-        if response_class == "valid":
-            self._http_error_run = 0
-        elif response_class == "http_error":
-            self._http_error_run += 1
-            if self._http_error_run >= self._http_error_streak and not self.aborted:
-                self._abort_reason = ABORT_REASON_HTTP_ERROR_STREAK
-                logger.warning(
-                    "Run %s: streak=%d threshold=%d last_status=%d; no further requests should be dispatched",
-                    ABORT_REASON_HTTP_ERROR_STREAK,
-                    self._http_error_run,
-                    self._http_error_streak,
-                    http_status,
-                )
+        with self._state_lock:
+            if response_class == "valid":
+                self._http_error_run = 0
+            elif response_class == "http_error":
+                self._http_error_run += 1
+                if self._http_error_run >= self._http_error_streak and not self.aborted:
+                    self._abort_reason = ABORT_REASON_HTTP_ERROR_STREAK
+                    logger.warning(
+                        "Run %s: streak=%d threshold=%d last_status=%d; no further requests should be dispatched",
+                        ABORT_REASON_HTTP_ERROR_STREAK,
+                        self._http_error_run,
+                        self._http_error_streak,
+                        http_status,
+                    )
+                    self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
     @property
     def backend(self) -> RawStorageBackend:
@@ -421,23 +456,25 @@ class LocalRawWriter:
             companion_files=sorted(companion_keys),
             season=self._season if season is _RUN_SEASON else season,
         )
-        drift = self._check_drift(endpoint, payload_bytes)
+        with self._state_lock:
+            drift = self._check_drift(endpoint, payload_bytes)
         if drift is not None:
             sidecar["drift"] = drift
         self._backend.put_bytes(m_key, _json_bytes(sidecar))
-        self._captures.append(_capture_entry(p_key, sidecar))
 
-        self._record_object(endpoint, written=1, byte_count=len(payload_bytes))
         shape_failures = _shape_failures(shape_validation)
-        if shape_failures is None:
-            self._record_endpoint(endpoint, usable=True)
-        else:
-            self._record_endpoint(
-                endpoint,
-                usable=False,
-                reason=f"shape check failed: {'; '.join(shape_failures) or 'no detail'}",
-            )
-        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+        with self._state_lock:
+            self._captures.append(_capture_entry(p_key, sidecar))
+            self._record_object(endpoint, written=1, byte_count=len(payload_bytes))
+            if shape_failures is None:
+                self._record_endpoint(endpoint, usable=True)
+            else:
+                self._record_endpoint(
+                    endpoint,
+                    usable=False,
+                    reason=f"shape check failed: {'; '.join(shape_failures) or 'no detail'}",
+                )
+            self._object_recorded()
 
         return WriteResult(
             source=self.source,
@@ -524,13 +561,14 @@ class LocalRawWriter:
         entry = {**_capture_entry(body_key, sidecar), "usable": False, "class": response_class}
         if expected:
             entry["expected"] = True
-        self._captures.append(entry)
 
-        self._record_object(endpoint, written=1, byte_count=len(body))
-        self._record_endpoint(
-            endpoint, usable=False, reason=f"{response_class}: {reason}", expected=expected
-        )
-        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+        with self._state_lock:
+            self._captures.append(entry)
+            self._record_object(endpoint, written=1, byte_count=len(body))
+            self._record_endpoint(
+                endpoint, usable=False, reason=f"{response_class}: {reason}", expected=expected
+            )
+            self._object_recorded()
 
         return WriteResult(
             source=self.source,
@@ -635,21 +673,22 @@ class LocalRawWriter:
         """
         self._assert_open()
         raw_keys.validate_endpoint(endpoint)
-        self._record_object(endpoint, failed=1)
-        self._failures.append(
-            {
-                "endpoint": endpoint,
-                "request_url": request_url,
-                "http_status": http_status,
-                "attempt_count": attempt_count,
-                "error_class": error_class,
-                "message": message,
-            }
-        )
-        self._record_endpoint(
-            endpoint, usable=False, reason=f"{error_class}: {message}" if message else error_class
-        )
-        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+        with self._state_lock:
+            self._record_object(endpoint, failed=1)
+            self._failures.append(
+                {
+                    "endpoint": endpoint,
+                    "request_url": request_url,
+                    "http_status": http_status,
+                    "attempt_count": attempt_count,
+                    "error_class": error_class,
+                    "message": message,
+                }
+            )
+            self._record_endpoint(
+                endpoint, usable=False, reason=f"{error_class}: {message}" if message else error_class
+            )
+            self._object_recorded()
 
     def record_not_attempted(self, endpoint: str, *, reason: str) -> None:
         """Record an endpoint the run never attempted because of an earlier failure.
@@ -662,9 +701,10 @@ class LocalRawWriter:
         """
         self._assert_open()
         raw_keys.validate_endpoint(endpoint)
-        entry = self._endpoint_entry(endpoint)
-        entry["failures"].append({"endpoint": endpoint, "reason": reason})
-        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+        with self._state_lock:
+            entry = self._endpoint_entry(endpoint)
+            entry["failures"].append({"endpoint": endpoint, "reason": reason})
+            self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
     def record_stop(self, reason: str) -> None:
         """Record that the run chose to stop dispatching before it ran out of work (#116).
@@ -674,9 +714,10 @@ class LocalRawWriter:
         first reason given as ``stop_reason``; it is absent when the run did not stop.
         """
         self._assert_open()
-        if self._stop_reason is None:
-            self._stop_reason = reason
-            self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+        with self._state_lock:
+            if self._stop_reason is None:
+                self._stop_reason = reason
+                self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
     def record_endpoint_detail(self, family: str, name: str, value: Any) -> None:
         """Attach a stage-specific field to ``endpoints[family]`` in the manifest (#116).
@@ -688,8 +729,9 @@ class LocalRawWriter:
         """
         self._assert_open()
         raw_keys.validate_endpoint(family)
-        self._endpoint_details.setdefault(family, {})[name] = value
-        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+        with self._state_lock:
+            self._endpoint_details.setdefault(family, {})[name] = value
+            self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
     def record_marker_withheld(self, endpoint: str, *, event: int, reason: str) -> None:
         """Record that a stage captured ``event`` but withheld its settlement marker.
@@ -702,8 +744,19 @@ class LocalRawWriter:
         """
         self._assert_open()
         raw_keys.validate_endpoint(endpoint)
-        self._markers_withheld.append({"endpoint": endpoint, "event": event, "reason": reason})
-        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+        with self._state_lock:
+            self._markers_withheld.append({"endpoint": endpoint, "event": event, "reason": reason})
+            self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+
+    def flush_manifest(self) -> None:
+        """Rewrite the IN_PROGRESS manifest now if anything recorded since the last rewrite is not on it.
+
+        For a batching writer's stage to call when it ends, however it ends, so
+        a run that dies after it still leaves a current trace (#123).
+        """
+        with self._state_lock:
+            if self._unflushed and not self._finalized:
+                self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
     # -- manifest -----------------------------------------------------------
 
@@ -740,18 +793,19 @@ class LocalRawWriter:
             ManifestResult carrying the manifest key and its content.
         """
         self._assert_open()
-        manifest = self._build_manifest(
-            status=status,
-            git_sha=git_sha,
-            ingest_version=ingest_version,
-            config=config,
-            finality=finality,
-            trigger=trigger,
-            ended_at=ended_at or datetime.now(timezone.utc),
-        )
-        key = manifest_key(self.source, self.extraction_date, self.run_id)
-        location = self._backend.put_bytes(key, _json_bytes(manifest), overwrite=True)
-        self._finalized = True
+        with self._state_lock:
+            manifest = self._build_manifest(
+                status=status,
+                git_sha=git_sha,
+                ingest_version=ingest_version,
+                config=config,
+                finality=finality,
+                trigger=trigger,
+                ended_at=ended_at or datetime.now(timezone.utc),
+            )
+            key = manifest_key(self.source, self.extraction_date, self.run_id)
+            location = self._backend.put_bytes(key, _json_bytes(manifest), overwrite=True)
+            self._finalized = True
         return ManifestResult(
             run_id=self.run_id,
             source=self.source,
@@ -765,19 +819,21 @@ class LocalRawWriter:
     @property
     def endpoint_outcomes(self) -> dict[str, dict[str, Any]]:
         """The manifest's ``endpoints`` block as it currently stands."""
-        return self._endpoint_outcomes()
+        with self._state_lock:
+            return self._endpoint_outcomes()
 
     @property
     def manifest_snapshot(self) -> dict[str, Any]:
         """Return the manifest as it currently stands, without writing it."""
-        return self._build_manifest(
-            status=MANIFEST_STATUS_IN_PROGRESS,
-            git_sha=None,
-            ingest_version=None,
-            config=None,
-            finality=None,
-            ended_at=None,
-        )
+        with self._state_lock:
+            return self._build_manifest(
+                status=MANIFEST_STATUS_IN_PROGRESS,
+                git_sha=None,
+                ingest_version=None,
+                config=None,
+                finality=None,
+                ended_at=None,
+            )
 
     # -- internals ----------------------------------------------------------
 
@@ -937,8 +993,21 @@ class LocalRawWriter:
             outcomes[name].update(self._endpoint_details.get(name, {}))
         return outcomes
 
+    def _object_recorded(self) -> None:
+        """Count one recorded object or failure, and flush once the batch is full or old enough.
+
+        Callers hold ``_state_lock``.
+        """
+        self._unflushed += 1
+        due = self._flush_seconds is not None and _monotonic() - self._last_flush_at >= self._flush_seconds
+        if self._unflushed >= self._flush_every or due:
+            self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+
     def _flush_manifest(self, status: str) -> None:
-        """Persist the in-progress manifest so a dead run leaves an honest trace."""
+        """Persist the in-progress manifest so a dead run leaves an honest trace.
+
+        Callers hold ``_state_lock``, through the PUT, so flushes land in order.
+        """
         manifest = self._build_manifest(
             status=status,
             git_sha=None,
@@ -949,6 +1018,8 @@ class LocalRawWriter:
         )
         key = manifest_key(self.source, self.extraction_date, self.run_id)
         self._backend.put_bytes(key, _json_bytes(manifest), overwrite=True)
+        self._unflushed = 0
+        self._last_flush_at = _monotonic()
 
     def _validate_companions(self, companions: Mapping[str, bytes], extension: str) -> None:
         reserved = {raw_keys.METADATA_FILENAME, payload_filename(extension)}

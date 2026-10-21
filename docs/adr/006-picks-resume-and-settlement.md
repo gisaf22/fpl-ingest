@@ -1,7 +1,7 @@
 # ADR 006 — Picks resume, settlement and time budget
 
 Date: 2026-10-20
-Status: Accepted (#116).
+Status: Accepted (#116). Amended 2026-10-21 (#123): concurrency model, measured CI cost.
 
 ## Context
 
@@ -42,6 +42,35 @@ that captured nothing new also marks `entry-picks` FAILED, so the run exits non-
 budget too small to make progress must be seen, and no schedule alert exists for it (#104).
 An `http_error` streak (ADR 004) is a different stop, `abort_reason`, and is a failure.
 
+**Calls run in three layers, and only in-memory state is serialized (#123).**
+- **API calls are async.** The token bucket (10/s) and `dispatch_bounded`'s limit
+  (`MAX_CONCURRENT_REQUESTS`, 10) bound them, and nothing else does.
+- **S3 calls run on threads, concurrently.** `OffLoop` runs every backend and writer call
+  on its own pool of `MAX_CONCURRENT_REQUESTS` threads. That keeps boto3's blocking calls
+  off the event loop (#115) and lets calls for different entries overlap. Boto3 clients
+  and both backends are safe across threads. The pool is not the loop's default executor,
+  which sizes itself from the CPU count (8 threads on a 4-vCPU runner).
+- **The writer's in-memory state is locked.** A `threading.Lock` inside `LocalRawWriter`
+  guards its tallies, capture index, failures, drift totals and error streak, and the
+  manifest flush. The flush holds the lock through its PUT, so an older snapshot never
+  lands over a newer one. Payload and sidecar PUTs run outside it.
+
+The resume checks therefore run up to 10 at once, as the cost estimate below assumes.
+
+**A picks run rewrites its IN_PROGRESS manifest in batches, not after every object.**
+- It flushes every 50 objects or 10 s, whichever comes first, checked when an object is
+  recorded. The rewrite is a whole-manifest PUT whose `objects` map grows by one entry per
+  object.
+- An abort, a budget stop, a withheld marker, an endpoint detail and an endpoint not
+  attempted flush at once.
+- The stage flushes when it ends, after waiting for storage calls in flight, so a stage
+  that raises still leaves a trace counting everything it stored. `finalize` writes the
+  complete manifest as before.
+- Every other stage still flushes after every object.
+
+**New keys are written with a conditional PUT (`If-None-Match: *`)**, so S3 refuses an
+existing key with a 412 in the same round trip. This replaces a HEAD before every PUT.
+
 **The run records what it cost.** `endpoints["entry-picks"].throughput` holds the
 requests sent, total seconds, requests per second and gameweeks completed, and
 `non_2xx_by_gameweek` the stored non-2xx responses per gameweek, so a spike is visible
@@ -63,8 +92,26 @@ At worst two calls for each of ~2,000 entries is 4,000 calls per gameweek. They 
 through the bounded dispatch loop (up to 10 at once), not one after another, so the cost is
 small against both the credential window and the budget.
 
-**Revisit trigger:** if the first production run's throughput record shows resume checks
-dominating the budget, reopen option B then, not before.
+**Measured on CI (amended, #123).**
+- The first production run, [39552536884](https://github.com/gisaf22/fpl-ingest/actions/runs/39552536884),
+  made 4,874 requests in 2,705.7 s, **1.8/s** against a 10/s ceiling.
+- Each gameweek took 0.54–0.57 s per entry. Per random-cohort entry that is seven
+  S3 calls (2 resume checks, HEAD+PUT for the payload, HEAD+PUT for the sidecar, the
+  manifest PUT), so about **77 ms per call**. The laptop medians above are about 4×
+  that and do not apply to the runner.
+- Those calls ran one at a time: `OffLoop` then held a single `asyncio.Lock` around
+  every backend and writer call, so all 10 workers queued for it. The log shows it as
+  bursts of 10 completions about every 6 s. The statement above, "up to 10 at once", was
+  untrue until #123.
+- **The single lock was the cause.** It is rejected in favour of the layered model
+  above. The rate limiter, the dispatch limit and the connection pools were not binding.
+- After #123 a picks entry makes 4 S3 calls (or 3 for the self cohort) plus a
+  manifest PUT shared across 50 entries, and calls for different entries overlap.
+- The expected rate is **6–9 requests/s**, bounded by the API rate limit, not S3.
+  #123 AC10 checks the first run after merge, and below 5/s reopens this diagnosis.
+
+**Revisit trigger:** if a production run's throughput record shows resume checks
+dominating the budget once they run concurrently (#123), reopen option B then, not before.
 
 ## Alternatives Considered
 
@@ -82,6 +129,14 @@ dominating the budget, reopen option B then, not before.
   requests instead of seconds does not guard against a slow API.
 - **Sharing one settlement flag across stages.** One stage's success could vouch for
   another's failure.
+- **One lock around every storage call (`OffLoop` before #123).** It kept a writer that
+  was not thread-safe single-threaded, but it also serialized every S3 round trip across
+  all workers, which capped the first run at 1.8 requests/s. Rejected for the layered
+  model.
+- **Unlocking only the resume checks.** About 17% of the serialized time; the payload
+  and sidecar writes stay queued.
+- **An async S3 client (aioboto3).** A new dependency and a rewritten backend, for what a
+  thread pool already gives.
 
 ## Consequences
 

@@ -89,14 +89,26 @@ class S3Backend:
             overwrite: Only the run manifest sets this — it is rewritten as
                 the run progresses. Payloads and sidecars never do.
 
+        Without ``overwrite`` the PUT is conditional (``If-None-Match: *``), so
+        S3 itself refuses an existing key with 412, in one round trip and with
+        no window between a check and the write (#123; #67 E7 for the same rule
+        in the backfill). Any other refusal, a 409 conditional-write conflict
+        included, is raised as is.
+
         Raises:
             RawObjectExistsError: The key already exists and ``overwrite`` is
                 False.
         """
         full_key = _KEY_PREFIX + key
-        if not overwrite and self._object_exists(full_key):
-            raise RawObjectExistsError(f"raw object already exists: s3://{self.bucket}/{full_key}")
-        self._client.put_object(Bucket=self.bucket, Key=full_key, Body=data)
+        if overwrite:
+            self._client.put_object(Bucket=self.bucket, Key=full_key, Body=data)
+            return self.location(key)
+        try:
+            self._client.put_object(Bucket=self.bucket, Key=full_key, Body=data, IfNoneMatch="*")
+        except Exception as exc:  # noqa: BLE001 - boto3 raises botocore.exceptions.ClientError
+            if _error_code(exc) == "PreconditionFailed":
+                raise RawObjectExistsError(f"raw object already exists: s3://{self.bucket}/{full_key}") from exc
+            raise
         return self.location(key)
 
     def location(self, key: str) -> str:
@@ -129,20 +141,14 @@ class S3Backend:
         try:
             response = self._client.get_object(Bucket=self.bucket, Key=_KEY_PREFIX + key)
         except Exception as exc:  # noqa: BLE001 - boto3 raises botocore.exceptions.ClientError
-            if getattr(exc, "response", {}).get("Error", {}).get("Code") in {"404", "NoSuchKey", "NotFound"}:
+            if _error_code(exc) in {"404", "NoSuchKey", "NotFound"}:
                 return None
             raise
         return response["Body"].read()
 
-    def _object_exists(self, full_key: str) -> bool:
-        try:
-            self._client.head_object(Bucket=self.bucket, Key=full_key)
-        except Exception as exc:  # noqa: BLE001 - boto3 raises botocore.exceptions.ClientError
-            error_code = getattr(exc, "response", {}).get("Error", {}).get("Code")
-            if error_code in {"404", "NoSuchKey", "NotFound"}:
-                return False
-            raise
-        return True
+
+def _error_code(exc: BaseException) -> str | None:
+    return getattr(exc, "response", {}).get("Error", {}).get("Code")
 
 
 def _default_client() -> Any:

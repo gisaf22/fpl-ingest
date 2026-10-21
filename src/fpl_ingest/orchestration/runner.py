@@ -49,7 +49,13 @@ from fpl_ingest.extract.stages.bootstrap import (
 )
 from fpl_ingest.extract.stages.event_status import Finality, ingest_event_status
 from fpl_ingest.extract.stages.fixtures import RAW_SOURCE, ingest_fixtures
-from fpl_ingest.extract.stages.entry_picks import COHORT_RANDOM, PICKS_FAMILY, ingest_entry_picks
+from fpl_ingest.extract.stages.entry_picks import (
+    COHORT_RANDOM,
+    MANIFEST_FLUSH_EVERY,
+    MANIFEST_FLUSH_SECONDS,
+    PICKS_FAMILY,
+    ingest_entry_picks,
+)
 from fpl_ingest.extract.stages.manager_panel import default_seed, ingest_manager_panel, read_panel
 from fpl_ingest.extract.stages.gameweeks import ingest_gameweeks
 from fpl_ingest.extract.stages.element_summary import ingest_player_histories
@@ -791,6 +797,7 @@ async def run_entry_picks_capture(*, args, config, logger: logging.Logger) -> in
             config.raw_dir, RAW_SOURCE, started_at=run_start, backend=storage_backend,
             origin=detect_origin(logger=logger), baseline_dir=getattr(config, "baseline_dir", None),
             http_error_streak=resolve_http_error_streak(getattr(args, "http_error_streak", None)),
+            manifest_flush_every=MANIFEST_FLUSH_EVERY, manifest_flush_seconds=MANIFEST_FLUSH_SECONDS,
         )
         season = season_for_bootstrap(raw, logger)
         raw_writer.set_season(season)

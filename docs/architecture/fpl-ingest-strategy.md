@@ -592,7 +592,8 @@ field table that used to sit here (#62). The reasons:
   `usable` and `season`, each built from the same record as that payload's sidecar. Finding
   usable captures no longer means reading every sidecar. Fetch failures have no payload and
   no entry. It is written only into the finalized manifest; an `IN_PROGRESS` manifest, which
-  is rewritten after every object, carries none, so consumers must ignore those.
+  is rewritten after every object (every 50 objects or 10 s in an entry-picks run, #123),
+  carries none, so consumers must ignore those.
 - `finality` (FPL only) holds the captured `event-status` payload's essentials: per-event
   `points` (`p`/`r`) and `bonus_added`. It lets a warehouse decide whether a run's data is
   settled **without opening any payload.**

@@ -70,3 +70,28 @@ def test_an_already_aborted_run_dispatches_nothing():
         raise AssertionError("dispatched")
 
     assert _run(dispatch_bounded([1, 2, 3], work, aborted=lambda: True, limit=2)) == []
+
+
+@pytest.mark.covers("#123 AC11")
+def test_when_one_item_fails_nothing_more_is_dispatched_and_no_worker_outlives_the_call():
+    started: list[int] = []
+
+    async def work(item):
+        started.append(item)
+        if item == 3:
+            raise RuntimeError("storage unavailable")
+        await asyncio.sleep(0.01)
+
+    async def main():
+        with pytest.raises(RuntimeError, match="storage unavailable"):
+            await dispatch_bounded(list(range(50)), work, aborted=lambda: False, limit=4)
+        dispatched_at_raise = len(started)
+        await asyncio.sleep(0.05)
+        others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        return dispatched_at_raise, len(started), others
+
+    at_raise, later, others = _run(main())
+
+    assert at_raise < 10, f"{at_raise} of 50 items were dispatched: the failure did not stop the loop"
+    assert later == at_raise, "workers kept dispatching after the call raised"
+    assert others == []

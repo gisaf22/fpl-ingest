@@ -24,6 +24,7 @@ module reads nothing back from storage (ADR 005).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -53,6 +54,12 @@ PICKS_FAMILY = "entry-picks"
 
 COHORT_RANDOM = "random"
 COHORT_SELF = "self"
+
+#: A picks run rewrites its IN_PROGRESS manifest every this many objects or seconds,
+#: whichever comes first, not after each one: the rewrite is one more S3 round trip
+#: whose body grows with every object (#123 D3).
+MANIFEST_FLUSH_EVERY = 50
+MANIFEST_FLUSH_SECONDS = 10.0
 
 #: The stage writes raw objects only, no tables.
 ENTRY_PICKS_STAGE = StageMetadata(
@@ -177,19 +184,24 @@ async def ingest_entry_picks(
             run exits non-zero: a budget too small to make progress must be seen.
     """
     budget = _Budget(budget_seconds)
-    io = OffLoop()
     backend = raw_writer.backend
     stats = _Stats()
     completed: list[int] = []
 
-    for gw in eligible_gameweeks(gameweeks):
-        if await io(backend.exists_prefix, _marker_prefix(gw)):
-            continue
-        if budget.stop_dispatching(raw_writer):
-            break
-        if not await _capture_gameweek(client, raw_writer, io, budget, stats, season, gw, entries):
-            break
-        completed.append(gw)
+    try:
+        with OffLoop() as io:
+            for gw in eligible_gameweeks(gameweeks):
+                if await io(backend.exists_prefix, _marker_prefix(gw)):
+                    continue
+                if budget.stop_dispatching(raw_writer):
+                    break
+                if not await _capture_gameweek(client, raw_writer, io, budget, stats, season, gw, entries):
+                    break
+                completed.append(gw)
+    finally:
+        # Leaving OffLoop waited for storage calls in flight, so the trace holds
+        # everything stored, even when the stage is raising (#123 AC6).
+        await asyncio.to_thread(raw_writer.flush_manifest)
 
     return _finish(raw_writer, budget, stats, completed)
 

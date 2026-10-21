@@ -1,7 +1,7 @@
 """CLI entry point and command dispatcher for fpl-ingest.
 
-Exposes the ``run``, ``pre-deadline``, ``inspect``, ``backfill`` and ``baseline``
-sub-commands.
+Exposes the ``run``, ``pre-deadline``, ``manager-panel``, ``entry-picks``, ``inspect``,
+``backfill``, ``baseline`` and ``report-drift`` sub-commands.
 Each command handler resolves configuration, delegates to the appropriate
 orchestration or extract function, and exits with a meaningful code.
 This module contains no business logic — all behaviour lives in the imported
@@ -31,10 +31,14 @@ from fpl_ingest.cli_formatters import (
     format_run_detail,
     format_run_list,
 )
-from fpl_ingest.config import IngestConfig, default_config, resolve_config
+from fpl_ingest.config import DEFAULT_ENTRY_PICKS_MAX_SECONDS, IngestConfig, default_config, resolve_config
 from fpl_ingest.orchestration.inspect import most_recent_run, recent_runs
 from fpl_ingest.orchestration.runner import run_pipeline as execute_pipeline
-from fpl_ingest.orchestration.runner import run_manager_panel_capture, run_pre_deadline_capture
+from fpl_ingest.orchestration.runner import (
+    run_entry_picks_capture,
+    run_manager_panel_capture,
+    run_pre_deadline_capture,
+)
 from fpl_ingest.extract.http.rate_config import DEFAULT_RATE, MAX_RATE
 from fpl_ingest.extract.http.sync_http import FPLClientError
 from fpl_ingest.schema.payload_baseline import (
@@ -150,6 +154,17 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
         help="Seed for the draw (default: derived from the season, so a rerun redraws the same ids).",
     )
 
+    entry_picks_parser = subparsers.add_parser(
+        "entry-picks",
+        help="Capture each kept panel manager's picks for the finished, data-checked gameweeks (#116).",
+    )
+    add_shared_arguments(entry_picks_parser, suppress_defaults=True)
+    entry_picks_parser.add_argument(
+        "--max-seconds", type=positive_float, default=None, metavar="SECONDS",
+        help="Stop dispatching after this many wall-clock seconds; a rerun resumes "
+        f"(default: $FPL_ENTRY_PICKS_MAX_SECONDS, else {DEFAULT_ENTRY_PICKS_MAX_SECONDS:.0f}).",
+    )
+
     report_drift_parser = subparsers.add_parser(
         "report-drift",
         help="Surface a capture's drift report: job summary, annotations, one issue per new drift (#83).",
@@ -230,7 +245,12 @@ def build_parser(config: IngestConfig | None = None) -> argparse.ArgumentParser:
     )
     baseline_parser.add_argument(
         "--gameweeks", type=id_list, default=None, metavar="GW,GW",
-        help="event-live: the ratified gameweeks to sample (required for that endpoint).",
+        help="event-live and entry-picks: the ratified gameweeks to sample (required for those endpoints).",
+    )
+    baseline_parser.add_argument(
+        "--entries", type=id_list, default=None, metavar="ID,ID",
+        help="entry-history and entry-picks: the manager ids to sample (required for those endpoints; "
+        "entry-picks also needs --gameweeks, and samples every entry in every gameweek).",
     )
     baseline_parser.add_argument(
         "--replace", action="store_true",
@@ -278,6 +298,12 @@ def run_manager_panel(args: argparse.Namespace) -> int:
     config = resolve_config(raw_dir=args.raw_dir)
     logger = configure_logging(args.verbose)
     return asyncio.run(run_manager_panel_capture(args=args, config=config, logger=logger))
+
+
+def run_entry_picks(args: argparse.Namespace) -> int:
+    config = resolve_config(raw_dir=args.raw_dir)
+    logger = configure_logging(args.verbose)
+    return asyncio.run(run_entry_picks_capture(args=args, config=config, logger=logger))
 
 
 def run_inspect(args: argparse.Namespace) -> int:
@@ -344,8 +370,7 @@ def run_baseline(args: argparse.Namespace, *, client: Any | None = None) -> int:
     log = configure_logging(getattr(args, "verbose", False))
     samples = _baseline_samples(args)
     if not samples:
-        flag = "--players" if args.endpoint == "element-summary" else "--gameweeks"
-        log.error("%s needs %s", args.endpoint, flag)
+        log.error("%s needs %s", args.endpoint, _BASELINE_FLAGS.get(args.endpoint, "no flag, so this is a bug"))
         return 1
 
     try:
@@ -385,11 +410,24 @@ class BaselineFetchError(RuntimeError):
     """A baseline sample could not be fetched or decoded."""
 
 
+#: What each baseline endpoint that samples more than the one URL needs on the command line.
+_BASELINE_FLAGS = {
+    "element-summary": "--players",
+    "event-live": "--gameweeks",
+    "entry-history": "--entries",
+    "entry-picks": "--entries and --gameweeks",
+}
+
+
 def _baseline_samples(args: argparse.Namespace) -> list[str]:
     if args.endpoint == "element-summary":
         return [f"element-summary/{p}" for p in args.players or ()]
     if args.endpoint == "event-live":
         return [f"event-live/{gw}" for gw in args.gameweeks or ()]
+    if args.endpoint == "entry-history":
+        return [f"entry-history/{e}" for e in args.entries or ()]
+    if args.endpoint == "entry-picks":
+        return [f"entry-picks/{e}/{gw}" for e in args.entries or () for gw in args.gameweeks or ()]
     return [args.endpoint]
 
 
@@ -400,12 +438,15 @@ async def _fetch_baseline_samples(samples: list[str], client: Any | None) -> lis
         payloads = []
         for sample in samples:
             endpoint, _, sample_id = sample.partition("/")
+            picks_entry, _, picks_gw = sample_id.partition("/")  # entry-picks only: "{entry}/{gw}"
             fetch = {
                 "bootstrap-static": fpl.get_bootstrap_raw,
                 "fixtures": fpl.get_fixtures_raw,
                 "event-status": fpl.get_event_status_raw,
                 "event-live": lambda: fpl.get_gameweek_live_raw(int(sample_id)),
                 "element-summary": lambda: fpl.get_element_summary_raw(int(sample_id)),
+                "entry-history": lambda: fpl.get_entry_history_raw(int(sample_id)),
+                "entry-picks": lambda: fpl.get_entry_picks_raw(int(picks_gw), int(picks_entry)),
             }[endpoint]
             try:
                 raw = await fetch()
@@ -439,6 +480,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(run_pre_deadline(args))
     if args.command == "manager-panel":
         sys.exit(run_manager_panel(args))
+    if args.command == "entry-picks":
+        sys.exit(run_entry_picks(args))
     if args.command == "baseline":
         sys.exit(run_baseline(args))
     if args.command == "report-drift":

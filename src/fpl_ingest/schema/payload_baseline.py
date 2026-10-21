@@ -19,7 +19,10 @@ from pathlib import Path
 from typing import Any
 
 #: Every captured endpoint, named as the baseline files are.
-ENDPOINTS = ("bootstrap-static", "fixtures", "event-status", "event-live", "element-summary")
+ENDPOINTS = (
+    "bootstrap-static", "fixtures", "event-status", "event-live", "element-summary",
+    "entry-history", "entry-picks",
+)
 
 #: Where the committed baselines live.
 BASELINE_DIR = Path(__file__).resolve().parents[3] / "schemas" / "payload-baseline"

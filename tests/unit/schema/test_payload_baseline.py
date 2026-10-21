@@ -354,13 +354,16 @@ def test_unioning_with_an_existing_baseline_in_memory():
 
 
 @pytest.mark.covers("#81 AC4")
-def test_the_five_captured_endpoints_are_the_baseline_endpoints():
+def test_the_captured_endpoints_are_the_baseline_endpoints():
+    # entry-history and entry-picks joined the original five in #116 (AC8).
     assert set(ENDPOINTS) == {
         "bootstrap-static",
         "fixtures",
         "event-status",
         "event-live",
         "element-summary",
+        "entry-history",
+        "entry-picks",
     }
     assert BASELINE_DIR == REPO_BASELINE_DIR
 
@@ -368,7 +371,7 @@ def test_the_five_captured_endpoints_are_the_baseline_endpoints():
 @pytest.mark.covers("#81 AC4")
 @pytest.mark.parametrize(
     "endpoint",
-    ["bootstrap-static", "fixtures", "event-status", "event-live", "element-summary"],
+    ["bootstrap-static", "fixtures", "event-status", "event-live", "element-summary", "entry-history", "entry-picks"],
 )
 def test_each_endpoint_has_a_committed_canonical_baseline(endpoint):
     path = REPO_BASELINE_DIR / f"{endpoint}.json"

@@ -18,7 +18,8 @@ module docstring; `PUBLIC_TABLES` is now empty — `src/fpl_ingest/schema/__init
 Stages live in `src/fpl_ingest/extract/stages/`: `bootstrap.py`, `fixtures.py`,
 `event_status.py`, `gameweeks.py` (the `event-live/{gw:02d}` endpoint), `element_summary.py`,
 `manager_panel.py` (the seeded manager panel and each kept manager's `entry-history`, #102;
-`fpl-ingest manager-panel`).
+`fpl-ingest manager-panel`), `entry_picks.py` (each kept manager's picks per settled gameweek,
+#116; `fpl-ingest entry-picks`).
 
 Before design work, read [`docs/adr/`](docs/adr/README.md): decisions recorded there are
 settled unless the work says why to reopen them.
@@ -66,8 +67,9 @@ other module reads through the backend, or if the ingestion package reads S3 out
 | `fixtures` | Always refetch every run |
 | `event-status` | Always refetch every run — it is the finality signal |
 | `entry-history/{season}/{entry}` | Once per kept manager, at panel draw. The panel is drawn once per season; a run that finds the panel file fetches nothing. A drawn id with an existing capture counts as kept and is not refetched, so a rerun after a failed draw resumes (#102 P6) |
+| `entry-picks/{season}/{gw}/{entry}` | Once per kept manager per gameweek that is finished and data-checked, oldest first, while the gameweek's `_settlement/entry-picks/{gw}` marker is absent. An entry is skipped when `exists_prefix` finds its payload tree or, for the random cohort only, its `_invalid/not_found` tree; `shape_invalid` and `http_error` trees are never checked, so those entries retry. The marker is written only when every kept entry of the gameweek is captured, and the next gameweek never starts before it. A wall-clock budget (`--max-seconds` / `FPL_ENTRY_PICKS_MAX_SECONDS`) ends the run cleanly (#116, [ADR 006](docs/adr/006-picks-resume-and-settlement.md)) |
 
-The two `_settlement` markers are separate on purpose: different keys, written and checked
+The three `_settlement` markers are separate on purpose: different keys, written and checked
 independently. Never merge them into one shared flag — each must only ever mean "this
 stage's own capture succeeded," or one stage's success could vouch for the other's failure.
 
@@ -78,7 +80,8 @@ stage's own capture succeeded," or one stage's success could vouch for the other
 `schemas/payload-baseline/<endpoint>.json` lists every field path each endpoint's payload
 carries and its JSON type(s), plus the samples it was built from (#81; decisions on #80).
 Regenerate from live fetches, never from S3:
-`uv run fpl-ingest baseline <endpoint> [--players 1,2] [--gameweeks 5,6]`. By default the
+`uv run fpl-ingest baseline <endpoint> [--players 1,2] [--gameweeks 5,6] [--entries 8450051,4685107]`
+(`entry-history` needs `--entries`; `entry-picks` needs `--entries` and `--gameweeks`). By default the
 fetches are unioned with the committed file, so a rarely seen field never drops out;
 `--replace` builds from the fresh fetches only, and is the only way to remove a field.
 Accepting a drift means merging the regenerated file. Integer and decimal are one type,
@@ -141,12 +144,14 @@ output.
   and the sidecar records `class` and `reason`. Its `captures[]` entry has `usable:
   false` and the `class`, and its endpoint counts as failed. A glob for `payload.json`
   cannot match it. Every stage does this (fixtures from #54, bootstrap-static,
-  event-status, event-live and element-summary from #55, the manager panel from #115); captures
+  event-status, event-live and element-summary from #55, the manager panel from #115,
+  entry-picks from #116); captures
   from before then may still hold a failed response at `payload.json` with `usable: false`.
   `fetch_failed` (no response, or 429/5xx after retries) stores nothing.
 - **An expected invalid capture is not a failure** (#115, contract 2.7.0, [ADR
   004](docs/adr/004-failure-classification.md)). When the caller declared the outcome
-  legitimate for its request (the manager panel's random-cohort 404 and empty `current`),
+  legitimate for its request (the manager panel's random-cohort 404 and empty `current`,
+  and entry-picks' random-cohort 404, a manager's pre-join week; a self-cohort 404 is not),
   the sidecar and the `captures[]` entry carry `expected: true`, and the endpoint's
   `expected` count replaces a `failed`. Both are absent, never `false`, otherwise, and a
   reader treats a missing count as zero and manifests before 2.7.0 as having none. The
@@ -158,6 +163,15 @@ output.
   (`aborted_http_error_streak`) when the run stopped itself after N consecutive
   `http_error` responses (default 10; `--http-error-streak` / `FPL_HTTP_ERROR_STREAK`).
   `abort_reason` is absent otherwise, and manifests before 2.6.0 have neither key.
+- **A picks run's budget, throughput and spike count are on the finalized manifest** (#116,
+  contract 2.8.0, [ADR 006](docs/adr/006-picks-resume-and-settlement.md)). `stop_reason`
+  (`stopped_at_budget`) is top-level and absent unless the run stopped at its wall-clock
+  budget; such a stop is not a failure unless it captured nothing new, which also marks
+  `entry-picks` FAILED. `endpoints["entry-picks"].throughput` is `{requests, total_seconds,
+  requests_per_second, gameweeks_completed}` and `.non_2xx_by_gameweek` maps a gameweek to
+  its stored `not_found` plus `http_error` picks responses this run; both appear only when the
+  run made at least one picks request. An absent `_settlement/entry-picks/{gw}` marker means
+  that gameweek still has entries not captured. Manifests before 2.8.0 have none of these.
 - **`season` is on every 2.1.0 sidecar and capture entry**, derived from the same run's
   bootstrap-static (the deadline year of its lowest-id event). It is `null`, logged at ERROR
   as `season_source=none`, when the run had no usable bootstrap; there is no fallback. The

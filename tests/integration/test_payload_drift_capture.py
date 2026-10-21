@@ -386,7 +386,7 @@ def test_written_sidecars_validate_against_the_current_schema(tmp_path, baseline
 
     for endpoint in ENDPOINTS:
         for sidecar in _sidecars(raw, endpoint):
-            assert sidecar["raw_contract_version"] == "2.7.0"
+            assert sidecar["raw_contract_version"] == "2.8.0"
             assert raw_contract_schema.errors("sidecar", sidecar) == [], endpoint
     assert raw_contract_schema.errors("manifest", _manifest(raw)) == []
 

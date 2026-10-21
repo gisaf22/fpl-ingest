@@ -280,6 +280,8 @@ class LocalRawWriter:
         self._http_error_streak = http_error_streak
         self._http_error_run = 0
         self._abort_reason: str | None = None
+        self._stop_reason: str | None = None
+        self._endpoint_details: dict[str, dict[str, Any]] = {}
         self._finalized = False
 
     @property
@@ -664,6 +666,31 @@ class LocalRawWriter:
         entry["failures"].append({"endpoint": endpoint, "reason": reason})
         self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
 
+    def record_stop(self, reason: str) -> None:
+        """Record that the run chose to stop dispatching before it ran out of work (#116).
+
+        Distinct from ``aborted``: a stop is the run's own budget being spent, not
+        the API refusing us, so it does not fail the run. The manifest carries the
+        first reason given as ``stop_reason``; it is absent when the run did not stop.
+        """
+        self._assert_open()
+        if self._stop_reason is None:
+            self._stop_reason = reason
+            self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+
+    def record_endpoint_detail(self, family: str, name: str, value: Any) -> None:
+        """Attach a stage-specific field to ``endpoints[family]`` in the manifest (#116).
+
+        For facts about an endpoint's run that its tallies do not hold, such as
+        entry-picks' throughput record. It shows only on a family the run attempted
+        at least once: a family with no requests has no block to carry it, and
+        inventing one would read as a failed endpoint.
+        """
+        self._assert_open()
+        raw_keys.validate_endpoint(family)
+        self._endpoint_details.setdefault(family, {})[name] = value
+        self._flush_manifest(MANIFEST_STATUS_IN_PROGRESS)
+
     def record_marker_withheld(self, endpoint: str, *, event: int, reason: str) -> None:
         """Record that a stage captured ``event`` but withheld its settlement marker.
 
@@ -831,6 +858,8 @@ class LocalRawWriter:
             manifest["finality"] = finality
         if self._abort_reason is not None:
             manifest["abort_reason"] = self._abort_reason
+        if self._stop_reason is not None:
+            manifest["stop_reason"] = self._stop_reason
         if self._markers_withheld:
             manifest["markers_withheld"] = list(self._markers_withheld)
         # The index is complete only once the run is: an IN_PROGRESS manifest,
@@ -905,6 +934,7 @@ class LocalRawWriter:
             }
             if entry["expected"]:
                 outcomes[name]["expected"] = entry["expected"]
+            outcomes[name].update(self._endpoint_details.get(name, {}))
         return outcomes
 
     def _flush_manifest(self, status: str) -> None:

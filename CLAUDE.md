@@ -257,6 +257,13 @@ fpl-warehouse's scheduled build has its own check, documented in that repo.
   2-minute timeout. A lost ping reads as absence and alerts after the grace, which is the
   accepted false positive. The same holds for a failed checkout, which leaves no script to
   run.
+- **Every ping carries a plain-text body** (#130): the workflow, the job status and the run
+  URL, and on `/fail` the job's failed or cancelled steps, read from the GitHub jobs API with
+  the job's `GITHUB_TOKEN` (the workflows' `actions: read` permission). A detail that cannot
+  be read is written as `unavailable (...)` and the ping is still sent. The body never holds
+  the ping URL or a credential. healthchecks.io shows it on the ping's event in the check's
+  log. The script is byte-identical to fpl-warehouse's `scripts/healthchecks_ping.sh`, whose
+  copy also names the build's first failing dbt test; keep the two in step.
 - **The ping URLs are secrets, not variables.** The repo is public, and anyone holding a URL
   could send a false success ping. Never paste one into an issue, PR or log.
 - **Grace sizing**, measured over scheduled runs to 2026-09-28. Pre-deadline runs start 8–22
